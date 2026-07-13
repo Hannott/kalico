@@ -133,6 +133,10 @@ class VibrationPulseTestGenerator:
         self.hz_per_sec = config.getfloat(
             "hz_per_sec", 1.0, minval=0.1, maxval=2.0
         )
+        self.freq_start = self.min_freq
+        self.freq_end = self.max_freq
+        self.test_accel_per_hz = self.accel_per_hz
+        self.test_hz_per_sec = self.hz_per_sec
 
     def prepare_test(self, gcmd):
         self.freq_start = gcmd.get_float(
@@ -168,7 +172,9 @@ class VibrationPulseTestGenerator:
         return self.freq_end
 
     def get_accel_per_hz(self):
-        return self.accel_per_hz
+        # The value in effect for the current test (including any
+        # ACCEL_PER_HZ override), not the configured default
+        return self.test_accel_per_hz
 
 
 class SweepingVibrationsTestGenerator:
@@ -180,6 +186,8 @@ class SweepingVibrationsTestGenerator:
         self.sweeping_period = config.getfloat(
             "sweeping_period", 0.0, minval=0.0
         )
+        self.test_sweeping_accel = self.sweeping_accel
+        self.test_sweeping_period = self.sweeping_period
 
     def prepare_test(self, gcmd):
         self.vibration_generator.prepare_test(gcmd)
@@ -220,17 +228,29 @@ class SweepingVibrationsTestGenerator:
     def get_max_freq(self):
         return self.vibration_generator.get_max_freq()
 
+    def get_accel_per_hz(self):
+        return self.vibration_generator.get_accel_per_hz()
+
 
 class ResonanceTestExecutor:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
 
-    def run_test(self, test_seq, axis, freq_end, accel_per_hz, gcmd):
+    def run_test(self, test_seq, axis, gcmd):
+        # Derive the required limits from the actual test sequence, so that
+        # ACCEL_PER_HZ overrides and the sweeping acceleration are covered
+        max_accel = 0.0
+        max_v = v = last_t = 0.0
+        for next_t, accel, freq in test_seq:
+            max_accel = max(max_accel, abs(accel))
+            v += accel * (next_t - last_t)
+            max_v = max(max_v, abs(v))
+            last_t = next_t
         with suspend_limits(
             self.printer,
-            freq_end * accel_per_hz + 10.0,
-            accel_per_hz * 0.25 + 1.0,
+            max_accel + 10.0,
+            max_v + 1.0,
             gcmd.get_int("INPUT_SHAPING", 0),
         ):
             self._run_test(test_seq, axis, gcmd)
@@ -366,17 +386,15 @@ class ResonanceTester:
         raw_name_suffix=None,
         accel_chips=None,
         test_point=None,
-        test_accel_per_hz=None,
     ):
         toolhead = self.printer.lookup_object("toolhead")
         calibration_data = {axis: None for axis in axes}
 
+        # Reads all test overrides (FREQ_START/END, ACCEL_PER_HZ, ...)
+        # from gcmd
         self.generator.prepare_test(gcmd)
 
         test_points = [test_point] if test_point else self.probe_points
-
-        if test_accel_per_hz is not None:
-            self.generator.accel_per_hz = test_accel_per_hz
 
         for point in test_points:
             toolhead.manual_move(point, self.move_speed)
@@ -403,13 +421,7 @@ class ResonanceTester:
 
                 # Generate moves
                 test_seq = self.generator.gen_test()
-                self.executor.run_test(
-                    test_seq,
-                    axis,
-                    self.generator.vibration_generator.freq_end,
-                    self.generator.vibration_generator.accel_per_hz,
-                    gcmd,
-                )
+                self.executor.run_test(test_seq, axis, gcmd)
                 for chip_axis, aclient, chip_name in raw_values:
                     aclient.finish_measurements()
                     if raw_name_suffix is not None:
@@ -458,7 +470,6 @@ class ResonanceTester:
         axis = _parse_axis(gcmd, gcmd.get("AXIS").lower())
         chips_str = gcmd.get("CHIPS", None)
         test_point = gcmd.get("POINT", None)
-        test_accel_per_hz = gcmd.get_float("ACCEL_PER_HZ", None, above=0.0)
 
         if test_point:
             test_coords = test_point.split(",")
@@ -505,7 +516,6 @@ class ResonanceTester:
             raw_name_suffix=name_suffix if raw_output else None,
             accel_chips=accel_chips,
             test_point=test_point,
-            test_accel_per_hz=test_accel_per_hz,
         )[axis]
         if csv_output:
             csv_name = self.save_calibration_data(
@@ -516,7 +526,7 @@ class ResonanceTester:
                 data,
                 point=test_point,
                 max_freq=self._get_max_calibration_freq(),
-                accel_per_hz=self.generator.vibration_generator.get_accel_per_hz(),
+                accel_per_hz=self.generator.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Resonances data written to %s file" % (csv_name,)
@@ -597,7 +607,7 @@ class ResonanceTester:
                 calibration_data[axis],
                 all_shapers,
                 max_freq=max_freq,
-                accel_per_hz=self.generator.vibration_generator.get_accel_per_hz(),
+                accel_per_hz=self.generator.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Shaper calibration data written to %s file" % (csv_name,)
