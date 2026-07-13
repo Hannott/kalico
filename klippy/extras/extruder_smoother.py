@@ -14,7 +14,7 @@ ExtruderSmootherCfg = collections.namedtuple(
     "ExtruderSmootherCfg", ("order", "freq_opt_range")
 )
 
-EXTURDER_SMOOTHERS = {
+EXTRUDER_SMOOTHERS = {
     "default": ExtruderSmootherCfg(-1, (1.0, 1.0, 1)),
     "zv": ExtruderSmootherCfg(5, (0.98, 1.02, 5)),
     "mzv": ExtruderSmootherCfg(7, (0.95, 1.05, 11)),
@@ -168,8 +168,8 @@ def get_extruder_smoother(
             "docs/Measuring_Resonances.md for more details)."
         )
     shaper_name = shaper_name.lower()
-    smoother_cfg = EXTURDER_SMOOTHERS.get(
-        shaper_name, EXTURDER_SMOOTHERS["default"]
+    smoother_cfg = EXTRUDER_SMOOTHERS.get(
+        shaper_name, EXTRUDER_SMOOTHERS["default"]
     )
     test_freqs = np.linspace(*smoother_cfg.freq_opt_range)
     n = smoother_cfg.order
