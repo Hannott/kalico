@@ -299,7 +299,8 @@ class ResonanceTestExecutor:
             last_v = v
             last_freq = freq
         if last_v:
-            d_decel = -0.5 * last_v2 / old_max_accel
+            # Decelerate to a stop, continuing in the direction of motion
+            d_decel = 0.5 * last_v * abs(last_v) / old_max_accel
             decel_X, decel_Y = axis.get_point(d_decel)
             toolhead.cmd_M204(
                 self.gcode.create_gcode_command(
