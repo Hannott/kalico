@@ -50,7 +50,7 @@ def _parse_axis(gcmd, raw_axis):
     try:
         dir_x = float(dirs[0].strip())
         dir_y = float(dirs[1].strip())
-    except:
+    except ValueError:
         raise gcmd.error("Unable to parse axis direction '%s'" % (raw_axis,))
     return TestAxis(vib_dir=(dir_x, dir_y))
 
@@ -464,7 +464,7 @@ class ResonanceTester:
     def _get_max_calibration_freq(self):
         return 1.5 * self.generator.get_max_freq()
 
-    cmd_TEST_RESONANCES_help = "Runs the resonance test for a specifed axis"
+    cmd_TEST_RESONANCES_help = "Runs the resonance test for a specified axis"
 
     def cmd_TEST_RESONANCES(self, gcmd):
         # Parse parameters
@@ -504,6 +504,9 @@ class ResonanceTester:
         csv_output = "resonances" in outputs
         raw_output = "raw_data" in outputs
 
+        # Check for active fans and display warning if found
+        self._check_active_fans(gcmd)
+
         # Setup calculation of resonances
         if csv_output:
             helper = shaper_calibrate.ShaperCalibrate(self.printer)
@@ -534,7 +537,7 @@ class ResonanceTester:
             )
 
     cmd_SHAPER_CALIBRATE_help = (
-        "Simular to TEST_RESONANCES but suggest input shaper config"
+        "Similar to TEST_RESONANCES but suggest input shaper config"
     )
 
     def cmd_SHAPER_CALIBRATE(self, gcmd):
@@ -542,7 +545,7 @@ class ResonanceTester:
         axis = gcmd.get("AXIS", None)
         if not axis:
             calibrate_axes = [TestAxis("x"), TestAxis("y")]
-        elif axis.lower() not in "xy":
+        elif axis.lower() not in ("x", "y"):
             raise gcmd.error("Unsupported axis '%s'" % (axis,))
         else:
             calibrate_axes = [TestAxis(axis.lower())]
@@ -623,7 +626,7 @@ class ResonanceTester:
     )
 
     def cmd_MEASURE_AXES_NOISE(self, gcmd):
-        meas_time = gcmd.get_float("MEAS_TIME", 2.0)
+        meas_time = gcmd.get_float("MEAS_TIME", 2.0, above=0.0)
         raw_values = [
             (chip_axis, chip.start_internal_client())
             for chip_axis, chip in self.accel_chips
@@ -702,7 +705,7 @@ class ResonanceTester:
                                 )
 
                             active_fans.append(fan_name)
-                    except:
+                    except Exception:
                         continue
 
             if active_fans:
