@@ -79,6 +79,7 @@ def calibrate_shaper(
     test_damping_ratios,
     max_freq,
     axis=None,
+    ignore_z=False,
 ):
     helper = shaper_calibrate.ShaperCalibrate(printer=None)
     if isinstance(datas[0], shaper_calibrate.CalibrationData):
@@ -91,6 +92,10 @@ def calibrate_shaper(
         for data in datas[1:]:
             calibration_data.add_data(helper.process_accelerometer_data(data))
         calibration_data.normalize_to_frequencies()
+
+    if ignore_z:
+        # Drop the Z axis (an X/Y shaper cannot correct Z vibrations)
+        calibration_data.zero_z()
 
     shaper, all_shapers = helper.find_best_shaper(
         calibration_data,
@@ -297,6 +302,14 @@ def main():
         help="a comma-separated list of shapers to test",
     )
     opts.add_option(
+        "--ignore_z",
+        action="store_true",
+        dest="ignore_z",
+        default=False,
+        help="drop the Z accelerometer axis (X/Y shaping cannot correct "
+        + "Z vibrations)",
+    )
+    opts.add_option(
         "--damping_ratio",
         type="float",
         dest="damping_ratio",
@@ -398,6 +411,7 @@ def main():
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
         axis=axis,
+        ignore_z=options.ignore_z,
     )
     if selected_shaper is None:
         return

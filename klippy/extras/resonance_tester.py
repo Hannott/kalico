@@ -343,6 +343,9 @@ class ResonanceTester:
             )
 
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
+        # Default for the IGNORE_Z parameter: drop the Z accelerometer axis
+        # from the response (an X/Y input shaper cannot correct Z vibrations).
+        self.ignore_z = config.getboolean("ignore_z", False)
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -501,6 +504,9 @@ class ResonanceTester:
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
             raise gcmd.error("Invalid NAME parameter")
+        ignore_z = gcmd.get_int(
+            "IGNORE_Z", 1 if self.ignore_z else 0, minval=0, maxval=1
+        )
         csv_output = "resonances" in outputs
         raw_output = "raw_data" in outputs
 
@@ -522,6 +528,8 @@ class ResonanceTester:
             test_point=test_point,
         )[axis]
         if csv_output:
+            if ignore_z:
+                data.zero_z()
             csv_name = self.save_calibration_data(
                 "resonances",
                 name_suffix,
@@ -555,6 +563,9 @@ class ResonanceTester:
         max_smoothing = gcmd.get_float(
             "MAX_SMOOTHING", self.max_smoothing, minval=0.05
         )
+        ignore_z = gcmd.get_int(
+            "IGNORE_Z", 1 if self.ignore_z else 0, minval=0, maxval=1
+        )
 
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
@@ -580,6 +591,8 @@ class ResonanceTester:
                 % (axis_name,)
             )
             calibration_data[axis].normalize_to_frequencies()
+            if ignore_z:
+                calibration_data[axis].zero_z()
             systime = self.printer.get_reactor().monotonic()
             toolhead = self.printer.lookup_object("toolhead")
             toolhead_info = toolhead.get_status(systime)

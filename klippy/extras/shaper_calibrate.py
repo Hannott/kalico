@@ -78,6 +78,15 @@ class CalibrationData:
                 freq_bins + 0.1
             )
 
+    def zero_z(self):
+        # Drop the Z accelerometer axis from the data: zero psd_z and
+        # rebuild psd_sum from X and Y only. Useful when Z picks up
+        # vibrations that an X/Y input shaper cannot correct (e.g. a
+        # toolhead rocking in Z from linear-bearing play), which would
+        # otherwise skew the shaper fit and peak detection.
+        self.psd_z[:] = 0.0
+        self.psd_sum[:] = self.psd_x + self.psd_y
+
     def get_psd(self, axis="all"):
         return self._psd_map[axis]
 
