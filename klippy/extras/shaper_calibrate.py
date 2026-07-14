@@ -77,7 +77,23 @@ class CalibrationData:
 
 CalibrationResult = collections.namedtuple(
     "CalibrationResult",
-    ("name", "freq", "vals", "vibrs", "smoothing", "score", "max_accel"),
+    (
+        "name",
+        "freq",
+        "vals",
+        "vibrs",
+        "smoothing",
+        "score",
+        "max_accel",
+        # Only set for two-mode candidates: base shaper name, second
+        # peak frequency (freq/freq2 are the two design frequencies),
+        # and the damping ratios used for each peak.
+        "base",
+        "freq2",
+        "damping_ratio",
+        "damping_ratio2",
+    ),
+    defaults=(None, None, None, None),
 )
 
 
@@ -600,6 +616,151 @@ class ShaperCalibrate:
         )
         return max_accel
 
+    def _detect_resonance_peaks(
+        self,
+        freq_bins,
+        psd,
+        min_freq,
+        max_freq,
+        min_prominence=0.12,
+        min_separation=8.0,
+        max_peaks=3,
+    ):
+        # Look for well-separated local maxima in the PSD that could
+        # each be shaped independently by a two-mode shaper. Returns
+        # up to `max_peaks` frequencies, sorted by descending PSD
+        # magnitude (i.e. most significant first).
+        np = self.numpy
+        mask = (freq_bins >= min_freq) & (freq_bins <= max_freq)
+        freqs = freq_bins[mask]
+        vals = psd[mask]
+        if freqs.shape[0] < 3:
+            return []
+        is_peak = (vals[1:-1] > vals[:-2]) & (vals[1:-1] > vals[2:])
+        idx = np.nonzero(is_peak)[0] + 1
+        if idx.shape[0] == 0:
+            return []
+        peak_freqs = freqs[idx]
+        peak_vals = vals[idx]
+        order = np.argsort(peak_vals)[::-1]
+        top_val = peak_vals[order[0]]
+        selected = []
+        for i in order:
+            v = peak_vals[i]
+            if v < min_prominence * top_val:
+                break
+            f = float(peak_freqs[i])
+            if any(abs(f - sf) < min_separation for sf in selected):
+                continue
+            selected.append(f)
+            if len(selected) >= max_peaks:
+                break
+        return selected
+
+    def fit_two_mode_shaper(
+        self,
+        base_cfg,
+        calibration_data,
+        peak1,
+        peak2,
+        damping_ratio,
+        scv,
+        max_smoothing,
+        test_damping_ratios,
+        max_freq,
+    ):
+        # A two-mode shaper's structure is scale-invariant in the ratio
+        # freq2/freq1 (not in freq1 alone), so the search is split into
+        # a coarse ratio sweep (each ratio gets its own damping-ratio-
+        # pessimized response, computed once at freq1=1.0) and a local
+        # freq1 refinement around the detected first peak.
+        np = self.numpy
+
+        damping_ratio = damping_ratio or shaper_defs.DEFAULT_DAMPING_RATIO
+        test_damping_ratios = test_damping_ratios or TEST_DAMPING_RATIOS
+
+        base_ratio = peak2 / peak1
+        ratios = np.linspace(base_ratio * 0.94, base_ratio * 1.06, 5)
+
+        freq_start = max(base_cfg.min_freq, peak1 - 4.0)
+        freq_end = peak1 + 4.0
+        test_freqs1 = np.arange(freq_start, freq_end, 0.5)
+        if test_freqs1.shape[0] == 0:
+            test_freqs1 = np.array([peak1])
+
+        max_freq = max(max_freq or MAX_FREQ, peak2 * 1.2)
+        freq_bins = calibration_data.freq_bins
+        psd = calibration_data.psd_sum[freq_bins <= max_freq]
+        freq_bins = freq_bins[freq_bins <= max_freq]
+
+        # Coarser than the single-mode fit's 0.01 step: this grid is
+        # rebuilt on every ratio (unlike single-mode, which pays this
+        # cost only once per base), so keep it cheaper.
+        test_freq_bins = np.arange(0.0, 10.0, 0.02)
+        best_res = None
+        results = []
+        for ratio in ratios:
+            unit_shaper = shaper_defs.get_two_mode_shaper(
+                base_cfg.name, 1.0, ratio, damping_ratio, damping_ratio
+            )
+            test_shaper_vals = np.zeros(shape=test_freq_bins.shape)
+            for dr in test_damping_ratios:
+                vals = estimate_shaper(np, unit_shaper, dr, test_freq_bins)
+                test_shaper_vals = np.maximum(test_shaper_vals, vals)
+            for test_freq1 in test_freqs1:
+                test_freq2 = test_freq1 * ratio
+                shaper = shaper_defs.get_two_mode_shaper(
+                    base_cfg.name,
+                    test_freq1,
+                    test_freq2,
+                    damping_ratio,
+                    damping_ratio,
+                )
+                shaper_smoothing = self._get_shaper_smoothing(shaper, scv=scv)
+                if max_smoothing and shaper_smoothing > max_smoothing:
+                    continue
+                shaper_vals = np.interp(
+                    freq_bins, test_freq_bins * test_freq1, test_shaper_vals
+                )
+                shaper_vibrations = self._estimate_remaining_vibrations(
+                    freq_bins, shaper_vals, psd
+                )
+                max_accel = self.find_max_accel(
+                    shaper, scv, self._get_shaper_smoothing
+                )
+                shaper_score = shaper_smoothing * (
+                    2.0 * shaper_vibrations**1.5
+                    + shaper_vibrations * 0.2
+                    + 0.001
+                    + shaper_smoothing * 0.002
+                )
+                result = CalibrationResult(
+                    name="2mode_" + base_cfg.name,
+                    freq=test_freq1,
+                    vals=shaper_vals,
+                    vibrs=shaper_vibrations,
+                    smoothing=shaper_smoothing,
+                    score=shaper_score,
+                    max_accel=max_accel,
+                    base=base_cfg.name,
+                    freq2=test_freq2,
+                    damping_ratio=damping_ratio,
+                    damping_ratio2=damping_ratio,
+                )
+                results.append(result)
+                if best_res is None or best_res.vibrs > result.vibrs:
+                    best_res = result
+        if best_res is None:
+            return None
+        selected = best_res
+        for res in results[::-1]:
+            if res.score < selected.score and (
+                res.vibrs < best_res.vibrs * 1.2
+                or res.vibrs < best_res.vibrs + 0.0075
+            ):
+                selected = res
+        return selected
+
     def find_best_shaper(
         self,
         calibration_data,
@@ -610,6 +771,7 @@ class ShaperCalibrate:
         max_smoothing=None,
         test_damping_ratios=None,
         max_freq=None,
+        test_two_mode=True,
         logger=None,
     ):
         best_shaper = None
@@ -711,33 +873,119 @@ class ShaperCalibrate:
                 # Either the shaper significantly improves the score (by 20%),
                 # or it improves the score and smoothing (by 5% and 10% resp.)
                 best_shaper = shaper
+        if test_two_mode and not shaper_freqs:
+            # Only worth the (much larger) 2D search if the PSD actually
+            # shows two distinct, well-separated resonances; on a typical
+            # single-peak printer this is a no-op.
+            peaks = self._detect_resonance_peaks(
+                calibration_data.freq_bins,
+                calibration_data.psd_sum,
+                MIN_FREQ,
+                max_freq or MAX_FREQ,
+            )
+            for i in range(len(peaks)):
+                for j in range(i + 1, len(peaks)):
+                    peak1, peak2 = sorted((peaks[i], peaks[j]))
+                    for base_cfg in shaper_defs.INPUT_SHAPERS:
+                        result = self.background_process_exec(
+                            self.fit_two_mode_shaper,
+                            (
+                                base_cfg,
+                                calibration_data,
+                                peak1,
+                                peak2,
+                                damping_ratio,
+                                scv,
+                                max_smoothing,
+                                test_damping_ratios,
+                                max_freq,
+                            ),
+                        )
+                        if result is None:
+                            continue
+                        if logger is not None:
+                            logger(
+                                "Fitted two-mode shaper '2mode_%s' "
+                                "frequencies = %.1f / %.1f Hz (vibration "
+                                "score = %.2f%%, smoothing ~= %.3f, "
+                                "combined score = %.3e)"
+                                % (
+                                    result.base,
+                                    result.freq,
+                                    result.freq2,
+                                    result.vibrs * 100.0,
+                                    result.smoothing,
+                                    result.score,
+                                )
+                            )
+                        all_shapers.append(result)
+                        # Two-mode requires manually maintaining an extra
+                        # frequency/damping ratio pair, so only let it
+                        # displace the recommendation on a decisive win,
+                        # not the same tie-break margin as single-mode.
+                        if (
+                            best_shaper is None
+                            or result.score * 1.3 < best_shaper.score
+                        ):
+                            best_shaper = result
         return best_shaper, all_shapers
 
-    def save_params(self, configfile, axis, shaper_name, shaper_freq):
+    def save_params(self, configfile, axis, shaper):
         if axis == "xy":
-            self.save_params(configfile, "x", shaper_name, shaper_freq)
-            self.save_params(configfile, "y", shaper_name, shaper_freq)
-        else:
-            configfile.set("input_shaper", "shaper_type_" + axis, shaper_name)
+            self.save_params(configfile, "x", shaper)
+            self.save_params(configfile, "y", shaper)
+            return
+        if shaper.freq2 is not None:
+            configfile.set("input_shaper", "shaper_type_" + axis, "2mode")
+            configfile.set("input_shaper", "shaper_base_" + axis, shaper.base)
             configfile.set(
-                "input_shaper", "shaper_freq_" + axis, "%.1f" % (shaper_freq,)
+                "input_shaper", "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
+            )
+            configfile.set(
+                "input_shaper",
+                "shaper_freq2_" + axis,
+                "%.1f" % (shaper.freq2,),
+            )
+            configfile.set(
+                "input_shaper",
+                "damping_ratio_" + axis,
+                "%.6f" % (shaper.damping_ratio,),
+            )
+            configfile.set(
+                "input_shaper",
+                "damping_ratio2_" + axis,
+                "%.6f" % (shaper.damping_ratio2,),
+            )
+        else:
+            configfile.set("input_shaper", "shaper_type_" + axis, shaper.name)
+            configfile.set(
+                "input_shaper", "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
             )
 
-    def apply_params(self, input_shaper, axis, shaper_name, shaper_freq):
+    def apply_params(self, input_shaper, axis, shaper):
         if axis == "xy":
-            self.apply_params(input_shaper, "x", shaper_name, shaper_freq)
-            self.apply_params(input_shaper, "y", shaper_name, shaper_freq)
+            self.apply_params(input_shaper, "x", shaper)
+            self.apply_params(input_shaper, "y", shaper)
             return
         gcode = self.printer.lookup_object("gcode")
         axis = axis.upper()
+        if shaper.freq2 is not None:
+            params = {
+                "SHAPER_TYPE_" + axis: "2mode",
+                "SHAPER_BASE_" + axis: shaper.base,
+                "SHAPER_FREQ_" + axis: shaper.freq,
+                "SHAPER_FREQ2_" + axis: shaper.freq2,
+                "DAMPING_RATIO_" + axis: shaper.damping_ratio,
+                "DAMPING_RATIO2_" + axis: shaper.damping_ratio2,
+            }
+        else:
+            params = {
+                "SHAPER_TYPE_" + axis: shaper.name,
+                "SHAPER_FREQ_" + axis: shaper.freq,
+            }
         input_shaper.cmd_SET_INPUT_SHAPER(
             gcode.create_gcode_command(
-                "SET_INPUT_SHAPER",
-                "SET_INPUT_SHAPER",
-                {
-                    "SHAPER_TYPE_" + axis: shaper_name,
-                    "SHAPER_FREQ_" + axis: shaper_freq,
-                },
+                "SET_INPUT_SHAPER", "SET_INPUT_SHAPER", params
             )
         )
 

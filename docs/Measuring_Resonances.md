@@ -488,6 +488,25 @@ To avoid too much smoothing with '3hump_ei', suggested max_accel <= 2800 mm/sec^
 Recommended shaper is mzv @ 34.6 Hz
 ```
 
+If the frequency response shows two distinct, well-separated resonances (for
+example, a printer with a heavy toolhead and a separate bed resonance), the
+script will also fit a two-mode (`2mode_...`) shaper candidate that targets
+both frequencies at once. It is only ever suggested when it is a clear
+improvement over the single-frequency shapers, since it requires configuring
+an extra frequency and damping ratio:
+```
+Fitted two-mode shaper '2mode_mzv' frequencies = 32.1 / 68.4 Hz (vibration score = 0.4%, smoothing ~= 0.145)
+Recommended shaper is 2mode (base=mzv) @ 32.1 Hz / 68.4 Hz
+```
+which corresponds to the following `[input_shaper]` configuration:
+```
+[input_shaper]
+shaper_type_y: 2mode
+shaper_base_y: mzv
+shaper_freq_y: 32.1
+shaper_freq2_y: 68.4
+```
+
 The suggested configuration can be added to `[input_shaper]` section of
 `printer.cfg`, e.g.:
 ```
@@ -751,6 +770,17 @@ Fitted shaper '3hump_ei' frequency = 59.0 Hz (vibrations = 0.0%, smoothing ~= 0.
 To avoid too much smoothing with '3hump_ei', suggested max_accel <= 2500 mm/sec^2
 Recommended shaper_type_y = mzv, shaper_freq_y = 36.8 Hz
 ```
+As with the stand-alone script, `SHAPER_CALIBRATE` will also consider a
+two-mode shaper if the frequency response shows two distinct, well-separated
+resonances, and only recommend it when it clearly outperforms the
+single-frequency shapers:
+```
+Recommended shaper_type_y = 2mode (base=mzv), shaper_freq_y = 32.1 Hz, shaper_freq2_y = 68.4 Hz
+```
+`SAVE_CONFIG` will then store `shaper_type_y`, `shaper_base_y`,
+`shaper_freq_y`, `shaper_freq2_y`, `damping_ratio_y` and `damping_ratio2_y`
+in `[input_shaper]`.
+
 If you agree with the suggested parameters, you can execute `SAVE_CONFIG`
 now to save them and restart the Kalico. Note that this will not update
 `max_accel` value in `[printer]` section. You should update it manually

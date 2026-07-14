@@ -592,17 +592,27 @@ class ResonanceTester:
                 max_freq=max_freq,
                 logger=gcmd.respond_info,
             )
-            gcmd.respond_info(
-                "Recommended shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
-                % (axis_name, best_shaper.name, axis_name, best_shaper.freq)
-            )
-            if input_shaper is not None:
-                helper.apply_params(
-                    input_shaper, axis_name, best_shaper.name, best_shaper.freq
+            if best_shaper.freq2 is not None:
+                gcmd.respond_info(
+                    "Recommended shaper_type_%s = 2mode (base=%s), "
+                    "shaper_freq_%s = %.1f Hz, shaper_freq2_%s = %.1f Hz"
+                    % (
+                        axis_name,
+                        best_shaper.base,
+                        axis_name,
+                        best_shaper.freq,
+                        axis_name,
+                        best_shaper.freq2,
+                    )
                 )
-            helper.save_params(
-                configfile, axis_name, best_shaper.name, best_shaper.freq
-            )
+            else:
+                gcmd.respond_info(
+                    "Recommended shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
+                    % (axis_name, best_shaper.name, axis_name, best_shaper.freq)
+                )
+            if input_shaper is not None:
+                helper.apply_params(input_shaper, axis_name, best_shaper)
+            helper.save_params(configfile, axis_name, best_shaper)
             csv_name = self.save_calibration_data(
                 "calibration_data",
                 name_suffix,

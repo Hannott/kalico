@@ -108,7 +108,15 @@ def calibrate_shaper(
             % (",".join(shapers))
         )
         return None, None, None
-    print("Recommended shaper is %s @ %.1f Hz" % (shaper.name, shaper.freq))
+    if shaper.freq2 is not None:
+        print(
+            "Recommended shaper is 2mode (base=%s) @ %.1f Hz / %.1f Hz"
+            % (shaper.base, shaper.freq, shaper.freq2)
+        )
+    else:
+        print(
+            "Recommended shaper is %s @ %.1f Hz" % (shaper.name, shaper.freq)
+        )
     if csv_output is not None:
         helper.save_calibration_data(csv_output, calibration_data, all_shapers)
     return shaper.name, all_shapers, calibration_data
@@ -159,9 +167,14 @@ def plot_freq_response(
     ax2.set_ylabel("Shaper vibration reduction (ratio)")
     best_shaper_vals = None
     for shaper in shapers:
-        label = "%s (%.1f Hz, vibr=%.1f%%, sm~=%.2f, accel<=%.f)" % (
+        freq_label = (
+            "%.1f/%.1f Hz" % (shaper.freq, shaper.freq2)
+            if shaper.freq2 is not None
+            else "%.1f Hz" % (shaper.freq,)
+        )
+        label = "%s (%s, vibr=%.1f%%, sm~=%.2f, accel<=%.f)" % (
             shaper.name.upper(),
-            shaper.freq,
+            freq_label,
             shaper.vibrs * 100.0,
             shaper.smoothing,
             round(shaper.max_accel / 100.0) * 100.0,
