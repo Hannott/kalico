@@ -30,6 +30,13 @@ AUTOTUNE_SHAPERS = [
     "2hump_ei",
 ]
 
+# Base shapers considered for two-mode auto-tuning. Restricted to the
+# low-impulse-count bases: a two-mode shaper convolves two copies of the
+# base, so higher-order bases (zvd, 2hump_ei, 3hump_ei) produce so much
+# smoothing that they can never win the recommendation, and only clutter
+# the output and slow the search.
+TWO_MODE_AUTOTUNE_BASES = ["zv", "mzv", "ei"]
+
 ######################################################################
 # Frequency response calculation and shaper auto-tuning
 ######################################################################
@@ -624,12 +631,13 @@ class ShaperCalibrate:
         max_freq,
         min_prominence=0.12,
         min_separation=8.0,
-        max_peaks=3,
+        max_peaks=2,
     ):
         # Look for well-separated local maxima in the PSD that could
         # each be shaped independently by a two-mode shaper. Returns
         # up to `max_peaks` frequencies, sorted by descending PSD
-        # magnitude (i.e. most significant first).
+        # magnitude (i.e. most significant first). Defaults to 2, since
+        # a two-mode shaper targets exactly two resonances.
         np = self.numpy
         mask = (freq_bins >= min_freq) & (freq_bins <= max_freq)
         freqs = freq_bins[mask]
@@ -725,9 +733,6 @@ class ShaperCalibrate:
                 shaper_vibrations = self._estimate_remaining_vibrations(
                     freq_bins, shaper_vals, psd
                 )
-                max_accel = self.find_max_accel(
-                    shaper, scv, self._get_shaper_smoothing
-                )
                 shaper_score = shaper_smoothing * (
                     2.0 * shaper_vibrations**1.5
                     + shaper_vibrations * 0.2
@@ -741,7 +746,10 @@ class ShaperCalibrate:
                     vibrs=shaper_vibrations,
                     smoothing=shaper_smoothing,
                     score=shaper_score,
-                    max_accel=max_accel,
+                    # max_accel is expensive (a bisection over the
+                    # smoothing) so it is only computed for the single
+                    # selected candidate below, not every grid point.
+                    max_accel=0.0,
                     base=base_cfg.name,
                     freq2=test_freq2,
                     damping_ratio=damping_ratio,
@@ -759,7 +767,17 @@ class ShaperCalibrate:
                 or res.vibrs < best_res.vibrs + 0.0075
             ):
                 selected = res
-        return selected
+        selected_shaper = shaper_defs.get_two_mode_shaper(
+            base_cfg.name,
+            selected.freq,
+            selected.freq2,
+            damping_ratio,
+            damping_ratio,
+        )
+        max_accel = self.find_max_accel(
+            selected_shaper, scv, self._get_shaper_smoothing
+        )
+        return selected._replace(max_accel=max_accel)
 
     def find_best_shaper(
         self,
@@ -776,6 +794,10 @@ class ShaperCalibrate:
     ):
         best_shaper = None
         all_shapers = []
+        # Only auto-detect two-mode shapers on a default run: an explicit
+        # shaper list or fixed shaper_freqs means the user has already
+        # decided what to test.
+        use_two_mode = test_two_mode and shapers is None and not shaper_freqs
         shapers = shapers or AUTOTUNE_SHAPERS
         for smoother_cfg in shaper_defs.INPUT_SMOOTHERS:
             if smoother_cfg.name not in shapers:
@@ -873,7 +895,7 @@ class ShaperCalibrate:
                 # Either the shaper significantly improves the score (by 20%),
                 # or it improves the score and smoothing (by 5% and 10% resp.)
                 best_shaper = shaper
-        if test_two_mode and not shaper_freqs:
+        if use_two_mode:
             # Only worth the (much larger) 2D search if the PSD actually
             # shows two distinct, well-separated resonances; on a typical
             # single-peak printer this is a no-op.
@@ -883,51 +905,67 @@ class ShaperCalibrate:
                 MIN_FREQ,
                 max_freq or MAX_FREQ,
             )
-            for i in range(len(peaks)):
-                for j in range(i + 1, len(peaks)):
-                    peak1, peak2 = sorted((peaks[i], peaks[j]))
-                    for base_cfg in shaper_defs.INPUT_SHAPERS:
-                        result = self.background_process_exec(
-                            self.fit_two_mode_shaper,
-                            (
-                                base_cfg,
-                                calibration_data,
-                                peak1,
-                                peak2,
-                                damping_ratio,
-                                scv,
-                                max_smoothing,
-                                test_damping_ratios,
-                                max_freq,
-                            ),
-                        )
-                        if result is None:
-                            continue
-                        if logger is not None:
-                            logger(
-                                "Fitted two-mode shaper '2mode_%s' "
-                                "frequencies = %.1f / %.1f Hz (vibration "
-                                "score = %.2f%%, smoothing ~= %.3f, "
-                                "combined score = %.3e)"
-                                % (
-                                    result.base,
-                                    result.freq,
-                                    result.freq2,
-                                    result.vibrs * 100.0,
-                                    result.smoothing,
-                                    result.score,
-                                )
+            if len(peaks) >= 2:
+                peak1, peak2 = sorted(peaks[:2])
+                base_cfgs = {c.name: c for c in shaper_defs.INPUT_SHAPERS}
+                two_mode_results = []
+                for base_name in TWO_MODE_AUTOTUNE_BASES:
+                    base_cfg = base_cfgs.get(base_name)
+                    if base_cfg is None:
+                        continue
+                    result = self.background_process_exec(
+                        self.fit_two_mode_shaper,
+                        (
+                            base_cfg,
+                            calibration_data,
+                            peak1,
+                            peak2,
+                            damping_ratio,
+                            scv,
+                            max_smoothing,
+                            test_damping_ratios,
+                            max_freq,
+                        ),
+                    )
+                    if result is not None:
+                        two_mode_results.append(result)
+                if two_mode_results:
+                    # Only surface the single best two-mode candidate: the
+                    # others differ only by base shaper and just clutter the
+                    # graph and console.
+                    two_mode = min(two_mode_results, key=lambda r: r.score)
+                    if logger is not None:
+                        logger(
+                            "Fitted two-mode shaper '2mode_%s' frequencies "
+                            "= %.1f / %.1f Hz (vibration score = %.2f%%, "
+                            "smoothing ~= %.3f, combined score = %.3e)"
+                            % (
+                                two_mode.base,
+                                two_mode.freq,
+                                two_mode.freq2,
+                                two_mode.vibrs * 100.0,
+                                two_mode.smoothing,
+                                two_mode.score,
                             )
-                        all_shapers.append(result)
-                        # Two-mode requires manually maintaining an extra
-                        # frequency/damping ratio pair, so only let it
-                        # displace the recommendation on a decisive win,
-                        # not the same tie-break margin as single-mode.
-                        if (
-                            best_shaper is None
-                            or result.score * 1.3 < best_shaper.score
-                        ):
-                            best_shaper = result
+                        )
+                        logger(
+                            "To avoid too much smoothing with '2mode_%s', "
+                            "suggested max_accel <= %.0f mm/sec^2"
+                            % (
+                                two_mode.base,
+                                round(two_mode.max_accel / 100.0) * 100.0,
+                            )
+                        )
+                    all_shapers.append(two_mode)
+                    # Two-mode requires manually maintaining an extra
+                    # frequency/damping ratio pair, so only let it displace
+                    # the recommendation on a decisive win, not the same
+                    # tie-break margin as single-mode.
+                    if (
+                        best_shaper is None
+                        or two_mode.score * 1.3 < best_shaper.score
+                    ):
+                        best_shaper = two_mode
         return best_shaper, all_shapers
 
     def save_params(self, configfile, axis, shaper):
