@@ -168,6 +168,106 @@ class CustomInputShaperParams:
         )
 
 
+class TwoModeInputShaperParams:
+    # Two-mode shaper: convolution of a base shaper tuned to each of two
+    # resonance frequencies, placing a notch at both. Configured per axis
+    # with shaper_freq_<axis> (peak 1) and shaper_freq2_<axis> (peak 2),
+    # an optional shaper_base_<axis> (default mzv), and optional per-peak
+    # damping_ratio_<axis> / damping_ratio2_<axis>.
+    SHAPER_TYPE = "2mode"
+    bases = {s.name: s.init_func for s in shaper_defs.INPUT_SHAPERS}
+    DEFAULT_BASE = "mzv"
+
+    def __init__(self, axis, config):
+        self.axis = axis
+        self.base = self.DEFAULT_BASE
+        self.damping_ratio = shaper_defs.DEFAULT_DAMPING_RATIO
+        self.damping_ratio2 = self.damping_ratio
+        self.shaper_freq = 0.0
+        self.shaper_freq2 = 0.0
+        if config is not None:
+            self.base = config.get("shaper_base_" + axis, self.base).lower()
+            self._check_base(self.base, config.error)
+            self.damping_ratio = config.getfloat(
+                "damping_ratio_" + axis,
+                self.damping_ratio,
+                minval=0.0,
+                maxval=1.0,
+            )
+            self.damping_ratio2 = config.getfloat(
+                "damping_ratio2_" + axis,
+                self.damping_ratio,
+                minval=0.0,
+                maxval=1.0,
+            )
+            self.shaper_freq = config.getfloat(
+                "shaper_freq_" + axis, self.shaper_freq, minval=0.0
+            )
+            self.shaper_freq2 = config.getfloat(
+                "shaper_freq2_" + axis, self.shaper_freq2, minval=0.0
+            )
+
+    def _check_base(self, base, error):
+        if base not in self.bases:
+            raise error(
+                "Unsupported 2mode base shaper '%s' (choose one of: %s)"
+                % (base, ", ".join(sorted(self.bases)))
+            )
+
+    def get_type(self):
+        return self.SHAPER_TYPE
+
+    def get_axis(self):
+        return self.axis
+
+    def update(self, shaper_type, gcmd):
+        if shaper_type != self.SHAPER_TYPE:
+            raise gcmd.error("Unsupported shaper type: %s" % (shaper_type,))
+        axis = self.axis.upper()
+        self.base = gcmd.get("SHAPER_BASE_" + axis, self.base).lower()
+        self._check_base(self.base, gcmd.error)
+        self.damping_ratio = gcmd.get_float(
+            "DAMPING_RATIO_" + axis, self.damping_ratio, minval=0.0, maxval=1.0
+        )
+        self.damping_ratio2 = gcmd.get_float(
+            "DAMPING_RATIO2_" + axis,
+            self.damping_ratio2,
+            minval=0.0,
+            maxval=1.0,
+        )
+        self.shaper_freq = gcmd.get_float(
+            "SHAPER_FREQ_" + axis, self.shaper_freq, minval=0.0
+        )
+        self.shaper_freq2 = gcmd.get_float(
+            "SHAPER_FREQ2_" + axis, self.shaper_freq2, minval=0.0
+        )
+
+    def get_shaper(self):
+        if not self.shaper_freq or not self.shaper_freq2:
+            A, T = shaper_defs.get_none_shaper()
+        else:
+            A, T = shaper_defs.get_two_mode_shaper(
+                self.base,
+                self.shaper_freq,
+                self.shaper_freq2,
+                self.damping_ratio,
+                self.damping_ratio2,
+            )
+        return len(A), A, T
+
+    def get_status(self):
+        return collections.OrderedDict(
+            [
+                ("shaper_type", self.SHAPER_TYPE),
+                ("shaper_base", self.base),
+                ("shaper_freq", "%.3f" % (self.shaper_freq,)),
+                ("shaper_freq2", "%.3f" % (self.shaper_freq2,)),
+                ("damping_ratio", "%.6f" % (self.damping_ratio,)),
+                ("damping_ratio2", "%.6f" % (self.damping_ratio2,)),
+            ]
+        )
+
+
 class AxisInputShaper:
     def __init__(self, params):
         self.params = params
@@ -185,12 +285,14 @@ class AxisInputShaper:
         return self.params.get_axis()
 
     def is_extruder_smoothing(self, exact_mode):
-        # Custom shapers have no fitted extruder smoother counterpart,
-        # they are applied to the extruder exactly (as a convolution)
+        # Custom and two-mode shapers have no fitted extruder smoother
+        # counterpart, they are applied to the extruder exactly (as a
+        # convolution)
         return (
             not exact_mode
             and self.A
             and self.get_type() != CustomInputShaperParams.SHAPER_TYPE
+            and self.get_type() != TwoModeInputShaperParams.SHAPER_TYPE
         )
 
     def is_enabled(self):
@@ -529,6 +631,8 @@ class ShaperFactory:
             return AxisInputSmoother(CustomInputSmootherParams(axis, config))
         if type_name == CustomInputShaperParams.SHAPER_TYPE:
             return AxisInputShaper(CustomInputShaperParams(axis, config))
+        if type_name == TwoModeInputShaperParams.SHAPER_TYPE:
+            return AxisInputShaper(TwoModeInputShaperParams(axis, config))
         if type_name in TypedInputShaperParams.shapers:
             return AxisInputShaper(
                 TypedInputShaperParams(axis, type_name, config)

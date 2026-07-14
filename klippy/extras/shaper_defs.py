@@ -314,3 +314,38 @@ INPUT_SMOOTHERS = [
     InputSmootherCfg("smooth_zvd_ei", get_zvd_ei_smoother, min_freq=26.0),
     InputSmootherCfg("smooth_si", get_si_smoother, min_freq=21.5),
 ]
+
+# The impulse shapers usable as a base for two-mode shaping, by name.
+TWO_MODE_BASES = {cfg.name: cfg.init_func for cfg in INPUT_SHAPERS}
+
+
+def convolve_shapers(shaper1, shaper2):
+    # Convolving two shapers places a zero at each shaper's design
+    # frequency: impulse times add and amplitudes multiply, and the
+    # residual vibration of the result is the product of the two.
+    A1, T1 = shaper1
+    A2, T2 = shaper2
+    impulses = []
+    for i in range(len(A1)):
+        for j in range(len(A2)):
+            impulses.append((T1[i] + T2[j], A1[i] * A2[j]))
+    impulses.sort()
+    A, T = [], []
+    for t, a in impulses:
+        if T and t - T[-1] < 1e-9:
+            A[-1] += a
+        else:
+            A.append(a)
+            T.append(t)
+    inv_D = 1.0 / sum(A)
+    A = [a * inv_D for a in A]
+    t0 = T[0]
+    T = [t - t0 for t in T]
+    return A, T
+
+
+def get_two_mode_shaper(base_name, freq1, freq2, damping1, damping2):
+    base = TWO_MODE_BASES[base_name]
+    return convolve_shapers(
+        base(freq1, damping1), base(freq2, damping2)
+    )
