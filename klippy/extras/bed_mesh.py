@@ -652,6 +652,7 @@ class BedMeshCalibrate:
     def _init_mesh_config(self, config):
         mesh_cfg = self.mesh_config
         orig_cfg = self.orig_config
+        self.mesh_margin = config.getfloat("mesh_margin", 0.0, minval=0.0)
         self.radius = config.getfloat("mesh_radius", None, above=0.0)
         if self.radius is not None:
             self.origin = config.getfloatlist(
@@ -665,6 +666,11 @@ class BedMeshCalibrate:
                 )
             # radius may have precision to .1mm
             self.radius = math.floor(self.radius * 10) / 10
+            self.radius -= self.mesh_margin
+            if self.radius <= 0.0:
+                raise config.error(
+                    "bed_mesh: mesh_margin leaves no usable mesh_radius"
+                )
             orig_cfg["radius"] = self.radius
             orig_cfg["origin"] = self.origin
             min_x = min_y = -self.radius
@@ -676,6 +682,11 @@ class BedMeshCalibrate:
             max_x, max_y = config.getfloatlist("mesh_max", count=2)
             if max_x <= min_x or max_y <= min_y:
                 raise config.error("bed_mesh: invalid min/max points")
+            # Note: mesh_margin is intentionally not applied here. Doing so
+            # correctly requires the probe's x/y offsets (to avoid biasing
+            # the inset on the side the offset already constrains), which
+            # aren't reliably available until the printer has connected.
+            # See _apply_margin(), called from update_config().
         orig_cfg["x_count"] = mesh_cfg["x_count"] = x_cnt
         orig_cfg["y_count"] = mesh_cfg["y_count"] = y_cnt
         orig_cfg["mesh_min"] = self.mesh_min = (min_x, min_y)
@@ -807,19 +818,12 @@ class BedMeshCalibrate:
         adjusted_mesh_min = [x - margin for x in mesh_min]
         adjusted_mesh_max = [x + margin for x in mesh_max]
 
-        # Force margin to respect original mesh bounds
-        adjusted_mesh_min[0] = max(
-            adjusted_mesh_min[0], self.orig_config["mesh_min"][0]
-        )
-        adjusted_mesh_min[1] = max(
-            adjusted_mesh_min[1], self.orig_config["mesh_min"][1]
-        )
-        adjusted_mesh_max[0] = min(
-            adjusted_mesh_max[0], self.orig_config["mesh_max"][0]
-        )
-        adjusted_mesh_max[1] = min(
-            adjusted_mesh_max[1], self.orig_config["mesh_max"][1]
-        )
+        # Force margin to respect the current mesh bounds (already inset by
+        # mesh_margin/probe offset, when applicable, in update_config())
+        adjusted_mesh_min[0] = max(adjusted_mesh_min[0], self.mesh_min[0])
+        adjusted_mesh_min[1] = max(adjusted_mesh_min[1], self.mesh_min[1])
+        adjusted_mesh_max[0] = min(adjusted_mesh_max[0], self.mesh_max[0])
+        adjusted_mesh_max[1] = min(adjusted_mesh_max[1], self.mesh_max[1])
 
         adjusted_mesh_size = (
             adjusted_mesh_max[0] - adjusted_mesh_min[0],
@@ -930,6 +934,7 @@ class BedMeshCalibrate:
             self.mesh_config[key] = self.orig_config[key]
 
         params = gcmd.get_command_parameters()
+        probe_method = gcmd.get("METHOD", "automatic")
         need_cfg_update = False
         if self.radius is not None:
             if "MESH_RADIUS" in params:
@@ -947,6 +952,9 @@ class BedMeshCalibrate:
                 self.mesh_config["y_count"] = cnt
                 need_cfg_update = True
         else:
+            explicit_bounds = "MESH_MIN" in params or "MESH_MAX" in params
+            if not explicit_bounds and self.mesh_margin:
+                self._apply_margin(gcmd.error, probe_method)
             if "MESH_MIN" in params:
                 self.mesh_min = parse_gcmd_coord(gcmd, "MESH_MIN")
                 need_cfg_update = True
@@ -964,21 +972,108 @@ class BedMeshCalibrate:
             need_cfg_update = True
 
         need_cfg_update |= self.set_adaptive_mesh(gcmd)
-        probe_method = gcmd.get("METHOD", "automatic")
 
         if need_cfg_update:
             self._verify_algorithm(gcmd.error)
-            self._generate_points(gcmd.error, probe_method)
-            pts = self._get_adjusted_points()
-            self.probe_helper.update_probe_points(pts, 3)
             msg = "\n".join(
                 ["%s: %s" % (k, v) for k, v in self.mesh_config.items()]
             )
             logging.info("Updated Mesh Configuration:\n" + msg)
-        else:
-            self._generate_points(gcmd.error, probe_method)
-            pts = self._get_adjusted_points()
-            self.probe_helper.update_probe_points(pts, 3)
+
+        self._generate_points(gcmd.error, probe_method)
+        self._check_probe_bounds(gcmd.error, probe_method)
+        pts = self._get_adjusted_points()
+        self.probe_helper.update_probe_points(pts, 3)
+
+    def _get_probe_xy_offsets(self, probe_method):
+        if probe_method == "manual":
+            return 0.0, 0.0
+        probe = self.printer.lookup_object("probe", None)
+        if probe is None:
+            return 0.0, 0.0
+        return probe.get_offsets()[:2]
+
+    def _apply_margin(self, error, probe_method="automatic"):
+        # Inset mesh_min/mesh_max by mesh_margin so no mesh point sits within
+        # mesh_margin of the configured area's edge. A mesh point P is only
+        # probeable if the toolhead can reach P - offset, so the true bound
+        # for P is the intersection of the desired margin standoff
+        # [axis_min+margin, axis_max-margin] with the reachable range
+        # [axis_min+offset, axis_max+offset] (see _check_probe_bounds) -
+        # i.e. whichever of the two constraints is more restrictive wins,
+        # per side; they are not additive.
+        x_offset, y_offset = self._get_probe_xy_offsets(probe_method)
+        min_x, min_y = self.mesh_min
+        max_x, max_y = self.mesh_max
+        min_x, max_x = self._margin_bounds(error, min_x, max_x, x_offset)
+        min_y, max_y = self._margin_bounds(error, min_y, max_y, y_offset)
+        self.mesh_min = (min_x, min_y)
+        self.mesh_max = (max_x, max_y)
+
+    def _margin_bounds(self, error, axis_min, axis_max, offset):
+        margin = self.mesh_margin
+        new_min = axis_min + max(margin, offset)
+        new_max = axis_max - max(margin, -offset)
+        if new_max <= new_min:
+            raise error(
+                "bed_mesh: mesh_margin (%.2f), combined with the probe's "
+                "offset, leaves no usable mesh area between %.2f and %.2f"
+                % (margin, axis_min, axis_max)
+            )
+        return new_min, new_max
+
+    def _check_probe_bounds(self, error, probe_method="automatic"):
+        if self.radius is not None:
+            # Round mesh geometry is generally paired with kinematics
+            # (e.g. delta) whose travel envelope isn't a simple rectangle,
+            # so the check below does not apply.
+            return
+        toolhead = self.printer.lookup_object("toolhead")
+        kin_status = toolhead.get_kinematics().get_status(None)
+        axis_min = kin_status.get("axis_minimum")
+        axis_max = kin_status.get("axis_maximum")
+        if axis_min is None or axis_max is None:
+            return
+        x_offset, y_offset = self._get_probe_xy_offsets(probe_method)
+        if not x_offset and not y_offset:
+            return
+        for pt in self._get_adjusted_points():
+            probe_x = pt[0] - x_offset
+            probe_y = pt[1] - y_offset
+            if (
+                probe_x < axis_min[0]
+                or probe_x > axis_max[0]
+                or probe_y < axis_min[1]
+                or probe_y > axis_max[1]
+            ):
+                safe_min_x = axis_min[0] + max(x_offset, 0.0)
+                safe_max_x = axis_max[0] + min(x_offset, 0.0)
+                safe_min_y = axis_min[1] + max(y_offset, 0.0)
+                safe_max_y = axis_max[1] + min(y_offset, 0.0)
+                raise error(
+                    "bed_mesh: Mesh point (%.2f, %.2f) requires the probe "
+                    "to travel to (%.2f, %.2f), which is outside this "
+                    "printer's axis limits (X: %.2f to %.2f, Y: %.2f to "
+                    "%.2f).\nGiven the probe's x_offset=%.2f, y_offset="
+                    "%.2f, 'mesh_min'/'mesh_max' must stay within X: %.2f "
+                    "to %.2f, Y: %.2f to %.2f."
+                    % (
+                        pt[0],
+                        pt[1],
+                        probe_x,
+                        probe_y,
+                        axis_min[0],
+                        axis_max[0],
+                        axis_min[1],
+                        axis_max[1],
+                        x_offset,
+                        y_offset,
+                        safe_min_x,
+                        safe_max_x,
+                        safe_min_y,
+                        safe_max_y,
+                    )
+                )
 
     def _get_adjusted_points(self):
         adj_pts = []

@@ -111,6 +111,54 @@ Below the more advanced configuration options are explained in detail.  Each
 example will build upon the basic rectangular bed configuration shown above.
 Each of the advanced options apply to round beds in the same manner.
 
+### Mesh Margin
+
+The `mesh_margin` option keeps probing away from the outermost edge of the
+mesh area, which can be useful to avoid probing over a bed clip, clamp, or
+other obstruction near the border.
+
+```
+[bed_mesh]
+speed: 120
+horizontal_move_z: 5
+mesh_min: 35, 6
+mesh_max: 240, 198
+probe_count: 5, 3
+mesh_margin: 5
+```
+
+- `mesh_margin: 5`\
+  _Default Value: 0_\
+  Margin (in mm) to keep between the outermost probed points and the edge
+  of the mesh area defined by `mesh_min`/`mesh_max` (or `mesh_radius`, for
+  round beds). For round beds this simply reduces the effective
+  `mesh_radius` by this amount.
+
+For rectangular beds, a non-zero probe `x_offset`/`y_offset` can already
+force the toolhead away from one side of the mesh area more than the other,
+independent of `mesh_margin`, in order to keep the probe itself within the
+printer's travel limits. Recall the [Rectangular Beds](#rectangular-beds)
+example above: with a 24mm X offset, probing at `mesh_min` already requires
+the toolhead to sit 24mm inboard of that coordinate. `mesh_margin` does not
+add on top of that existing, offset-driven inset - each side of the mesh
+area only gets as much margin as it doesn't already have "for free" from
+the offset.
+
+For example, on a printer with 0-235mm of X travel, a probe with a 25mm X
+offset, and `mesh_margin: 25`: the near side (the one the offset already
+constrains) ends up probing no closer than X=25 - exactly what reachability
+alone would already require, so the margin adds nothing extra there. The
+far side, which the offset doesn't constrain, probes no closer than X=210,
+the full 25mm margin. If `mesh_margin` were smaller than the offset, say
+10mm, it would have no effect on the near side (the offset alone already
+forces more clearance than that) but would still pull the far side in by
+10mm.
+
+This offset-aware behavior only applies when the mesh is probed
+automatically. It does not apply with `BED_MESH_CALIBRATE METHOD=manual`,
+since manual probing positions the nozzle directly rather than through an
+offset probe, so `mesh_margin` is simply applied symmetrically in that case.
+
 ### Mesh Interpolation
 
 While its possible to sample the probed matrix directly using simple bi-linear
