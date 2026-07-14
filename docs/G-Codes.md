@@ -1575,7 +1575,7 @@ frequency response is calculated (across all probe points) and written into
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
 [FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>]
 [CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]
-[IGNORE_Z=<0:1>]`:
+[IGNORE_Z=<0:1>] [TWO_MODE_BIAS=<bias>]`:
 Similarly to `TEST_RESONANCES`, runs the resonance test as configured, and tries
 to find the optimal parameters for the input shaper for the requested axis
 (or both X and Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset,
@@ -1583,6 +1583,12 @@ its value is taken from `[resonance_tester]` section, with the default being uns
 `IGNORE_Z=1` (default from the `ignore_z` setting in `[resonance_tester]`) drops
 the Z accelerometer axis from the response before fitting, so a Z vibration that
 an X/Y shaper cannot correct does not skew the recommended shaper.
+`TWO_MODE_BIAS` (default from the `two_mode_bias` setting in
+`[resonance_tester]`) sets how strongly a two-mode (dual-frequency) shaper is
+preferred: the calibration also considers a two-mode shaper targeting the axis
+resonance plus the strongest Z resonance (unless `IGNORE_Z` is set), and a
+value below 1.0 makes it recommend that shaper even when its score is slightly
+worse than the best single-mode shaper.
 See the [Max smoothing](Measuring_Resonances.md#max-smoothing) of the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the

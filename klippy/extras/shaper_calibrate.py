@@ -800,6 +800,7 @@ class ShaperCalibrate:
         max_freq=None,
         test_two_mode=True,
         axis=None,
+        two_mode_bias=1.0,
         logger=None,
     ):
         best_shaper = None
@@ -910,21 +911,27 @@ class ShaperCalibrate:
             # shows two distinct, well-separated resonances; on a typical
             # single-peak printer this is a no-op.
             #
-            # A genuine two-mode axis shows BOTH resonances in the same
-            # accelerometer channel. A second peak that appears only in a
-            # different channel (e.g. a Z frame/rocking mode leaking into a
-            # bed-slinger Y test, strong in psd_z but not psd_y) is not a
-            # mode of the driven axis, and shaping that axis to notch it is
-            # pointless.
+            # The first mode is the driven axis's own resonance (its own
+            # accelerometer channel). The second mode is preferentially the
+            # strongest Z-channel resonance: a mode excited by motion on this
+            # axis but ringing in Z (e.g. the toolhead rocking in Z from play
+            # in the linear bearings) is a common source of vertical fine
+            # artifacts, and shaping the axis command to notch that frequency
+            # reduces the energy that excites it. If Z shows no such peak, a
+            # second peak of the driven axis itself is used instead. (Setting
+            # IGNORE_Z zeroes psd_z, which removes the Z peak here and makes
+            # the two-mode search axis-only again.)
             #
-            # When the driven axis is known (the live SHAPER_CALIBRATE
-            # command), detect the peaks in that axis's own channel. When it
-            # is not (e.g. the offline script parsing an arbitrary CSV), fall
-            # back to detecting the pair per channel and accepting it only
-            # from a channel that owns a strong share of the overall signal.
+            # When the driven axis is unknown (e.g. the offline script parsing
+            # an arbitrary CSV) fall back to detecting the pair per channel,
+            # accepting it only from a channel that owns a strong share of the
+            # overall signal.
             np = self.numpy
             max_f = max_freq or MAX_FREQ
             fb = calibration_data.freq_bins
+            # minimum spacing between the two modes (matches the per-channel
+            # detector's separation criterion)
+            min_sep = 8.0
             axis_psd = {
                 "x": calibration_data.psd_x,
                 "y": calibration_data.psd_y,
@@ -932,9 +939,23 @@ class ShaperCalibrate:
             }.get(axis)
             peaks = []
             if axis_psd is not None:
-                peaks = self._detect_resonance_peaks(
+                axis_peaks = self._detect_resonance_peaks(
                     fb, axis_psd, MIN_FREQ, max_f
                 )
+                if axis_peaks:
+                    peak1 = axis_peaks[0]
+                    # candidate second modes, strongest first: Z-channel
+                    # peaks (the VFA-coupled modes) then further axis peaks
+                    second_candidates = []
+                    if axis != "z":
+                        second_candidates += self._detect_resonance_peaks(
+                            fb, calibration_data.psd_z, MIN_FREQ, max_f
+                        )
+                    second_candidates += axis_peaks[1:]
+                    for cand in second_candidates:
+                        if abs(cand - peak1) >= min_sep:
+                            peaks = [peak1, cand]
+                            break
             else:
                 band = (fb >= MIN_FREQ) & (fb <= max_f)
                 if band.any():
@@ -1011,12 +1032,14 @@ class ShaperCalibrate:
                         )
                     all_shapers.append(two_mode)
                     # Two-mode requires manually maintaining an extra
-                    # frequency/damping ratio pair, so only let it displace
-                    # the recommendation on a decisive win, not the same
-                    # tie-break margin as single-mode.
+                    # frequency/damping ratio pair, so it is held to a
+                    # configurable margin (two_mode_bias) before it displaces
+                    # the recommendation: 1.3 requires a decisive win, 1.0
+                    # accepts any genuine improvement, <1.0 prefers two-mode
+                    # even when its score is slightly worse.
                     if (
                         best_shaper is None
-                        or two_mode.score * 1.3 < best_shaper.score
+                        or two_mode.score * two_mode_bias < best_shaper.score
                     ):
                         best_shaper = two_mode
         return best_shaper, all_shapers

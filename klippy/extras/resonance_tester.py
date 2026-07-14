@@ -346,6 +346,11 @@ class ResonanceTester:
         # Default for the IGNORE_Z parameter: drop the Z accelerometer axis
         # from the response (an X/Y input shaper cannot correct Z vibrations).
         self.ignore_z = config.getboolean("ignore_z", False)
+        # Score margin by which a two-mode shaper must beat the best
+        # single-mode shaper to be recommended (see find_best_shaper): 1.3
+        # requires a decisive win, 1.0 accepts any genuine improvement, and
+        # values below 1.0 actively prefer two-mode shapers.
+        self.two_mode_bias = config.getfloat("two_mode_bias", 1.0, above=0.0)
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -566,6 +571,9 @@ class ResonanceTester:
         ignore_z = gcmd.get_int(
             "IGNORE_Z", 1 if self.ignore_z else 0, minval=0, maxval=1
         )
+        two_mode_bias = gcmd.get_float(
+            "TWO_MODE_BIAS", self.two_mode_bias, above=0.0
+        )
 
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
@@ -604,6 +612,7 @@ class ResonanceTester:
                 scv=scv,
                 max_freq=max_freq,
                 axis=axis_name,
+                two_mode_bias=two_mode_bias,
                 logger=gcmd.respond_info,
             )
             if best_shaper.freq2 is not None:

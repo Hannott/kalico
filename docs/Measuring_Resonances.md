@@ -781,6 +781,19 @@ Recommended shaper_type_y = 2mode (base=mzv), shaper_freq_y = 32.1 Hz, shaper_fr
 `shaper_freq_y`, `shaper_freq2_y`, `damping_ratio_y` and `damping_ratio2_y`
 in `[input_shaper]`.
 
+The second mode of a two-mode candidate is the strongest resonance in the Z
+accelerometer channel when the driven axis has one (otherwise a second peak of
+the axis itself). This targets a mode excited by the axis but ringing in Z —
+for example the toolhead rocking in Z due to play in the linear bearings, a
+common source of vertical fine artifacts (VFAs) — since notching that frequency
+in the axis command reduces the energy that excites it. How readily a two-mode
+shaper is recommended is controlled by the `two_mode_bias` setting (or the
+`TWO_MODE_BIAS` command parameter): 1.0 (the default) recommends it on any
+genuine improvement, and a value below 1.0 prefers it even when its vibration
+score is slightly worse, which is useful when reducing such VFAs matters more
+than the raw score. Set `IGNORE_Z=1` (or `ignore_z: True`) instead if the Z
+vibrations cannot be helped by shaping and should be excluded entirely.
+
 If you agree with the suggested parameters, you can execute `SAVE_CONFIG`
 now to save them and restart the Kalico. Note that this will not update
 `max_accel` value in `[printer]` section. You should update it manually
