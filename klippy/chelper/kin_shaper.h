@@ -1,11 +1,16 @@
 #ifndef __KIN_SHAPER_H
 #define __KIN_SHAPER_H
 
+// Largest single shaper (3hump_ei) has 5 impulses. A two-mode shaper
+// convolves two shapers together (impulse counts multiply), so the
+// worst case is 5 x 5 = 25; keep some headroom above that.
+#define MAX_SHAPER_PULSES 32
+
 struct shaper_pulses {
     int num_pulses;
     struct {
         double t, a;
-    } pulses[5];
+    } pulses[MAX_SHAPER_PULSES];
 };
 
 struct move;
