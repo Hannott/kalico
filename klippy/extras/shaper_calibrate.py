@@ -790,6 +790,7 @@ class ShaperCalibrate:
         test_damping_ratios=None,
         max_freq=None,
         test_two_mode=True,
+        axis=None,
         logger=None,
     ):
         best_shaper = None
@@ -899,12 +900,55 @@ class ShaperCalibrate:
             # Only worth the (much larger) 2D search if the PSD actually
             # shows two distinct, well-separated resonances; on a typical
             # single-peak printer this is a no-op.
-            peaks = self._detect_resonance_peaks(
-                calibration_data.freq_bins,
-                calibration_data.psd_sum,
-                MIN_FREQ,
-                max_freq or MAX_FREQ,
-            )
+            #
+            # A genuine two-mode axis shows BOTH resonances in the same
+            # accelerometer channel. A second peak that appears only in a
+            # different channel (e.g. a Z frame/rocking mode leaking into a
+            # bed-slinger Y test, strong in psd_z but not psd_y) is not a
+            # mode of the driven axis, and shaping that axis to notch it is
+            # pointless.
+            #
+            # When the driven axis is known (the live SHAPER_CALIBRATE
+            # command), detect the peaks in that axis's own channel. When it
+            # is not (e.g. the offline script parsing an arbitrary CSV), fall
+            # back to detecting the pair per channel and accepting it only
+            # from a channel that owns a strong share of the overall signal.
+            np = self.numpy
+            max_f = max_freq or MAX_FREQ
+            fb = calibration_data.freq_bins
+            axis_psd = {
+                "x": calibration_data.psd_x,
+                "y": calibration_data.psd_y,
+                "z": calibration_data.psd_z,
+            }.get(axis)
+            peaks = []
+            if axis_psd is not None:
+                peaks = self._detect_resonance_peaks(
+                    fb, axis_psd, MIN_FREQ, max_f
+                )
+            else:
+                band = (fb >= MIN_FREQ) & (fb <= max_f)
+                if band.any():
+                    global_max = float(
+                        np.max(np.where(band, calibration_data.psd_sum, 0.0))
+                    )
+                    # channel's primary peak must be a strong share of the
+                    # global maximum; also serves as the running best.
+                    min_primary = 0.4 * global_max
+                    for psd in (
+                        calibration_data.psd_x,
+                        calibration_data.psd_y,
+                        calibration_data.psd_z,
+                    ):
+                        cpeaks = self._detect_resonance_peaks(
+                            fb, psd, MIN_FREQ, max_f
+                        )
+                        if len(cpeaks) < 2:
+                            continue
+                        i0 = int(np.argmin(np.abs(fb - cpeaks[0])))
+                        if psd[i0] > min_primary:
+                            min_primary = psd[i0]
+                            peaks = cpeaks
             if len(peaks) >= 2:
                 peak1, peak2 = sorted(peaks[:2])
                 base_cfgs = {c.name: c for c in shaper_defs.INPUT_SHAPERS}
@@ -1041,7 +1085,17 @@ class ShaperCalibrate:
                 csvfile.write("freq,psd_x,psd_y,psd_z,psd_xyz,accel_per_hz")
                 if shapers:
                     for shaper in shapers:
-                        csvfile.write(",%s(%.1f)" % (shaper.name, shaper.freq))
+                        if shaper.freq2 is not None:
+                            # Two frequencies joined with '/' so the label
+                            # stays a single comma-delimited CSV field.
+                            csvfile.write(
+                                ",%s(%.1f/%.1f)"
+                                % (shaper.name, shaper.freq, shaper.freq2)
+                            )
+                        else:
+                            csvfile.write(
+                                ",%s(%.1f)" % (shaper.name, shaper.freq)
+                            )
                 csvfile.write("\n")
                 num_freqs = calibration_data.freq_bins.shape[0]
                 for i in range(num_freqs):

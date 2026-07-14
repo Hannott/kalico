@@ -590,6 +590,7 @@ class ResonanceTester:
                 max_smoothing=max_smoothing,
                 scv=scv,
                 max_freq=max_freq,
+                axis=axis_name,
                 logger=gcmd.respond_info,
             )
             if best_shaper.freq2 is not None:

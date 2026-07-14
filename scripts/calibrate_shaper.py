@@ -78,6 +78,7 @@ def calibrate_shaper(
     max_smoothing,
     test_damping_ratios,
     max_freq,
+    axis=None,
 ):
     helper = shaper_calibrate.ShaperCalibrate(printer=None)
     if isinstance(datas[0], shaper_calibrate.CalibrationData):
@@ -100,6 +101,7 @@ def calibrate_shaper(
         max_smoothing=max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
+        axis=axis,
         logger=print,
     )
     if not shaper:
@@ -371,6 +373,19 @@ def main():
     datas = [parse_log(fn) for fn in args]
     accels_per_hz = [parse_accel_per_hz(fn) for fn in args]
 
+    # Infer the driven axis from the input filename(s) so two-mode peak
+    # detection can use that axis's own accelerometer channel (the standard
+    # names are resonances_<axis>_*.csv / calibration_data_<axis>_*.csv).
+    axis = None
+    axis_tags = set()
+    for fn in args:
+        base = pathlib.Path(fn).name.lower()
+        for a in ("x", "y"):
+            if ("_%s_" % a) in base:
+                axis_tags.add(a)
+    if len(axis_tags) == 1:
+        axis = axis_tags.pop()
+
     # Calibrate shaper and generate outputs
     selected_shaper, shapers, calibration_data = calibrate_shaper(
         datas,
@@ -382,6 +397,7 @@ def main():
         max_smoothing=options.max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
+        axis=axis,
     )
     if selected_shaper is None:
         return
