@@ -173,9 +173,10 @@ class TwoModeInputShaperParams:
     # resonance frequencies, placing a notch at both. Configured per axis
     # with shaper_freq_<axis> (peak 1) and shaper_freq2_<axis> (peak 2),
     # an optional shaper_base_<axis> (default mzv), and optional per-peak
-    # damping_ratio_<axis> / damping_ratio2_<axis>. Like custom shapers,
-    # two-mode shapers have no fitted extruder smoother counterpart, so
-    # they are applied to the extruder exactly (as a convolution).
+    # damping_ratio_<axis> / damping_ratio2_<axis>. The extruder gets a
+    # fitted smoother counterpart (see extruder_smoother.
+    # get_two_mode_extruder_smoother), same as the named single-mode
+    # shapers.
     SHAPER_TYPE = "2mode"
     bases = {s.name: s.init_func for s in shaper_defs.INPUT_SHAPERS}
     DEFAULT_BASE = "mzv"
@@ -303,14 +304,12 @@ class AxisInputShaper:
         return self.params.get_axis()
 
     def is_extruder_smoothing(self, exact_mode):
-        # Custom and two-mode shapers have no fitted extruder smoother
-        # counterpart, they are applied to the extruder exactly (as a
-        # convolution)
+        # Custom shapers have no fitted extruder smoother counterpart,
+        # they are applied to the extruder exactly (as a convolution)
         return (
             not exact_mode
             and self.A
             and self.get_type() != CustomInputShaperParams.SHAPER_TYPE
-            and self.get_type() != TwoModeInputShaperParams.SHAPER_TYPE
         )
 
     def is_enabled(self):
@@ -358,16 +357,28 @@ class AxisInputShaper:
         else:
             shaper_type = self.get_type()
             status = self.params.get_status()
-            damping_ratio = float(
-                status.get("damping_ratio", shaper_defs.DEFAULT_DAMPING_RATIO)
-            )
-
-            C_e, t_sm = extruder_smoother.get_extruder_smoother(
-                shaper_type,
-                self.T[-1] - self.T[0],
-                damping_ratio,
-                normalize_coeffs=False,
-            )
+            if shaper_type == TwoModeInputShaperParams.SHAPER_TYPE:
+                C_e, t_sm = extruder_smoother.get_two_mode_extruder_smoother(
+                    status["shaper_base"],
+                    float(status["shaper_freq"]),
+                    float(status["shaper_freq2"]),
+                    float(status["damping_ratio"]),
+                    float(status["damping_ratio2"]),
+                    self.T[-1] - self.T[0],
+                    normalize_coeffs=False,
+                )
+            else:
+                damping_ratio = float(
+                    status.get(
+                        "damping_ratio", shaper_defs.DEFAULT_DAMPING_RATIO
+                    )
+                )
+                C_e, t_sm = extruder_smoother.get_extruder_smoother(
+                    shaper_type,
+                    self.T[-1] - self.T[0],
+                    damping_ratio,
+                    normalize_coeffs=False,
+                )
             smoother_offset = self.t_offs - 0.5 * t_sm
             success = (
                 ffi_lib.extruder_set_smoothing_params(
