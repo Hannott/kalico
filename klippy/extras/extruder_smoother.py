@@ -201,3 +201,56 @@ def get_extruder_smoother(
     if not return_velocities:
         return smoother
     return smoother, (t, velocities)
+
+
+def get_two_mode_extruder_smoother(
+    base_name,
+    freq1,
+    freq2,
+    damping_ratio1,
+    damping_ratio2,
+    smooth_time,
+    normalize_coeffs=True,
+):
+    try:
+        np = importlib.import_module("numpy")
+    except ImportError:
+        raise Exception(
+            "Failed to import `numpy` module, make sure it was "
+            "installed via `~/klippy-env/bin/pip install` (refer to "
+            "docs/Measuring_Resonances.md for more details)."
+        )
+    base_name = base_name.lower()
+    smoother_cfg = EXTRUDER_SMOOTHERS.get(
+        base_name, EXTRUDER_SMOOTHERS["default"]
+    )
+    n = smoother_cfg.order
+    # A single shaper_freq can be normalized away (a shaper's relative
+    # impulse structure is scale-invariant), but a two-mode shaper's
+    # structure depends on the frequency *ratio*, not just an overall
+    # scale. Fit in a ratio-preserving unit system (freq1 -> 1.0,
+    # freq2 -> freq2 / freq1) and let init_smoother rescale the result to
+    # the real smooth_time below, exactly as the single-mode path does.
+    ratio = freq2 / freq1
+    A, T = shaper_defs.get_two_mode_shaper(
+        base_name, 1.0, ratio, damping_ratio1, damping_ratio2
+    )
+    if n < 0:
+        n = 2 * len(A) + 1
+    shaper = A, T
+    lo, hi, cnt = smoother_cfg.freq_opt_range
+    test_freqs1 = np.linspace(lo, hi, cnt)
+    test_freqs2 = ratio * np.linspace(lo, hi, cnt)
+    # Evaluate the shaped velocity near each peak with that peak's own
+    # damping ratio; both calls share the same shaper (and hence the same
+    # time grid), so the resulting rows can be stacked directly.
+    t, velocities1 = _estimate_shaper(np, shaper, damping_ratio1, test_freqs1)
+    _, velocities2 = _estimate_shaper(np, shaper, damping_ratio2, test_freqs2)
+    velocities = np.concatenate([velocities1, velocities2], axis=0)
+    t_sm_unit = T[-1] - T[0]
+    # "2mode" matches neither a smooth_* name nor "3hump_ei", so
+    # _calc_extruder_smoother uses its generic constraint set: those
+    # extra constraints were tuned for single-peak targets and don't
+    # carry over to a dual-peak fit.
+    C_e = _calc_extruder_smoother(np, "2mode", t, velocities, n, t_sm_unit)
+    return shaper_defs.init_smoother(C_e[::-1], smooth_time, normalize_coeffs)
