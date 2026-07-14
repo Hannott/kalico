@@ -173,7 +173,9 @@ class TwoModeInputShaperParams:
     # resonance frequencies, placing a notch at both. Configured per axis
     # with shaper_freq_<axis> (peak 1) and shaper_freq2_<axis> (peak 2),
     # an optional shaper_base_<axis> (default mzv), and optional per-peak
-    # damping_ratio_<axis> / damping_ratio2_<axis>.
+    # damping_ratio_<axis> / damping_ratio2_<axis>. Like custom shapers,
+    # two-mode shapers have no fitted extruder smoother counterpart, so
+    # they are applied to the extruder exactly (as a convolution).
     SHAPER_TYPE = "2mode"
     bases = {s.name: s.init_func for s in shaper_defs.INPUT_SHAPERS}
     DEFAULT_BASE = "mzv"
@@ -185,6 +187,7 @@ class TwoModeInputShaperParams:
         self.damping_ratio2 = self.damping_ratio
         self.shaper_freq = 0.0
         self.shaper_freq2 = 0.0
+        self.n, self.A, self.T = 0, [], []
         if config is not None:
             self.base = config.get("shaper_base_" + axis, self.base).lower()
             self._check_base(self.base, config.error)
@@ -206,6 +209,7 @@ class TwoModeInputShaperParams:
             self.shaper_freq2 = config.getfloat(
                 "shaper_freq2_" + axis, self.shaper_freq2, minval=0.0
             )
+            self._build_shaper(config.error)
 
     def _check_base(self, base, error):
         if base not in self.bases:
@@ -213,6 +217,29 @@ class TwoModeInputShaperParams:
                 "Unsupported 2mode base shaper '%s' (choose one of: %s)"
                 % (base, ", ".join(sorted(self.bases)))
             )
+
+    def _build_shaper(self, error):
+        if not self.shaper_freq or not self.shaper_freq2:
+            self.n, self.A, self.T = 0, [], []
+            return
+        A, T = shaper_defs.get_two_mode_shaper(
+            self.base,
+            self.shaper_freq,
+            self.shaper_freq2,
+            self.damping_ratio,
+            self.damping_ratio2,
+        )
+        # The discrete shaper mechanism has a fixed-size pulse buffer
+        # (MAX_SHAPER_PULSES in kin_shaper.h); a convolution silently
+        # exceeding it would otherwise disable shaping without warning.
+        if len(A) > shaper_defs.MAX_SHAPER_PULSES:
+            raise error(
+                "2mode shaper for axis %s: base '%s' produces %d impulses,"
+                " more than the %d the firmware supports; use a shorter"
+                " base shaper (e.g. zv or mzv)"
+                % (self.axis, self.base, len(A), shaper_defs.MAX_SHAPER_PULSES)
+            )
+        self.n, self.A, self.T = len(A), A, T
 
     def get_type(self):
         return self.SHAPER_TYPE
@@ -241,19 +268,10 @@ class TwoModeInputShaperParams:
         self.shaper_freq2 = gcmd.get_float(
             "SHAPER_FREQ2_" + axis, self.shaper_freq2, minval=0.0
         )
+        self._build_shaper(gcmd.error)
 
     def get_shaper(self):
-        if not self.shaper_freq or not self.shaper_freq2:
-            A, T = shaper_defs.get_none_shaper()
-        else:
-            A, T = shaper_defs.get_two_mode_shaper(
-                self.base,
-                self.shaper_freq,
-                self.shaper_freq2,
-                self.damping_ratio,
-                self.damping_ratio2,
-            )
-        return len(A), A, T
+        return self.n, self.A, self.T
 
     def get_status(self):
         return collections.OrderedDict(

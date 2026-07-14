@@ -9,6 +9,11 @@ import math
 SHAPER_VIBRATION_REDUCTION = 20.0
 DEFAULT_DAMPING_RATIO = 0.1
 
+# Must match MAX_SHAPER_PULSES in klippy/chelper/kin_shaper.h: the
+# discrete shaper mechanism (used by the stepper and, when applied
+# exactly, the extruder) stores impulses in a fixed-size buffer.
+MAX_SHAPER_PULSES = 32
+
 InputShaperCfg = collections.namedtuple(
     "InputShaperCfg", ("name", "init_func", "min_freq")
 )
