@@ -8,6 +8,15 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260715: SHAPER_CALIBRATE's shaper/frequency scoring now accounts for
+secondary and tertiary resonance peaks. Previously the acceptable-vibration
+threshold was calibrated only to the single tallest peak, so a shaper that
+left a materially weaker peak completely unshaped could still report a
+near-perfect vibration score. On axes with more than one significant
+resonance, this can change the recommended shaper type and frequency;
+single-peak axes are unaffected. Consider re-running shaper calibration if
+your axis has more than one visible resonance peak.
+
 20260713: Input shaper motion changes slightly after this update. A missing
 coefficient in the `3hump_ei` shaper definition was corrected, which alters
 the toolhead motion produced by the `3hump_ei` shaper. In addition, the

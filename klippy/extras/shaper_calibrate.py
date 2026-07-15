@@ -399,13 +399,38 @@ class ShaperCalibrate:
         # Calculate the acceptable level of remaining vibrations.
         # Note that these are not true remaining vibrations, but rather
         # just a score to compare different shapers between each other.
-        vibr_threshold = (
-            (psd[freq_bins > 0] / freq_bins[freq_bins > 0]).max()
-            * (freq_bins + MIN_FREQ)
-            * (1.0 / 33.3)
+        np = self.numpy
+        pos = freq_bins > 0
+        ratio = np.zeros_like(psd)
+        ratio[pos] = psd[pos] / freq_bins[pos]
+        global_ratio = ratio[pos].max()
+        thresh_ratio = np.full_like(ratio, global_ratio)
+        # A secondary or tertiary resonance peak can be much shorter than
+        # the dominant one yet still contribute meaningfully once
+        # f^2-weighted below. The single global threshold above is
+        # calibrated to the dominant peak alone and can completely miss a
+        # shaper that leaves such a peak unshaped (its vals*psd never
+        # clears a threshold set by a much taller, unrelated peak).
+        #
+        # Detect distinct local peaks in the PSD and, in the immediate
+        # vicinity of any peak weaker than the dominant one, lower the
+        # threshold to that peak's own ratio. This only ever lowers the
+        # threshold, and only near an actual detected peak, so a
+        # single-peak PSD (the common case) scores identically to before.
+        is_peak = np.zeros_like(psd, dtype=bool)
+        is_peak[1:-1] = (
+            (psd[1:-1] > psd[:-2])
+            & (psd[1:-1] >= psd[2:])
+            & (psd[1:-1] > 0.05 * psd.max())
         )
+        for i in np.nonzero(is_peak & pos)[0]:
+            if ratio[i] >= global_ratio:
+                continue
+            band = np.abs(freq_bins - freq_bins[i]) <= 12.0
+            thresh_ratio[band] = np.minimum(thresh_ratio[band], ratio[i])
+        vibr_threshold = thresh_ratio * (freq_bins + MIN_FREQ) * (1.0 / 33.3)
         remaining_vibrations = (
-            self.numpy.maximum(vals * psd - vibr_threshold, 0) * freq_bins**2
+            np.maximum(vals * psd - vibr_threshold, 0) * freq_bins**2
         ).sum()
         all_vibrations = (psd * freq_bins**2).sum()
         return remaining_vibrations / all_vibrations
