@@ -169,94 +169,150 @@ class CustomInputShaperParams:
 
 
 class TwoModeInputShaperParams:
-    # Two-mode shaper: convolution of a base shaper tuned to each of two
-    # resonance frequencies, placing a notch at both. Configured per axis
-    # with shaper_freq_<axis> (peak 1) and shaper_freq2_<axis> (peak 2),
-    # an optional shaper_base_<axis> (default mzv) and shaper_base2_<axis>
-    # (default: same as shaper_base_<axis>, letting each peak use a
-    # different base shaper), and optional per-peak damping_ratio_<axis> /
-    # damping_ratio2_<axis>. The extruder gets a fitted smoother
-    # counterpart (see extruder_smoother.get_two_mode_extruder_smoother),
+    # "2mode" shaper: convolution of a base shaper tuned to each of N >= 2
+    # resonance frequencies, placing a notch at every one of them (N is not
+    # fixed at 2 despite the type name, kept for config compatibility).
+    # Configured per axis with shaper_freq_<axis>, an optional
+    # shaper_base_<axis> (default mzv), and optional per-peak
+    # damping_ratio_<axis>, each of which accepts either a single value or
+    # a comma-separated list (e.g. "shaper_freq_x: 45.2, 79.5, 132.6"); a
+    # list shorter than the others is broadcast if it has exactly one
+    # entry. The legacy two-value form (shaper_freq_<axis> /
+    # shaper_freq2_<axis>, shaper_base_<axis> / shaper_base2_<axis>,
+    # damping_ratio_<axis> / damping_ratio2_<axis>) is still accepted and
+    # is equivalent to a 2-entry list; combining both styles on the same
+    # option is a config error. The extruder gets a fitted smoother
+    # counterpart (see extruder_smoother.get_multi_mode_extruder_smoother),
     # same as the named single-mode shapers.
     SHAPER_TYPE = "2mode"
-    bases = {s.name: s.init_func for s in shaper_defs.INPUT_SHAPERS}
     DEFAULT_BASE = "mzv"
 
     def __init__(self, axis, config):
         self.axis = axis
-        self.base = self.DEFAULT_BASE
-        self.base2 = self.base
-        self.damping_ratio = shaper_defs.DEFAULT_DAMPING_RATIO
-        self.damping_ratio2 = self.damping_ratio
-        self.shaper_freq = 0.0
-        self.shaper_freq2 = 0.0
+        self.bases = [self.DEFAULT_BASE]
+        self.damping_ratios = [shaper_defs.DEFAULT_DAMPING_RATIO]
+        self.freqs = [0.0]
         self.n, self.A, self.T = 0, [], []
         if config is not None:
-            self.base = config.get("shaper_base_" + axis, self.base).lower()
-            self._check_base(self.base, config.error)
-            self.base2 = config.get(
-                "shaper_base2_" + axis, self.base
-            ).lower()
-            self._check_base(self.base2, config.error)
-            self.damping_ratio = config.getfloat(
+            get_raw = lambda key: config.get(key, None)
+            self.bases = self._parse_field(
+                get_raw,
+                "shaper_base_" + axis,
+                "shaper_base2_" + axis,
+                [self.DEFAULT_BASE],
+                lambda s: s.strip().lower(),
+                config.error,
+            )
+            for base in self.bases:
+                self._check_base(base, config.error)
+            self.damping_ratios = self._parse_field(
+                get_raw,
                 "damping_ratio_" + axis,
-                self.damping_ratio,
-                minval=0.0,
-                maxval=1.0,
-            )
-            self.damping_ratio2 = config.getfloat(
                 "damping_ratio2_" + axis,
-                self.damping_ratio,
+                [shaper_defs.DEFAULT_DAMPING_RATIO],
+                float,
+                config.error,
                 minval=0.0,
                 maxval=1.0,
             )
-            self.shaper_freq = config.getfloat(
-                "shaper_freq_" + axis, self.shaper_freq, minval=0.0
-            )
-            self.shaper_freq2 = config.getfloat(
-                "shaper_freq2_" + axis, self.shaper_freq2, minval=0.0
+            self.freqs = self._parse_field(
+                get_raw,
+                "shaper_freq_" + axis,
+                "shaper_freq2_" + axis,
+                [0.0],
+                float,
+                config.error,
+                minval=0.0,
             )
             self._build_shaper(config.error)
 
+    def _parse_field(
+        self, get_raw, key, key2, default_values, parser, error,
+        minval=None, maxval=None,
+    ):
+        # A field may be a single legacy value, a comma-separated list (the
+        # multi-mode form), or a single value plus a legacy "<key>2"
+        # secondary value (equivalent to a 2-entry list); the latter two
+        # styles may not be combined on the same field.
+        raw = get_raw(key)
+        if raw is None:
+            values = list(default_values)
+        else:
+            parts = [p.strip() for p in raw.split(",") if p.strip()]
+            values = [parser(p) for p in parts] if parts else list(
+                default_values
+            )
+        raw2 = get_raw(key2)
+        if raw2 is not None:
+            if len(values) > 1:
+                raise error(
+                    "%s: cannot combine a comma-separated list in '%s' "
+                    "with the legacy '%s' option; use one style or the "
+                    "other" % (self.axis, key, key2)
+                )
+            values = values + [parser(raw2.strip())]
+        for v in values:
+            if minval is not None and v < minval:
+                raise error(
+                    "%s: value %s in '%s' is below minimum %s"
+                    % (self.axis, v, key, minval)
+                )
+            if maxval is not None and v > maxval:
+                raise error(
+                    "%s: value %s in '%s' is above maximum %s"
+                    % (self.axis, v, key, maxval)
+                )
+        return values
+
+    def _reconcile(self, values, n, name, error):
+        # Broadcast a single shared value across all N peaks, or require an
+        # exact per-peak match; anything else is an unambiguous config
+        # mistake (e.g. exactly 2 bases given for 3 frequencies).
+        if len(values) == n:
+            return list(values)
+        if len(values) == 1:
+            return list(values) * n
+        raise error(
+            "%s: '%s' has %d value(s), expected 1 or %d (matching the "
+            "number of frequencies)" % (self.axis, name, len(values), n)
+        )
+
     def _check_base(self, base, error):
-        if base not in self.bases:
+        if base not in shaper_defs.TWO_MODE_BASES:
             raise error(
                 "Unsupported 2mode base shaper '%s' (choose one of: %s)"
-                % (base, ", ".join(sorted(self.bases)))
+                % (base, ", ".join(sorted(shaper_defs.TWO_MODE_BASES)))
             )
 
     def _build_shaper(self, error):
-        if not self.shaper_freq or not self.shaper_freq2:
+        freqs = self.freqs
+        if len(freqs) < 2 or any(f <= 0.0 for f in freqs):
             self.n, self.A, self.T = 0, [], []
             return
-        A, T = shaper_defs.get_two_mode_shaper(
-            self.base,
-            self.shaper_freq,
-            self.shaper_freq2,
-            self.damping_ratio,
-            self.damping_ratio2,
-            base_name2=self.base2,
+        n = len(freqs)
+        bases = self._reconcile(self.bases, n, "shaper_base", error)
+        damping_ratios = self._reconcile(
+            self.damping_ratios, n, "damping_ratio", error
         )
+        for base in bases:
+            self._check_base(base, error)
+        A, T = shaper_defs.get_multi_mode_shaper(bases, freqs, damping_ratios)
         # The discrete shaper mechanism has a fixed-size pulse buffer
         # (MAX_SHAPER_PULSES in kin_shaper.h); a convolution silently
         # exceeding it would otherwise disable shaping without warning.
         if len(A) > shaper_defs.MAX_SHAPER_PULSES:
-            bases = (
-                self.base
-                if self.base2 == self.base
-                else "%s/%s" % (self.base, self.base2)
-            )
             raise error(
                 "2mode shaper for axis %s: base(s) '%s' produce %d impulses,"
                 " more than the %d the firmware supports; use shorter"
                 " base shaper(s) (e.g. zv or mzv)"
                 % (
                     self.axis,
-                    bases,
+                    "/".join(bases),
                     len(A),
                     shaper_defs.MAX_SHAPER_PULSES,
                 )
             )
+        self.bases, self.damping_ratios = bases, damping_ratios
         self.n, self.A, self.T = len(A), A, T
 
     def get_type(self):
@@ -269,24 +325,40 @@ class TwoModeInputShaperParams:
         if shaper_type != self.SHAPER_TYPE:
             raise gcmd.error("Unsupported shaper type: %s" % (shaper_type,))
         axis = self.axis.upper()
-        self.base = gcmd.get("SHAPER_BASE_" + axis, self.base).lower()
-        self._check_base(self.base, gcmd.error)
-        self.base2 = gcmd.get("SHAPER_BASE2_" + axis, self.base2).lower()
-        self._check_base(self.base2, gcmd.error)
-        self.damping_ratio = gcmd.get_float(
-            "DAMPING_RATIO_" + axis, self.damping_ratio, minval=0.0, maxval=1.0
+        # Unlike config parsing, a gcode field that's entirely absent from
+        # this command keeps the CURRENT full list (a partial update, e.g.
+        # SET_INPUT_SHAPER SHAPER_FREQ_X=... alone leaves the bases as they
+        # were); a field that IS given replaces its whole list, so changing
+        # one entry of an N>2 list means restating all N values.
+        get_raw = lambda key: gcmd.get(key, None)
+        self.bases = self._parse_field(
+            get_raw,
+            "SHAPER_BASE_" + axis,
+            "SHAPER_BASE2_" + axis,
+            self.bases,
+            lambda s: s.strip().lower(),
+            gcmd.error,
         )
-        self.damping_ratio2 = gcmd.get_float(
+        for base in self.bases:
+            self._check_base(base, gcmd.error)
+        self.damping_ratios = self._parse_field(
+            get_raw,
+            "DAMPING_RATIO_" + axis,
             "DAMPING_RATIO2_" + axis,
-            self.damping_ratio2,
+            self.damping_ratios,
+            float,
+            gcmd.error,
             minval=0.0,
             maxval=1.0,
         )
-        self.shaper_freq = gcmd.get_float(
-            "SHAPER_FREQ_" + axis, self.shaper_freq, minval=0.0
-        )
-        self.shaper_freq2 = gcmd.get_float(
-            "SHAPER_FREQ2_" + axis, self.shaper_freq2, minval=0.0
+        self.freqs = self._parse_field(
+            get_raw,
+            "SHAPER_FREQ_" + axis,
+            "SHAPER_FREQ2_" + axis,
+            self.freqs,
+            float,
+            gcmd.error,
+            minval=0.0,
         )
         self._build_shaper(gcmd.error)
 
@@ -297,12 +369,15 @@ class TwoModeInputShaperParams:
         return collections.OrderedDict(
             [
                 ("shaper_type", self.SHAPER_TYPE),
-                ("shaper_base", self.base),
-                ("shaper_base2", self.base2),
-                ("shaper_freq", "%.3f" % (self.shaper_freq,)),
-                ("shaper_freq2", "%.3f" % (self.shaper_freq2,)),
-                ("damping_ratio", "%.6f" % (self.damping_ratio,)),
-                ("damping_ratio2", "%.6f" % (self.damping_ratio2,)),
+                ("shaper_base", ",".join(self.bases)),
+                (
+                    "shaper_freq",
+                    ",".join("%.3f" % (f,) for f in self.freqs),
+                ),
+                (
+                    "damping_ratio",
+                    ",".join("%.6f" % (d,) for d in self.damping_ratios),
+                ),
             ]
         )
 
@@ -378,15 +453,20 @@ class AxisInputShaper:
             shaper_type = self.get_type()
             status = self.params.get_status()
             if shaper_type == TwoModeInputShaperParams.SHAPER_TYPE:
-                C_e, t_sm = extruder_smoother.get_two_mode_extruder_smoother(
-                    status["shaper_base"],
-                    float(status["shaper_freq"]),
-                    float(status["shaper_freq2"]),
-                    float(status["damping_ratio"]),
-                    float(status["damping_ratio2"]),
+                bases = status["shaper_base"].split(",")
+                freqs = [float(f) for f in status["shaper_freq"].split(",")]
+                damping_ratios = [
+                    float(d) for d in status["damping_ratio"].split(",")
+                ]
+                smoother_fn = (
+                    extruder_smoother.get_multi_mode_extruder_smoother
+                )
+                C_e, t_sm = smoother_fn(
+                    bases,
+                    freqs,
+                    damping_ratios,
                     self.T[-1] - self.T[0],
                     normalize_coeffs=False,
-                    base_name2=status["shaper_base2"],
                 )
             else:
                 damping_ratio = float(

@@ -349,6 +349,35 @@ def convolve_shapers(shaper1, shaper2):
     return A, T
 
 
+def get_multi_mode_shaper(base_names, freqs, damping_ratios):
+    # Generalization of get_two_mode_shaper to N >= 2 peaks: convolution is
+    # associative, so a notch at every one of N target frequencies is just
+    # N single-mode shapers folded together pairwise -- no new math versus
+    # the two-mode case, only a loop instead of one hardcoded call. Each
+    # peak may use its own base shaper (mixed bases), matching the
+    # per-peak base2 support the two-mode path already had.
+    if len(base_names) != len(freqs) or len(freqs) != len(damping_ratios):
+        raise ValueError(
+            "get_multi_mode_shaper: base_names (%d), freqs (%d), and "
+            "damping_ratios (%d) must all be the same length"
+            % (len(base_names), len(freqs), len(damping_ratios))
+        )
+    if len(freqs) < 2:
+        raise ValueError(
+            "get_multi_mode_shaper: need at least 2 modes, got %d"
+            % (len(freqs),)
+        )
+    shaper = None
+    for base_name, freq, damping_ratio in zip(
+        base_names, freqs, damping_ratios
+    ):
+        component = TWO_MODE_BASES[base_name](freq, damping_ratio)
+        shaper = component if shaper is None else convolve_shapers(
+            shaper, component
+        )
+    return shaper
+
+
 def get_two_mode_shaper(
     base_name, freq1, freq2, damping1, damping2, base_name2=None
 ):
@@ -356,8 +385,8 @@ def get_two_mode_shaper(
     # aggressive, low-smoothing base on a well-characterized peak and a
     # more damping-robust one on a noisier peak); omit it to use base_name
     # for both, as before.
-    base1 = TWO_MODE_BASES[base_name]
-    base2 = TWO_MODE_BASES[base_name2] if base_name2 else base1
-    return convolve_shapers(
-        base1(freq1, damping1), base2(freq2, damping2)
+    return get_multi_mode_shaper(
+        [base_name, base_name2 or base_name],
+        [freq1, freq2],
+        [damping1, damping2],
     )
