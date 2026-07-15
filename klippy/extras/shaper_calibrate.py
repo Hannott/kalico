@@ -858,6 +858,7 @@ class ShaperCalibrate:
         test_damping_ratios=None,
         max_freq=None,
         test_two_mode=True,
+        two_mode_bias=1.3,
         logger=None,
     ):
         best_shaper = None
@@ -1062,12 +1063,15 @@ class ShaperCalibrate:
                         )
                     all_shapers.append(two_mode)
                     # Two-mode requires manually maintaining an extra
-                    # frequency/damping ratio pair, so only let it displace
-                    # the recommendation on a decisive win, not the same
-                    # tie-break margin as single-mode.
+                    # frequency/damping ratio pair, so it is held to a
+                    # configurable margin (two_mode_bias) before it displaces
+                    # the recommendation: 1.3 (the default) requires a
+                    # decisive win, 1.0 accepts any genuine improvement, and
+                    # values below 1.0 actively prefer two-mode -- handy for
+                    # testing it without waiting for a clear score win.
                     if (
                         best_shaper is None
-                        or two_mode.score * 1.3 < best_shaper.score
+                        or two_mode.score * two_mode_bias < best_shaper.score
                     ):
                         best_shaper = two_mode
         return best_shaper, all_shapers

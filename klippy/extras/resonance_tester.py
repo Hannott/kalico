@@ -343,6 +343,11 @@ class ResonanceTester:
             )
 
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
+        # Score margin by which a two-mode shaper must beat the best
+        # single-mode shaper to be recommended (see find_best_shaper): 1.3
+        # requires a decisive win, 1.0 accepts any genuine improvement, and
+        # values below 1.0 actively prefer two-mode shapers.
+        self.two_mode_bias = config.getfloat("two_mode_bias", 1.3, above=0.0)
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -555,6 +560,9 @@ class ResonanceTester:
         max_smoothing = gcmd.get_float(
             "MAX_SMOOTHING", self.max_smoothing, minval=0.05
         )
+        two_mode_bias = gcmd.get_float(
+            "TWO_MODE_BIAS", self.two_mode_bias, above=0.0
+        )
 
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
@@ -590,6 +598,7 @@ class ResonanceTester:
                 max_smoothing=max_smoothing,
                 scv=scv,
                 max_freq=max_freq,
+                two_mode_bias=two_mode_bias,
                 logger=gcmd.respond_info,
             )
             if best_shaper.freq2 is not None:

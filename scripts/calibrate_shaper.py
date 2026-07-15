@@ -78,6 +78,7 @@ def calibrate_shaper(
     max_smoothing,
     test_damping_ratios,
     max_freq,
+    two_mode_bias=1.3,
 ):
     helper = shaper_calibrate.ShaperCalibrate(printer=None)
     if isinstance(datas[0], shaper_calibrate.CalibrationData):
@@ -100,6 +101,7 @@ def calibrate_shaper(
         max_smoothing=max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
+        two_mode_bias=two_mode_bias,
         logger=print,
     )
     if not shaper:
@@ -300,6 +302,15 @@ def main():
         help="a comma-separated list of shapers to test",
     )
     opts.add_option(
+        "--two_mode_bias",
+        type="float",
+        dest="two_mode_bias",
+        default=1.3,
+        help="score margin a two-mode shaper must beat the best single-mode "
+        + "shaper by to be recommended (1.3=default/decisive win, "
+        + "1.0=any gain, <1.0=prefer two-mode)",
+    )
+    opts.add_option(
         "--damping_ratio",
         type="float",
         dest="damping_ratio",
@@ -387,6 +398,7 @@ def main():
         max_smoothing=options.max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
+        two_mode_bias=options.two_mode_bias,
     )
     if selected_shaper is None:
         return

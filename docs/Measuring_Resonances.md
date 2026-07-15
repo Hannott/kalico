@@ -797,6 +797,13 @@ or, when a different base wins for each peak: `2mode (base=zv, base2=ei)`.
 `damping_ratio2_y` in `[input_shaper]` (`shaper_base2_y` is only meaningful
 when it differs from `shaper_base_y`; it defaults to it otherwise).
 
+How readily a two-mode shaper is recommended is controlled by the
+`two_mode_bias` setting (or the `TWO_MODE_BIAS` command parameter): 1.3 (the
+default) requires a decisive win over the best single-mode shaper, 1.0 accepts
+any genuine improvement, and a value below 1.0 prefers two-mode even when its
+score is slightly worse — handy for testing it without waiting for it to win
+outright.
+
 If you agree with the suggested parameters, you can execute `SAVE_CONFIG`
 now to save them and restart the Kalico. Note that this will not update
 `max_accel` value in `[printer]` section. You should update it manually

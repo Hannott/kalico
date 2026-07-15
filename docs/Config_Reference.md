@@ -2383,6 +2383,14 @@ section of the measuring resonances guide for more information on
 #   auto-calibration (with 'SHAPER_CALIBRATE' command). By default no
 #   maximum smoothing is specified. Refer to Measuring_Resonances guide
 #   for more details on using this feature.
+#two_mode_bias: 1.3
+#   Score margin by which a two-mode (dual-frequency) shaper must beat the
+#   best single-mode shaper during 'SHAPER_CALIBRATE' before it is
+#   recommended. 1.3 (the default) requires a decisive win, 1.0 accepts any
+#   genuine improvement, and values below 1.0 actively prefer two-mode
+#   shapers even when their score is slightly worse -- useful when testing
+#   the two-mode shaper without waiting for it to win outright. Can be
+#   overridden per command with the TWO_MODE_BIAS parameter.
 #move_speed: 50
 #   The speed (in mm/s) to move the toolhead to and between test points
 #   during the calibration. The default is 50.
