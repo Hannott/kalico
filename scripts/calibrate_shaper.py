@@ -174,14 +174,19 @@ def plot_freq_response(
     ax2.set_ylabel("Shaper vibration reduction (ratio)")
     best_shaper_vals = None
     for shaper in shapers:
-        freq_label = (
-            "%.1f/%.1f Hz" % (shaper.freq, shaper.freq2)
-            if shaper.freq2 is not None
-            else "%.1f Hz" % (shaper.freq,)
-        )
-        label = "%s (%s, vibr=%.1f%%, sm~=%.2f, accel<=%.f)" % (
+        if shaper.freq2 is not None:
+            freq_label = "%.1f/%.1f Hz" % (shaper.freq, shaper.freq2)
+            dr_label = ", dr=%.3f/%.3f" % (
+                shaper.damping_ratio,
+                shaper.damping_ratio2,
+            )
+        else:
+            freq_label = "%.1f Hz" % (shaper.freq,)
+            dr_label = ""
+        label = "%s (%s%s, vibr=%.1f%%, sm~=%.2f, accel<=%.f)" % (
             shaper.name.upper(),
             freq_label,
+            dr_label,
             shaper.vibrs * 100.0,
             shaper.smoothing,
             round(shaper.max_accel / 100.0) * 100.0,
