@@ -490,22 +490,33 @@ Recommended shaper is mzv @ 34.6 Hz
 
 If the frequency response shows two distinct, well-separated resonances (for
 example, a printer with a heavy toolhead and a separate bed resonance), the
-script will also fit a two-mode (`2mode_...`) shaper candidate that targets
-both frequencies at once. It is only ever suggested when it is a clear
+script also estimates the damping ratio at each peak (from its half-power
+bandwidth) and fits a two-mode (`2mode_...`) shaper candidate that targets
+both frequencies at once, using each peak's own estimated damping ratio. It
+searches every base shaper pairing (the same base at both peaks, or a
+different one at each), and is only ever suggested when it is a clear
 improvement over the single-frequency shapers, since it requires configuring
-an extra frequency and damping ratio:
+an extra frequency, base, and damping ratio:
 ```
-Fitted two-mode shaper '2mode_mzv' frequencies = 32.1 / 68.4 Hz (vibration score = 0.4%, smoothing ~= 0.145)
+Estimated damping ratio at 32.1 Hz peak ~= 0.052
+Estimated damping ratio at 68.4 Hz peak ~= 0.081
+Fitted two-mode shaper '2mode_mzv' frequencies = 32.1 / 68.4 Hz (damping ratios 0.052 / 0.081, vibration score = 0.4%, smoothing ~= 0.145)
 Recommended shaper is 2mode (base=mzv) @ 32.1 Hz / 68.4 Hz
 ```
-which corresponds to the following `[input_shaper]` configuration:
+(a name like `2mode_zv/ei` means a different base was picked for each peak:
+`zv` at the lower frequency, `ei` at the higher one.) This corresponds to the
+following `[input_shaper]` configuration:
 ```
 [input_shaper]
 shaper_type_y: 2mode
 shaper_base_y: mzv
 shaper_freq_y: 32.1
 shaper_freq2_y: 68.4
+damping_ratio_y: 0.052
+damping_ratio2_y: 0.081
 ```
+(add `shaper_base2_y` if the recommendation used a different base per peak;
+it defaults to `shaper_base_y` when omitted.)
 
 The suggested configuration can be added to `[input_shaper]` section of
 `printer.cfg`, e.g.:
@@ -770,16 +781,21 @@ Fitted shaper '3hump_ei' frequency = 59.0 Hz (vibrations = 0.0%, smoothing ~= 0.
 To avoid too much smoothing with '3hump_ei', suggested max_accel <= 2500 mm/sec^2
 Recommended shaper_type_y = mzv, shaper_freq_y = 36.8 Hz
 ```
-As with the stand-alone script, `SHAPER_CALIBRATE` will also consider a
-two-mode shaper if the frequency response shows two distinct, well-separated
-resonances, and only recommend it when it clearly outperforms the
-single-frequency shapers:
+As with the stand-alone script, `SHAPER_CALIBRATE` will also estimate the
+damping ratio at each detected peak, consider a two-mode shaper (with each
+peak's own base and estimated damping ratio) if the frequency response shows
+two distinct, well-separated resonances, and only recommend it when it
+clearly outperforms the single-frequency shapers:
 ```
+Estimated damping ratio at 32.1 Hz peak ~= 0.052
+Estimated damping ratio at 68.4 Hz peak ~= 0.081
 Recommended shaper_type_y = 2mode (base=mzv), shaper_freq_y = 32.1 Hz, shaper_freq2_y = 68.4 Hz
 ```
+or, when a different base wins for each peak: `2mode (base=zv, base2=ei)`.
 `SAVE_CONFIG` will then store `shaper_type_y`, `shaper_base_y`,
-`shaper_freq_y`, `shaper_freq2_y`, `damping_ratio_y` and `damping_ratio2_y`
-in `[input_shaper]`.
+`shaper_base2_y`, `shaper_freq_y`, `shaper_freq2_y`, `damping_ratio_y` and
+`damping_ratio2_y` in `[input_shaper]` (`shaper_base2_y` is only meaningful
+when it differs from `shaper_base_y`; it defaults to it otherwise).
 
 The second mode of a two-mode candidate is the strongest resonance in the Z
 accelerometer channel when the driven axis has one (otherwise a second peak of

@@ -118,9 +118,14 @@ def calibrate_shaper(
         )
         return None, None, None
     if shaper.freq2 is not None:
+        base_label = (
+            shaper.base
+            if shaper.base2 == shaper.base
+            else "%s, base2=%s" % (shaper.base, shaper.base2)
+        )
         print(
             "Recommended shaper is 2mode (base=%s) @ %.1f Hz / %.1f Hz"
-            % (shaper.base, shaper.freq, shaper.freq2)
+            % (base_label, shaper.freq, shaper.freq2)
         )
     else:
         print(
