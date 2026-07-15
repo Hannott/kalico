@@ -172,11 +172,12 @@ class TwoModeInputShaperParams:
     # Two-mode shaper: convolution of a base shaper tuned to each of two
     # resonance frequencies, placing a notch at both. Configured per axis
     # with shaper_freq_<axis> (peak 1) and shaper_freq2_<axis> (peak 2),
-    # an optional shaper_base_<axis> (default mzv), and optional per-peak
-    # damping_ratio_<axis> / damping_ratio2_<axis>. The extruder gets a
-    # fitted smoother counterpart (see extruder_smoother.
-    # get_two_mode_extruder_smoother), same as the named single-mode
-    # shapers.
+    # an optional shaper_base_<axis> (default mzv) and shaper_base2_<axis>
+    # (default: same as shaper_base_<axis>, letting each peak use a
+    # different base shaper), and optional per-peak damping_ratio_<axis> /
+    # damping_ratio2_<axis>. The extruder gets a fitted smoother
+    # counterpart (see extruder_smoother.get_two_mode_extruder_smoother),
+    # same as the named single-mode shapers.
     SHAPER_TYPE = "2mode"
     bases = {s.name: s.init_func for s in shaper_defs.INPUT_SHAPERS}
     DEFAULT_BASE = "mzv"
@@ -184,6 +185,7 @@ class TwoModeInputShaperParams:
     def __init__(self, axis, config):
         self.axis = axis
         self.base = self.DEFAULT_BASE
+        self.base2 = self.base
         self.damping_ratio = shaper_defs.DEFAULT_DAMPING_RATIO
         self.damping_ratio2 = self.damping_ratio
         self.shaper_freq = 0.0
@@ -192,6 +194,10 @@ class TwoModeInputShaperParams:
         if config is not None:
             self.base = config.get("shaper_base_" + axis, self.base).lower()
             self._check_base(self.base, config.error)
+            self.base2 = config.get(
+                "shaper_base2_" + axis, self.base
+            ).lower()
+            self._check_base(self.base2, config.error)
             self.damping_ratio = config.getfloat(
                 "damping_ratio_" + axis,
                 self.damping_ratio,
@@ -229,16 +235,27 @@ class TwoModeInputShaperParams:
             self.shaper_freq2,
             self.damping_ratio,
             self.damping_ratio2,
+            base_name2=self.base2,
         )
         # The discrete shaper mechanism has a fixed-size pulse buffer
         # (MAX_SHAPER_PULSES in kin_shaper.h); a convolution silently
         # exceeding it would otherwise disable shaping without warning.
         if len(A) > shaper_defs.MAX_SHAPER_PULSES:
+            bases = (
+                self.base
+                if self.base2 == self.base
+                else "%s/%s" % (self.base, self.base2)
+            )
             raise error(
-                "2mode shaper for axis %s: base '%s' produces %d impulses,"
-                " more than the %d the firmware supports; use a shorter"
-                " base shaper (e.g. zv or mzv)"
-                % (self.axis, self.base, len(A), shaper_defs.MAX_SHAPER_PULSES)
+                "2mode shaper for axis %s: base(s) '%s' produce %d impulses,"
+                " more than the %d the firmware supports; use shorter"
+                " base shaper(s) (e.g. zv or mzv)"
+                % (
+                    self.axis,
+                    bases,
+                    len(A),
+                    shaper_defs.MAX_SHAPER_PULSES,
+                )
             )
         self.n, self.A, self.T = len(A), A, T
 
@@ -254,6 +271,8 @@ class TwoModeInputShaperParams:
         axis = self.axis.upper()
         self.base = gcmd.get("SHAPER_BASE_" + axis, self.base).lower()
         self._check_base(self.base, gcmd.error)
+        self.base2 = gcmd.get("SHAPER_BASE2_" + axis, self.base2).lower()
+        self._check_base(self.base2, gcmd.error)
         self.damping_ratio = gcmd.get_float(
             "DAMPING_RATIO_" + axis, self.damping_ratio, minval=0.0, maxval=1.0
         )
@@ -279,6 +298,7 @@ class TwoModeInputShaperParams:
             [
                 ("shaper_type", self.SHAPER_TYPE),
                 ("shaper_base", self.base),
+                ("shaper_base2", self.base2),
                 ("shaper_freq", "%.3f" % (self.shaper_freq,)),
                 ("shaper_freq2", "%.3f" % (self.shaper_freq2,)),
                 ("damping_ratio", "%.6f" % (self.damping_ratio,)),
@@ -366,6 +386,7 @@ class AxisInputShaper:
                     float(status["damping_ratio2"]),
                     self.T[-1] - self.T[0],
                     normalize_coeffs=False,
+                    base_name2=status["shaper_base2"],
                 )
             else:
                 damping_ratio = float(

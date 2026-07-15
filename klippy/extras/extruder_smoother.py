@@ -211,6 +211,7 @@ def get_two_mode_extruder_smoother(
     damping_ratio2,
     smooth_time,
     normalize_coeffs=True,
+    base_name2=None,
 ):
     try:
         np = importlib.import_module("numpy")
@@ -221,10 +222,9 @@ def get_two_mode_extruder_smoother(
             "docs/Measuring_Resonances.md for more details)."
         )
     base_name = base_name.lower()
-    smoother_cfg = EXTRUDER_SMOOTHERS.get(
-        base_name, EXTRUDER_SMOOTHERS["default"]
-    )
-    n = smoother_cfg.order
+    base_name2 = (base_name2 or base_name).lower()
+    cfg1 = EXTRUDER_SMOOTHERS.get(base_name, EXTRUDER_SMOOTHERS["default"])
+    cfg2 = EXTRUDER_SMOOTHERS.get(base_name2, EXTRUDER_SMOOTHERS["default"])
     # A single shaper_freq can be normalized away (a shaper's relative
     # impulse structure is scale-invariant), but a two-mode shaper's
     # structure depends on the frequency *ratio*, not just an overall
@@ -233,14 +233,23 @@ def get_two_mode_extruder_smoother(
     # the real smooth_time below, exactly as the single-mode path does.
     ratio = freq2 / freq1
     A, T = shaper_defs.get_two_mode_shaper(
-        base_name, 1.0, ratio, damping_ratio1, damping_ratio2
+        base_name,
+        1.0,
+        ratio,
+        damping_ratio1,
+        damping_ratio2,
+        base_name2=base_name2,
     )
+    # The order must accommodate whichever base needs more terms; when the
+    # bases match this is exactly the previous single-order lookup.
+    n = max(cfg1.order, cfg2.order)
     if n < 0:
         n = 2 * len(A) + 1
     shaper = A, T
-    lo, hi, cnt = smoother_cfg.freq_opt_range
-    test_freqs1 = np.linspace(lo, hi, cnt)
-    test_freqs2 = ratio * np.linspace(lo, hi, cnt)
+    lo1, hi1, cnt1 = cfg1.freq_opt_range
+    lo2, hi2, cnt2 = cfg2.freq_opt_range
+    test_freqs1 = np.linspace(lo1, hi1, cnt1)
+    test_freqs2 = ratio * np.linspace(lo2, hi2, cnt2)
     # Evaluate the shaped velocity near each peak with that peak's own
     # damping ratio; both calls share the same shaper (and hence the same
     # time grid), so the resulting rows can be stacked directly.

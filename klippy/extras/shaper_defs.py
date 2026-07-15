@@ -349,8 +349,15 @@ def convolve_shapers(shaper1, shaper2):
     return A, T
 
 
-def get_two_mode_shaper(base_name, freq1, freq2, damping1, damping2):
-    base = TWO_MODE_BASES[base_name]
+def get_two_mode_shaper(
+    base_name, freq1, freq2, damping1, damping2, base_name2=None
+):
+    # base_name2 lets each peak be shaped by a different base (e.g. an
+    # aggressive, low-smoothing base on a well-characterized peak and a
+    # more damping-robust one on a noisier peak); omit it to use base_name
+    # for both, as before.
+    base1 = TWO_MODE_BASES[base_name]
+    base2 = TWO_MODE_BASES[base_name2] if base_name2 else base1
     return convolve_shapers(
-        base(freq1, damping1), base(freq2, damping2)
+        base1(freq1, damping1), base2(freq2, damping2)
     )
