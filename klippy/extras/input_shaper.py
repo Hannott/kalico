@@ -456,8 +456,13 @@ class AxisInputShaper:
             shaper_type = self.get_type()
             status = self.params.get_status()
             if shaper_type == TwoModeInputShaperParams.SHAPER_TYPE:
-                bases = status["shaper_base"].split(",")
-                freqs = [float(f) for f in status["shaper_freq"].split(",")]
+                # get_status() joins with ", " (comma-space); float() tolerates
+                # the leading space on its own, but a dict lookup (the base
+                # name, below) does not, so strip every element explicitly.
+                bases = [b.strip() for b in status["shaper_base"].split(",")]
+                freqs = [
+                    float(f) for f in status["shaper_freq"].split(",")
+                ]
                 damping_ratios = [
                     float(d) for d in status["damping_ratio"].split(",")
                 ]
