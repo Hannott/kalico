@@ -1135,6 +1135,25 @@ class ShaperCalibrate:
             configfile.set(
                 "input_shaper", "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
             )
+            # A prior calibration may have saved a 2mode config for this
+            # axis; those keys are only ever read by TwoModeInputShaperParams,
+            # so switching to a non-2mode type leaves them as inert but
+            # misleading clutter in the saved config (SAVE_CONFIG has no way
+            # to remove a key, only overwrite it). Reset them to
+            # TwoModeInputShaperParams' own defaults so the file doesn't
+            # retain a stale base/frequency/damping-ratio from a previous
+            # recommendation. shaper_freq2 = 0.0 additionally matches that
+            # class's own "unconfigured" sentinel (its _build_shaper treats
+            # a zero freq/freq2 as disabled).
+            # "mzv" matches TwoModeInputShaperParams.DEFAULT_BASE.
+            configfile.set("input_shaper", "shaper_base_" + axis, "mzv")
+            configfile.set("input_shaper", "shaper_base2_" + axis, "mzv")
+            configfile.set("input_shaper", "shaper_freq2_" + axis, "0.0")
+            configfile.set(
+                "input_shaper",
+                "damping_ratio2_" + axis,
+                "%.6f" % (shaper_defs.DEFAULT_DAMPING_RATIO,),
+            )
 
     def apply_params(self, input_shaper, axis, shaper):
         if axis == "xy":

@@ -8,6 +8,16 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260715: SAVE_CONFIG after SHAPER_CALIBRATE no longer leaves stale
+`shaper_base_<axis>` / `shaper_base2_<axis>` / `shaper_freq2_<axis>` /
+`damping_ratio2_<axis>` options behind when the new recommendation switches
+an axis away from a `2mode` shaper to a single-frequency shaper or smoother.
+These options are only ever read for `2mode`, so the leftover values had no
+effect on shaping, but they cluttered the saved config with a stale base/
+frequency/damping-ratio from a previous recommendation. They are now reset
+to harmless defaults on every non-2mode save. No action needed; existing
+configs are unaffected until the next SHAPER_CALIBRATE + SAVE_CONFIG.
+
 20260715: SHAPER_CALIBRATE's shaper/frequency scoring now accounts for
 secondary and tertiary resonance peaks. Previously the acceptable-vibration
 threshold was calibrated only to the single tallest peak, so a shaper that
