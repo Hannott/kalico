@@ -566,7 +566,19 @@ class ShaperCalibrate:
         else:
             test_freqs = np.array(shaper_freqs)
 
-        max_freq = max(max_freq or MAX_FREQ, test_freqs.max())
+        # NOTE: max_freq must NOT be expanded to cover test_freqs.max() here.
+        # That was only ever needed for an explicit --shaper_freq range, and
+        # every caller that supplies one already pre-expands its own max_freq
+        # to comfortably cover it (see calibrate_shaper.py's main()) before
+        # calling in. Once MAX_SHAPER_FREQ (the fallback ceiling for the
+        # default, unbounded search) was raised above the typical max_freq
+        # default of 200, folding test_freqs.max() into this max() silently
+        # inflated max_freq to ~300 for every ordinary fit with no explicit
+        # frequency range -- computing each shaper's `vals` against a wider
+        # freq_bins slice than any caller (e.g. the plotting code, which
+        # truncates independently to its own max_freq) expects, causing a
+        # shape mismatch.
+        max_freq = max_freq or MAX_FREQ
 
         freq_bins = calibration_data.freq_bins
         psd = calibration_data.psd_sum[freq_bins <= max_freq]
