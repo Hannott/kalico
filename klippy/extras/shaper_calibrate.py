@@ -704,6 +704,38 @@ class ShaperCalibrate:
                 break
         return selected
 
+    def _find_peak_cluster_bounds(self, freq_bins, psd, center_freq, window=10.0):
+        # A peak reported by _detect_resonance_peaks (whose default
+        # min_separation=8.0 merges anything closer together into just the
+        # single tallest one) can actually be two distinguishable, genuinely
+        # separate resonances only a few Hz apart -- confirmed against real
+        # captures (e.g. two peaks 6 Hz apart on one axis, each independently
+        # resolvable with a tighter separation, each with its own real PSD
+        # dip between them). fit_two_mode_shaper's local frequency search is
+        # centered on the single reported peak and would otherwise never
+        # learn the second one exists -- missing that the best compromise
+        # frequency sits between the two, not at either individually (this
+        # was verified directly: for a base/damping matched to real capture
+        # data, the score-minimizing design frequency was the sub-peaks'
+        # midpoint, beating either sub-peak alone by a clear margin).
+        #
+        # Re-scan a narrow band around the reported peak with a much
+        # tighter separation to check. Returns (lo, hi) bracketing both
+        # sub-peaks if a second one is found, or (center_freq, center_freq)
+        # -- a no-op bound that leaves the caller's own default window
+        # unchanged -- if the peak looks like an ordinary, single resonance.
+        sub_peaks = self._detect_resonance_peaks(
+            freq_bins,
+            psd,
+            max(0.0, center_freq - window),
+            center_freq + window,
+            min_separation=4.0,
+            max_peaks=2,
+        )
+        if len(sub_peaks) < 2:
+            return center_freq, center_freq
+        return min(sub_peaks), max(sub_peaks)
+
     def _estimate_damping_ratio(
         self, freq_bins, psd, f0, max_span_lo=None, max_span_hi=None
     ):
@@ -794,10 +826,28 @@ class ShaperCalibrate:
         )
 
         base_ratio = peak2 / peak1
-        ratios = np.linspace(base_ratio * 0.94, base_ratio * 1.06, 5)
+        # If peak2 is actually an unresolved pair of close peaks, widen the
+        # ratio sweep to bracket both instead of just the one that got
+        # reported; add points so the extra range doesn't come at the cost
+        # of coarser resolution right where it matters.
+        cluster2_lo, cluster2_hi = self._find_peak_cluster_bounds(
+            calibration_data.freq_bins, calibration_data.psd_sum, peak2
+        )
+        ratio_lo = min(base_ratio * 0.94, cluster2_lo / peak1)
+        ratio_hi = max(base_ratio * 1.06, cluster2_hi / peak1)
+        n_ratios = (
+            5
+            if (ratio_lo, ratio_hi) == (base_ratio * 0.94, base_ratio * 1.06)
+            else 9
+        )
+        ratios = np.linspace(ratio_lo, ratio_hi, n_ratios)
 
-        freq_start = max(base_cfg.min_freq, peak1 - 4.0)
-        freq_end = peak1 + 4.0
+        # Same idea for peak1's own local refinement window.
+        cluster1_lo, cluster1_hi = self._find_peak_cluster_bounds(
+            calibration_data.freq_bins, calibration_data.psd_sum, peak1
+        )
+        freq_start = max(base_cfg.min_freq, min(peak1 - 4.0, cluster1_lo))
+        freq_end = max(peak1 + 4.0, cluster1_hi)
         test_freqs1 = np.arange(freq_start, freq_end, 0.5)
         if test_freqs1.shape[0] == 0:
             test_freqs1 = np.array([peak1])
