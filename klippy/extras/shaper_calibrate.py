@@ -78,15 +78,6 @@ class CalibrationData:
                 freq_bins + 0.1
             )
 
-    def zero_z(self):
-        # Drop the Z accelerometer axis from the data: zero psd_z and
-        # rebuild psd_sum from X and Y only. Useful when Z picks up
-        # vibrations that an X/Y input shaper cannot correct (e.g. a
-        # toolhead rocking in Z from linear-bearing play), which would
-        # otherwise skew the shaper fit and peak detection.
-        self.psd_z[:] = 0.0
-        self.psd_sum[:] = self.psd_x + self.psd_y
-
     def get_psd(self, axis="all"):
         return self._psd_map[axis]
 
@@ -867,8 +858,6 @@ class ShaperCalibrate:
         test_damping_ratios=None,
         max_freq=None,
         test_two_mode=True,
-        axis=None,
-        two_mode_bias=1.0,
         logger=None,
     ):
         best_shaper = None
@@ -978,88 +967,11 @@ class ShaperCalibrate:
             # Only worth the (much larger) 2D search if the PSD actually
             # shows two distinct, well-separated resonances; on a typical
             # single-peak printer this is a no-op.
-            #
-            # The first mode is the driven axis's own resonance (its own
-            # accelerometer channel). The second mode is preferentially the
-            # strongest Z-channel resonance: a mode excited by motion on this
-            # axis but ringing in Z (e.g. the toolhead rocking in Z from play
-            # in the linear bearings) is a common source of vertical fine
-            # artifacts, and shaping the axis command to notch that frequency
-            # reduces the energy that excites it. If Z shows no such peak, a
-            # second peak of the driven axis itself is used instead. (Setting
-            # IGNORE_Z zeroes psd_z, which removes the Z peak here and makes
-            # the two-mode search axis-only again.)
-            #
-            # When the driven axis is unknown (e.g. the offline script parsing
-            # an arbitrary CSV) fall back to detecting the pair per channel,
-            # accepting it only from a channel that owns a strong share of the
-            # overall signal.
-            np = self.numpy
-            max_f = max_freq or MAX_FREQ
             fb = calibration_data.freq_bins
-            # minimum spacing between the two modes (matches the per-channel
-            # detector's separation criterion)
-            min_sep = 8.0
-            axis_psd = {
-                "x": calibration_data.psd_x,
-                "y": calibration_data.psd_y,
-                "z": calibration_data.psd_z,
-            }.get(axis)
-            peaks = []
-            # Parallel to `peaks`: which PSD channel each entry was found
-            # in, so its damping ratio is estimated from the same data.
-            peak_psds = []
-            if axis_psd is not None:
-                axis_peaks = self._detect_resonance_peaks(
-                    fb, axis_psd, MIN_FREQ, max_f
-                )
-                if axis_peaks:
-                    peak1 = axis_peaks[0]
-                    # candidate second modes, strongest first: Z-channel
-                    # peaks (the VFA-coupled modes) then further axis peaks
-                    second_candidates = []
-                    if axis != "z":
-                        second_candidates += [
-                            (f, calibration_data.psd_z)
-                            for f in self._detect_resonance_peaks(
-                                fb, calibration_data.psd_z, MIN_FREQ, max_f
-                            )
-                        ]
-                    second_candidates += [
-                        (f, axis_psd) for f in axis_peaks[1:]
-                    ]
-                    for cand, cand_psd in second_candidates:
-                        if abs(cand - peak1) >= min_sep:
-                            peaks = [peak1, cand]
-                            peak_psds = [axis_psd, cand_psd]
-                            break
-                    if not peaks:
-                        peaks = [peak1]
-                        peak_psds = [axis_psd]
-            else:
-                band = (fb >= MIN_FREQ) & (fb <= max_f)
-                if band.any():
-                    global_max = float(
-                        np.max(np.where(band, calibration_data.psd_sum, 0.0))
-                    )
-                    # channel's primary peak must be a strong share of the
-                    # global maximum; also serves as the running best.
-                    min_primary = 0.4 * global_max
-                    for psd in (
-                        calibration_data.psd_x,
-                        calibration_data.psd_y,
-                        calibration_data.psd_z,
-                    ):
-                        cpeaks = self._detect_resonance_peaks(
-                            fb, psd, MIN_FREQ, max_f
-                        )
-                        if len(cpeaks) < 2:
-                            continue
-                        i0 = int(np.argmin(np.abs(fb - cpeaks[0])))
-                        if psd[i0] > min_primary:
-                            min_primary = psd[i0]
-                            peaks = cpeaks
-                            peak_psds = [psd, psd]
+            psd = calibration_data.psd_sum
+            peaks = self._detect_resonance_peaks(
+                fb, psd, MIN_FREQ, max_freq or MAX_FREQ
+            )
             # Report the damping ratio at each detected peak: useful on its
             # own (for damping_ratio_<axis> / damping_ratio2_<axis>), and
             # used below as the two-mode fit's per-peak design assumption
@@ -1067,7 +979,7 @@ class ShaperCalibrate:
             # nearby, bound the half-power search well short of it so it
             # doesn't pick up the neighbor's slope instead of its own.
             damping_estimates = []
-            for i, (f, psd) in enumerate(zip(peaks, peak_psds)):
+            for i, f in enumerate(peaks):
                 others = [pf for j, pf in enumerate(peaks) if j != i]
                 span = (
                     max(5.0, min(abs(pf - f) for pf in others) * 0.4)
@@ -1150,14 +1062,12 @@ class ShaperCalibrate:
                         )
                     all_shapers.append(two_mode)
                     # Two-mode requires manually maintaining an extra
-                    # frequency/damping ratio pair, so it is held to a
-                    # configurable margin (two_mode_bias) before it displaces
-                    # the recommendation: 1.3 requires a decisive win, 1.0
-                    # accepts any genuine improvement, <1.0 prefers two-mode
-                    # even when its score is slightly worse.
+                    # frequency/damping ratio pair, so only let it displace
+                    # the recommendation on a decisive win, not the same
+                    # tie-break margin as single-mode.
                     if (
                         best_shaper is None
-                        or two_mode.score * two_mode_bias < best_shaper.score
+                        or two_mode.score * 1.3 < best_shaper.score
                     ):
                         best_shaper = two_mode
         return best_shaper, all_shapers

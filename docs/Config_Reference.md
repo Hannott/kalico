@@ -2383,24 +2383,6 @@ section of the measuring resonances guide for more information on
 #   auto-calibration (with 'SHAPER_CALIBRATE' command). By default no
 #   maximum smoothing is specified. Refer to Measuring_Resonances guide
 #   for more details on using this feature.
-#ignore_z: False
-#   If True, the Z accelerometer axis is dropped from the measured
-#   response (psd_z is zeroed and psd_xyz is rebuilt from X and Y only)
-#   during 'TEST_RESONANCES' and 'SHAPER_CALIBRATE'. This is useful when
-#   the accelerometer picks up vibrations in Z that an X/Y input shaper
-#   cannot correct (for example a toolhead rocking in Z due to play in
-#   the linear bearings), which would otherwise skew the shaper fit. The
-#   default is False. Can be overridden per command with the IGNORE_Z
-#   parameter.
-#two_mode_bias: 1.0
-#   Score margin by which a two-mode (dual-frequency) shaper must beat the
-#   best single-mode shaper during 'SHAPER_CALIBRATE' before it is
-#   recommended. 1.3 requires a decisive win, 1.0 (the default) accepts any
-#   genuine improvement, and values below 1.0 actively prefer two-mode
-#   shapers even when their score is slightly worse (useful when the second
-#   mode is a Z resonance excited by the axis that causes vertical fine
-#   artifacts). Can be overridden per command with the TWO_MODE_BIAS
-#   parameter.
 #move_speed: 50
 #   The speed (in mm/s) to move the toolhead to and between test points
 #   during the calibration. The default is 50.

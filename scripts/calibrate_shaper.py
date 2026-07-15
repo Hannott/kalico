@@ -78,9 +78,6 @@ def calibrate_shaper(
     max_smoothing,
     test_damping_ratios,
     max_freq,
-    axis=None,
-    ignore_z=False,
-    two_mode_bias=1.0,
 ):
     helper = shaper_calibrate.ShaperCalibrate(printer=None)
     if isinstance(datas[0], shaper_calibrate.CalibrationData):
@@ -94,10 +91,6 @@ def calibrate_shaper(
             calibration_data.add_data(helper.process_accelerometer_data(data))
         calibration_data.normalize_to_frequencies()
 
-    if ignore_z:
-        # Drop the Z axis (an X/Y shaper cannot correct Z vibrations)
-        calibration_data.zero_z()
-
     shaper, all_shapers = helper.find_best_shaper(
         calibration_data,
         shapers=shapers,
@@ -107,8 +100,6 @@ def calibrate_shaper(
         max_smoothing=max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
-        axis=axis,
-        two_mode_bias=two_mode_bias,
         logger=print,
     )
     if not shaper:
@@ -309,23 +300,6 @@ def main():
         help="a comma-separated list of shapers to test",
     )
     opts.add_option(
-        "--ignore_z",
-        action="store_true",
-        dest="ignore_z",
-        default=False,
-        help="drop the Z accelerometer axis (X/Y shaping cannot correct "
-        + "Z vibrations)",
-    )
-    opts.add_option(
-        "--two_mode_bias",
-        type="float",
-        dest="two_mode_bias",
-        default=1.0,
-        help="score margin a two-mode shaper must beat the best single-mode "
-        + "shaper by to be recommended (1.3=conservative, 1.0=any gain, "
-        + "<1.0=prefer two-mode)",
-    )
-    opts.add_option(
         "--damping_ratio",
         type="float",
         dest="damping_ratio",
@@ -402,19 +376,6 @@ def main():
     datas = [parse_log(fn) for fn in args]
     accels_per_hz = [parse_accel_per_hz(fn) for fn in args]
 
-    # Infer the driven axis from the input filename(s) so two-mode peak
-    # detection can use that axis's own accelerometer channel (the standard
-    # names are resonances_<axis>_*.csv / calibration_data_<axis>_*.csv).
-    axis = None
-    axis_tags = set()
-    for fn in args:
-        base = pathlib.Path(fn).name.lower()
-        for a in ("x", "y"):
-            if ("_%s_" % a) in base:
-                axis_tags.add(a)
-    if len(axis_tags) == 1:
-        axis = axis_tags.pop()
-
     # Calibrate shaper and generate outputs
     selected_shaper, shapers, calibration_data = calibrate_shaper(
         datas,
@@ -426,9 +387,6 @@ def main():
         max_smoothing=options.max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
-        axis=axis,
-        ignore_z=options.ignore_z,
-        two_mode_bias=options.two_mode_bias,
     )
     if selected_shaper is None:
         return

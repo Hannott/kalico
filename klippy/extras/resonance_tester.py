@@ -343,14 +343,6 @@ class ResonanceTester:
             )
 
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
-        # Default for the IGNORE_Z parameter: drop the Z accelerometer axis
-        # from the response (an X/Y input shaper cannot correct Z vibrations).
-        self.ignore_z = config.getboolean("ignore_z", False)
-        # Score margin by which a two-mode shaper must beat the best
-        # single-mode shaper to be recommended (see find_best_shaper): 1.3
-        # requires a decisive win, 1.0 accepts any genuine improvement, and
-        # values below 1.0 actively prefer two-mode shapers.
-        self.two_mode_bias = config.getfloat("two_mode_bias", 1.0, above=0.0)
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -509,9 +501,6 @@ class ResonanceTester:
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
             raise gcmd.error("Invalid NAME parameter")
-        ignore_z = gcmd.get_int(
-            "IGNORE_Z", 1 if self.ignore_z else 0, minval=0, maxval=1
-        )
         csv_output = "resonances" in outputs
         raw_output = "raw_data" in outputs
 
@@ -533,8 +522,6 @@ class ResonanceTester:
             test_point=test_point,
         )[axis]
         if csv_output:
-            if ignore_z:
-                data.zero_z()
             csv_name = self.save_calibration_data(
                 "resonances",
                 name_suffix,
@@ -568,12 +555,6 @@ class ResonanceTester:
         max_smoothing = gcmd.get_float(
             "MAX_SMOOTHING", self.max_smoothing, minval=0.05
         )
-        ignore_z = gcmd.get_int(
-            "IGNORE_Z", 1 if self.ignore_z else 0, minval=0, maxval=1
-        )
-        two_mode_bias = gcmd.get_float(
-            "TWO_MODE_BIAS", self.two_mode_bias, above=0.0
-        )
 
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
@@ -599,8 +580,6 @@ class ResonanceTester:
                 % (axis_name,)
             )
             calibration_data[axis].normalize_to_frequencies()
-            if ignore_z:
-                calibration_data[axis].zero_z()
             systime = self.printer.get_reactor().monotonic()
             toolhead = self.printer.lookup_object("toolhead")
             toolhead_info = toolhead.get_status(systime)
@@ -611,8 +590,6 @@ class ResonanceTester:
                 max_smoothing=max_smoothing,
                 scv=scv,
                 max_freq=max_freq,
-                axis=axis_name,
-                two_mode_bias=two_mode_bias,
                 logger=gcmd.respond_info,
             )
             if best_shaper.freq2 is not None:
