@@ -692,17 +692,25 @@ class ShaperCalibrate:
                 break
         return selected
 
-    def _estimate_damping_ratio(self, freq_bins, psd, f0, max_span=None):
+    def _estimate_damping_ratio(
+        self, freq_bins, psd, f0, max_span_lo=None, max_span_hi=None
+    ):
         # Half-power (-3 dB) bandwidth method: for a lightly damped 2nd
         # order resonance, the two frequencies either side of the peak
         # where the PSD drops to half its peak value bracket a bandwidth
         # of approximately 2 * zeta * f0. Only meaningful for an isolated,
-        # reasonably narrow peak, hence the search span limit (to avoid
+        # reasonably narrow peak, hence the search span limits (to avoid
         # running into a neighboring peak) and the sanity-clipped result.
-        # Callers that know of a nearby second peak should tighten
-        # max_span accordingly (see find_best_shaper) to reduce the risk
-        # of the search running into that peak's slope instead of this
-        # one's own half-power point.
+        #
+        # The two directions are bounded independently: a real resonance
+        # can decay asymmetrically (steep on one side, a gradual shoulder
+        # on the other -- e.g. when it sits on the shoulder of a broader
+        # nearby structure), so a single symmetric span tight enough to
+        # protect against a neighboring peak on one side can cut the
+        # search short on the other side, which has nothing to protect
+        # against. Callers that know of a nearby second peak should
+        # tighten max_span_lo/max_span_hi accordingly (see
+        # find_best_shaper) -- only on the side that peak is actually on.
         np = self.numpy
         if f0 <= 0.0 or freq_bins.shape[0] < 3:
             return None
@@ -711,20 +719,21 @@ class ShaperCalibrate:
         if p0 <= 0.0:
             return None
         half = 0.5 * p0
-        if max_span is None:
-            max_span = max(15.0, 0.3 * f0)
+        default_span = max(15.0, 0.3 * f0)
+        span_lo = max_span_lo if max_span_lo is not None else default_span
+        span_hi = max_span_hi if max_span_hi is not None else default_span
         n = freq_bins.shape[0]
 
-        def find_crossing(step):
+        def find_crossing(step, span):
             i = i0
             while (
                 0 <= i + step < n
                 and psd[i + step] > half
-                and abs(freq_bins[i + step] - f0) <= max_span
+                and abs(freq_bins[i + step] - f0) <= span
             ):
                 i += step
             j = i + step
-            if not (0 <= j < n) or abs(freq_bins[j] - f0) > max_span:
+            if not (0 <= j < n) or abs(freq_bins[j] - f0) > span:
                 return None
             f_i, p_i = freq_bins[i], psd[i]
             f_j, p_j = freq_bins[j], psd[j]
@@ -733,8 +742,8 @@ class ShaperCalibrate:
             t = (half - p_i) / (p_j - p_i)
             return float(f_i + t * (f_j - f_i))
 
-        f_lo = find_crossing(-1)
-        f_hi = find_crossing(1)
+        f_lo = find_crossing(-1, span_lo)
+        f_hi = find_crossing(1, span_hi)
         if f_lo is None or f_hi is None or f_hi <= f_lo:
             return None
         zeta = (f_hi - f_lo) / (2.0 * f0)
@@ -1002,18 +1011,24 @@ class ShaperCalibrate:
             # own (for damping_ratio_<axis> / damping_ratio2_<axis>), and
             # used below as the two-mode fit's per-peak design assumption
             # instead of a single shared default. When another peak is
-            # nearby, bound the half-power search well short of it so it
-            # doesn't pick up the neighbor's slope instead of its own.
+            # nearby, bound the half-power search on THAT side well short
+            # of it so it doesn't pick up the neighbor's slope instead of
+            # its own; the opposite side has no neighbor to protect
+            # against and is left at _estimate_damping_ratio's own
+            # generous default (a resonance can decay asymmetrically --
+            # steep on the side facing a neighbor, a gradual shoulder on
+            # the other -- and a symmetric span tight enough for the
+            # former can otherwise cut the latter's search short).
             damping_estimates = []
             for i, f in enumerate(peaks):
-                others = [pf for j, pf in enumerate(peaks) if j != i]
-                span = (
-                    max(5.0, min(abs(pf - f) for pf in others) * 0.4)
-                    if others
-                    else None
-                )
+                lower = [pf for j, pf in enumerate(peaks) if j != i and pf < f]
+                upper = [pf for j, pf in enumerate(peaks) if j != i and pf > f]
+                span_lo = max(5.0, (f - max(lower)) * 0.4) if lower else None
+                span_hi = max(5.0, (min(upper) - f) * 0.4) if upper else None
                 damping_estimates.append(
-                    self._estimate_damping_ratio(fb, psd, f, max_span=span)
+                    self._estimate_damping_ratio(
+                        fb, psd, f, max_span_lo=span_lo, max_span_hi=span_hi
+                    )
                 )
             if logger is not None:
                 for f, dr_est in zip(peaks, damping_estimates):
