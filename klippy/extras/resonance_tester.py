@@ -602,20 +602,15 @@ class ResonanceTester:
                 logger=gcmd.respond_info,
             )
             if best_shaper.freq2 is not None:
-                base_label = (
-                    best_shaper.base
-                    if best_shaper.base2 == best_shaper.base
-                    else "%s, base2=%s" % (best_shaper.base, best_shaper.base2)
-                )
                 gcmd.respond_info(
-                    "Recommended shaper_type_%s = 2mode (base=%s), "
-                    "shaper_freq_%s = %.1f Hz, shaper_freq2_%s = %.1f Hz"
+                    "Recommended shaper_type_%s = multimode "
+                    "(base=%s, %s), shaper_freq_%s = %.1f, %.1f Hz"
                     % (
                         axis_name,
-                        base_label,
+                        best_shaper.base,
+                        best_shaper.base2,
                         axis_name,
                         best_shaper.freq,
-                        axis_name,
                         best_shaper.freq2,
                     )
                 )

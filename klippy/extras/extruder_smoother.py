@@ -257,11 +257,11 @@ def get_multi_mode_extruder_smoother(
         velocity_rows.append(velocities)
     velocities = np.concatenate(velocity_rows, axis=0)
     t_sm_unit = T[-1] - T[0]
-    # "2mode" matches neither a smooth_* name nor "3hump_ei", so
+    # "multimode" matches neither a smooth_* name nor "3hump_ei", so
     # _calc_extruder_smoother uses its generic constraint set: those
     # extra constraints were tuned for single-peak targets and don't
     # carry over to a multi-peak fit.
-    C_e = _calc_extruder_smoother(np, "2mode", t, velocities, n, t_sm_unit)
+    C_e = _calc_extruder_smoother(np, "multimode", t, velocities, n, t_sm_unit)
     return shaper_defs.init_smoother(C_e[::-1], smooth_time, normalize_coeffs)
 
 

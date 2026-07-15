@@ -169,9 +169,8 @@ class CustomInputShaperParams:
 
 
 class TwoModeInputShaperParams:
-    # "2mode" shaper: convolution of a base shaper tuned to each of N >= 2
-    # resonance frequencies, placing a notch at every one of them (N is not
-    # fixed at 2 despite the type name, kept for config compatibility).
+    # "multimode" shaper: convolution of a base shaper tuned to each of
+    # N >= 2 resonance frequencies, placing a notch at every one of them.
     # Configured per axis with shaper_freq_<axis>, an optional
     # shaper_base_<axis> (default mzv), and optional per-peak
     # damping_ratio_<axis>, each of which accepts either a single value or
@@ -184,7 +183,7 @@ class TwoModeInputShaperParams:
     # option is a config error. The extruder gets a fitted smoother
     # counterpart (see extruder_smoother.get_multi_mode_extruder_smoother),
     # same as the named single-mode shapers.
-    SHAPER_TYPE = "2mode"
+    SHAPER_TYPE = "multimode"
     DEFAULT_BASE = "mzv"
 
     def __init__(self, axis, config):
@@ -242,8 +241,12 @@ class TwoModeInputShaperParams:
             values = [parser(p) for p in parts] if parts else list(
                 default_values
             )
+        # An empty string (as opposed to an absent option) is treated the
+        # same as absent: save_params blanks a stale legacy option rather
+        # than leaving a meaningful-looking value behind, since SAVE_CONFIG
+        # has no way to remove a key outright.
         raw2 = get_raw(key2)
-        if raw2 is not None:
+        if raw2:
             if len(values) > 1:
                 raise error(
                     "%s: cannot combine a comma-separated list in '%s' "
@@ -280,7 +283,7 @@ class TwoModeInputShaperParams:
     def _check_base(self, base, error):
         if base not in shaper_defs.TWO_MODE_BASES:
             raise error(
-                "Unsupported 2mode base shaper '%s' (choose one of: %s)"
+                "Unsupported multimode base shaper '%s' (choose one of: %s)"
                 % (base, ", ".join(sorted(shaper_defs.TWO_MODE_BASES)))
             )
 
@@ -302,7 +305,7 @@ class TwoModeInputShaperParams:
         # exceeding it would otherwise disable shaping without warning.
         if len(A) > shaper_defs.MAX_SHAPER_PULSES:
             raise error(
-                "2mode shaper for axis %s: base(s) '%s' produce %d impulses,"
+                "multimode shaper for axis %s: base(s) '%s' produce %d impulses,"
                 " more than the %d the firmware supports; use shorter"
                 " base shaper(s) (e.g. zv or mzv)"
                 % (
@@ -369,14 +372,14 @@ class TwoModeInputShaperParams:
         return collections.OrderedDict(
             [
                 ("shaper_type", self.SHAPER_TYPE),
-                ("shaper_base", ",".join(self.bases)),
+                ("shaper_base", ", ".join(self.bases)),
                 (
                     "shaper_freq",
-                    ",".join("%.3f" % (f,) for f in self.freqs),
+                    ", ".join("%.3f" % (f,) for f in self.freqs),
                 ),
                 (
                     "damping_ratio",
-                    ",".join("%.6f" % (d,) for d in self.damping_ratios),
+                    ", ".join("%.6f" % (d,) for d in self.damping_ratios),
                 ),
             ]
         )

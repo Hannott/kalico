@@ -831,7 +831,7 @@ class ShaperCalibrate:
                     + shaper_smoothing * 0.002
                 )
                 result = CalibrationResult(
-                    name="2mode_" + name,
+                    name="multimode_" + name,
                     freq=test_freq1,
                     vals=shaper_vals,
                     vibrs=shaper_vibrations,
@@ -1063,12 +1063,12 @@ class ShaperCalibrate:
                     two_mode = min(two_mode_results, key=lambda r: r.score)
                     if logger is not None:
                         logger(
-                            "Fitted two-mode shaper '2mode_%s' frequencies "
+                            "Fitted multimode shaper '%s' frequencies "
                             "= %.1f / %.1f Hz (damping ratios %.3f / %.3f, "
                             "vibration score = %.2f%%, smoothing ~= %.3f, "
                             "combined score = %.3e)"
                             % (
-                                two_mode.name[len("2mode_") :],
+                                two_mode.name[len("multimode_") :],
                                 two_mode.freq,
                                 two_mode.freq2,
                                 two_mode.damping_ratio,
@@ -1079,10 +1079,10 @@ class ShaperCalibrate:
                             )
                         )
                         logger(
-                            "To avoid too much smoothing with '2mode_%s', "
-                            "suggested max_accel <= %.0f mm/sec^2"
+                            "To avoid too much smoothing with multimode "
+                            "'%s', suggested max_accel <= %.0f mm/sec^2"
                             % (
-                                two_mode.name[len("2mode_") :],
+                                two_mode.name[len("multimode_") :],
                                 round(two_mode.max_accel / 100.0) * 100.0,
                             )
                         )
@@ -1101,59 +1101,80 @@ class ShaperCalibrate:
                         best_shaper = two_mode
         return best_shaper, all_shapers
 
+    def _autosave_option(self, configfile, section, option):
+        # The raw current value of an autosave (SAVE_CONFIG-managed) option,
+        # or None if it isn't currently set. Used to only touch/clear a
+        # legacy option when a prior save actually left one behind, instead
+        # of unconditionally writing reset values into an already-clean
+        # config.
+        autosave = getattr(configfile, "autosave", None)
+        if autosave is None or not autosave.fileconfig.has_option(
+            section, option
+        ):
+            return None
+        return autosave.fileconfig.get(section, option)
+
     def save_params(self, configfile, axis, shaper):
         if axis == "xy":
             self.save_params(configfile, "x", shaper)
             self.save_params(configfile, "y", shaper)
             return
+        section = "input_shaper"
+        # shaper_base2_<axis>/shaper_freq2_<axis>/damping_ratio2_<axis>
+        # (the legacy paired-value form) are superseded by the
+        # comma-separated multi-mode form written below; a blank value
+        # parses as "not given" (see TwoModeInputShaperParams._parse_field)
+        # so it's a safe way to retire them without leaving something that
+        # looks like a real configured value. Only blank an option that a
+        # prior save (or a manual edit) actually left present -- an
+        # already-clean config is left alone entirely.
+        legacy_pair_options = (
+            "shaper_base2_" + axis,
+            "shaper_freq2_" + axis,
+            "damping_ratio2_" + axis,
+        )
         if shaper.freq2 is not None:
-            configfile.set("input_shaper", "shaper_type_" + axis, "2mode")
-            configfile.set("input_shaper", "shaper_base_" + axis, shaper.base)
+            bases = [shaper.base, shaper.base2]
+            freqs = [shaper.freq, shaper.freq2]
+            damping_ratios = [shaper.damping_ratio, shaper.damping_ratio2]
+            configfile.set(section, "shaper_type_" + axis, "multimode")
+            configfile.set(section, "shaper_base_" + axis, ", ".join(bases))
             configfile.set(
-                "input_shaper", "shaper_base2_" + axis, shaper.base2
+                section,
+                "shaper_freq_" + axis,
+                ", ".join("%.1f" % (f,) for f in freqs),
             )
             configfile.set(
-                "input_shaper", "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
-            )
-            configfile.set(
-                "input_shaper",
-                "shaper_freq2_" + axis,
-                "%.1f" % (shaper.freq2,),
-            )
-            configfile.set(
-                "input_shaper",
+                section,
                 "damping_ratio_" + axis,
-                "%.6f" % (shaper.damping_ratio,),
+                ", ".join("%.6f" % (d,) for d in damping_ratios),
             )
-            configfile.set(
-                "input_shaper",
-                "damping_ratio2_" + axis,
-                "%.6f" % (shaper.damping_ratio2,),
-            )
+            for option in legacy_pair_options:
+                if self._autosave_option(configfile, section, option):
+                    configfile.set(section, option, "")
         else:
-            configfile.set("input_shaper", "shaper_type_" + axis, shaper.name)
+            configfile.set(section, "shaper_type_" + axis, shaper.name)
             configfile.set(
-                "input_shaper", "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
+                section, "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
             )
-            # A prior calibration may have saved a 2mode config for this
-            # axis; those keys are only ever read by TwoModeInputShaperParams,
-            # so switching to a non-2mode type leaves them as inert but
-            # misleading clutter in the saved config (SAVE_CONFIG has no way
-            # to remove a key, only overwrite it). Reset them to
-            # TwoModeInputShaperParams' own defaults so the file doesn't
-            # retain a stale base/frequency/damping-ratio from a previous
-            # recommendation. shaper_freq2 = 0.0 additionally matches that
-            # class's own "unconfigured" sentinel (its _build_shaper treats
-            # a zero freq/freq2 as disabled).
-            # "mzv" matches TwoModeInputShaperParams.DEFAULT_BASE.
-            configfile.set("input_shaper", "shaper_base_" + axis, "mzv")
-            configfile.set("input_shaper", "shaper_base2_" + axis, "mzv")
-            configfile.set("input_shaper", "shaper_freq2_" + axis, "0.0")
-            configfile.set(
-                "input_shaper",
-                "damping_ratio2_" + axis,
-                "%.6f" % (shaper_defs.DEFAULT_DAMPING_RATIO,),
+            # shaper_base_<axis> is only ever read by TwoModeInputShaperParams
+            # (like the paired options above), so it's equally stale once a
+            # non-2mode type is selected.
+            if self._autosave_option(configfile, section, "shaper_base_" + axis):
+                configfile.set(section, "shaper_base_" + axis, "")
+            for option in legacy_pair_options:
+                if self._autosave_option(configfile, section, option):
+                    configfile.set(section, option, "")
+            # damping_ratio_<axis> is shared with every other shaper type
+            # (unlike the options above) so it's never blanket-cleared --
+            # except a prior 2mode/multi-mode save can have left a
+            # comma-separated list there, which every other shaper type
+            # parses as a single float and would fail to start on.
+            raw = self._autosave_option(
+                configfile, section, "damping_ratio_" + axis
             )
+            if raw is not None and "," in raw:
+                configfile.set(section, "damping_ratio_" + axis, "")
 
     def apply_params(self, input_shaper, axis, shaper):
         if axis == "xy":
@@ -1164,13 +1185,13 @@ class ShaperCalibrate:
         axis = axis.upper()
         if shaper.freq2 is not None:
             params = {
-                "SHAPER_TYPE_" + axis: "2mode",
-                "SHAPER_BASE_" + axis: shaper.base,
-                "SHAPER_BASE2_" + axis: shaper.base2,
-                "SHAPER_FREQ_" + axis: shaper.freq,
-                "SHAPER_FREQ2_" + axis: shaper.freq2,
-                "DAMPING_RATIO_" + axis: shaper.damping_ratio,
-                "DAMPING_RATIO2_" + axis: shaper.damping_ratio2,
+                "SHAPER_TYPE_" + axis: "multimode",
+                "SHAPER_BASE_"
+                + axis: "%s, %s" % (shaper.base, shaper.base2),
+                "SHAPER_FREQ_"
+                + axis: "%s, %s" % (shaper.freq, shaper.freq2),
+                "DAMPING_RATIO_" + axis: "%s, %s"
+                % (shaper.damping_ratio, shaper.damping_ratio2),
             }
         else:
             params = {
