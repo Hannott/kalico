@@ -9,6 +9,11 @@ import math
 SHAPER_VIBRATION_REDUCTION = 20.0
 DEFAULT_DAMPING_RATIO = 0.1
 
+# Must match MAX_SHAPER_PULSES in klippy/chelper/kin_shaper.h: the
+# discrete shaper mechanism (used by the stepper and, when applied
+# exactly, the extruder) stores impulses in a fixed-size buffer.
+MAX_SHAPER_PULSES = 32
+
 InputShaperCfg = collections.namedtuple(
     "InputShaperCfg", ("name", "init_func", "min_freq")
 )
@@ -314,3 +319,58 @@ INPUT_SMOOTHERS = [
     InputSmootherCfg("smooth_zvd_ei", get_zvd_ei_smoother, min_freq=26.0),
     InputSmootherCfg("smooth_si", get_si_smoother, min_freq=21.5),
 ]
+
+# The impulse shapers usable as a base for multimode shaping, by name.
+MULTIMODE_BASES = {cfg.name: cfg.init_func for cfg in INPUT_SHAPERS}
+
+
+def convolve_shapers(shaper1, shaper2):
+    # Convolving two shapers places a zero at each shaper's design
+    # frequency: impulse times add and amplitudes multiply, and the
+    # residual vibration of the result is the product of the two.
+    A1, T1 = shaper1
+    A2, T2 = shaper2
+    impulses = []
+    for i in range(len(A1)):
+        for j in range(len(A2)):
+            impulses.append((T1[i] + T2[j], A1[i] * A2[j]))
+    impulses.sort()
+    A, T = [], []
+    for t, a in impulses:
+        if T and t - T[-1] < 1e-9:
+            A[-1] += a
+        else:
+            A.append(a)
+            T.append(t)
+    inv_D = 1.0 / sum(A)
+    A = [a * inv_D for a in A]
+    t0 = T[0]
+    T = [t - t0 for t in T]
+    return A, T
+
+
+def get_multimode_shaper(base_names, freqs, damping_ratios):
+    # A multimode shaper places a notch at every one of N >= 2 target
+    # frequencies: convolution is associative, so this is just a base
+    # shaper per peak, folded together pairwise. Each peak may use its
+    # own base shaper (mixed bases).
+    if len(base_names) != len(freqs) or len(freqs) != len(damping_ratios):
+        raise ValueError(
+            "get_multimode_shaper: base_names (%d), freqs (%d), and "
+            "damping_ratios (%d) must all be the same length"
+            % (len(base_names), len(freqs), len(damping_ratios))
+        )
+    if len(freqs) < 2:
+        raise ValueError(
+            "get_multimode_shaper: need at least 2 modes, got %d"
+            % (len(freqs),)
+        )
+    shaper = None
+    for base_name, freq, damping_ratio in zip(
+        base_names, freqs, damping_ratios
+    ):
+        component = MULTIMODE_BASES[base_name](freq, damping_ratio)
+        shaper = (
+            component if shaper is None else convolve_shapers(shaper, component)
+        )
+    return shaper
