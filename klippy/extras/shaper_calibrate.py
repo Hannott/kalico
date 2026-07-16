@@ -1199,12 +1199,12 @@ class ShaperCalibrate:
         section = "input_shaper"
         # shaper_base2_<axis>/shaper_freq2_<axis>/damping_ratio2_<axis>
         # (the legacy paired-value form) are superseded by the
-        # comma-separated multi-mode form written below; a blank value
-        # parses as "not given" (see TwoModeInputShaperParams._parse_field)
-        # so it's a safe way to retire them without leaving something that
-        # looks like a real configured value. Only blank an option that a
-        # prior save (or a manual edit) actually left present -- an
-        # already-clean config is left alone entirely.
+        # comma-separated multi-mode form written below, and shaper_base_
+        # /damping_ratio_ can be stale leftovers from a prior multimode save
+        # once a different shaper_type is selected. These are removed
+        # outright (not blanked to "") since some readers -- e.g.
+        # TypedInputSmootherParams.damping_ratio -- parse the option with
+        # getfloat() and would fail to start on an empty value.
         legacy_pair_options = (
             "shaper_base2_" + axis,
             "shaper_freq2_" + axis,
@@ -1227,31 +1227,27 @@ class ShaperCalibrate:
                 ", ".join("%.6f" % (d,) for d in damping_ratios),
             )
             for option in legacy_pair_options:
-                if self._autosave_option(configfile, section, option):
-                    configfile.set(section, option, "")
+                configfile.remove_option(section, option)
         else:
             configfile.set(section, "shaper_type_" + axis, shaper.name)
             configfile.set(
                 section, "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
             )
-            # shaper_base_<axis> is only ever read by TwoModeInputShaperParams
-            # (like the paired options above), so it's equally stale once a
-            # non-2mode type is selected.
-            if self._autosave_option(configfile, section, "shaper_base_" + axis):
-                configfile.set(section, "shaper_base_" + axis, "")
+            # shaper_base_<axis> is only ever read by TwoModeInputShaperParams,
+            # so it's stale once a non-multimode type is selected.
+            configfile.remove_option(section, "shaper_base_" + axis)
             for option in legacy_pair_options:
-                if self._autosave_option(configfile, section, option):
-                    configfile.set(section, option, "")
+                configfile.remove_option(section, option)
             # damping_ratio_<axis> is shared with every other shaper type
-            # (unlike the options above) so it's never blanket-cleared --
-            # except a prior 2mode/multi-mode save can have left a
-            # comma-separated list there, which every other shaper type
-            # parses as a single float and would fail to start on.
+            # (unlike the options above), so it's only removed if a prior
+            # multimode save left a comma-separated list there, which every
+            # other shaper type parses as a single float and would fail to
+            # start on.
             raw = self._autosave_option(
                 configfile, section, "damping_ratio_" + axis
             )
             if raw is not None and "," in raw:
-                configfile.set(section, "damping_ratio_" + axis, "")
+                configfile.remove_option(section, "damping_ratio_" + axis)
 
     def apply_params(self, input_shaper, axis, shaper):
         if axis == "xy":
