@@ -2177,29 +2177,44 @@ the [command reference](G-Codes.md#input_shaper).
 #   should suppress. For more complex shapers, like 2- and 3-hump EI
 #   input shapers, this parameter can be set from different
 #   considerations. The default value is 0, which disables input
-#   shaping for X axis.
+#   shaping for X axis. When shaper_type(_x) is multimode, this is a
+#   comma-separated list of 2 or more frequencies, one per resonance
+#   peak (e.g. "45.2, 79.5").
 #shaper_freq_y: 0
 #   A frequency (in Hz) of the input shaper for Y axis. This is
 #   usually a resonance frequency of Y axis that the input shaper
 #   should suppress. For more complex shapers, like 2- and 3-hump EI
 #   input shapers, this parameter can be set from different
 #   considerations. The default value is 0, which disables input
-#   shaping for Y axis.
+#   shaping for Y axis. When shaper_type(_y) is multimode, this is a
+#   comma-separated list of 2 or more frequencies, one per resonance
+#   peak (e.g. "45.2, 79.5").
 #shaper_type: mzv
 #   A type of the input shaper to use for both X and Y axes. Supported
-#   shapers are zv, mzv, zvd, ei, 2hump_ei, and 3hump_ei. The default
-#   is mzv input shaper.
+#   shapers are zv, mzv, zvd, ei, 2hump_ei, 3hump_ei, and multimode. The
+#   default is mzv input shaper.
 #shaper_type_x:
 #shaper_type_y:
 #   If shaper_type is not set, these two parameters can be used to
 #   configure different input shapers for X and Y axes. The same
 #   values are supported as for shaper_type parameter.
+#shaper_base_x: mzv
+#shaper_base_y: mzv
+#   Only used when shaper_type(_x/_y) is multimode. The base shaper
+#   convolved together at each resonance frequency listed in
+#   shaper_freq_x/y: either a single value (used for every peak) or a
+#   comma-separated list matching shaper_freq_x/y one-for-one (e.g. a
+#   different base per peak). Supported bases are the same as for
+#   shaper_type. The default is mzv.
 #damping_ratio_x: 0.1
 #damping_ratio_y: 0.1
 #   Damping ratios of vibrations of X and Y axes used by input shapers
 #   to improve vibration suppression. Default value is 0.1 which is a
 #   good all-round value for most printers. In most circumstances this
-#   parameter requires no tuning and should not be changed.
+#   parameter requires no tuning and should not be changed. When
+#   shaper_type(_x/_y) is multimode, this may also be a comma-separated
+#   list matching shaper_freq_x/y one-for-one, to give each peak its own
+#   damping ratio.
 ```
 
 ### [adxl345]
