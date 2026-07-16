@@ -8,6 +8,22 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260716: `[input_shaper]` gains a `multimode` shaper type that convolves a
+base shaper tuned to each of 2 or more resonance frequencies, placing a notch
+at every one of them. Configure it with `shaper_type_<axis>: multimode`,
+`shaper_freq_<axis>` as a comma-separated list of frequencies (e.g. `32.1,
+68.4`), and optionally `shaper_base_<axis>` / `damping_ratio_<axis>` as a
+single value (broadcast to every peak) or a matching comma-separated list.
+`SHAPER_CALIBRATE` will automatically detect and recommend a multimode
+shaper when the frequency response shows two or more distinct, well-separated
+resonances (up to 4 peaks) and it clearly outperforms the single-frequency
+shapers; how readily it is recommended is controlled by the new
+`multimode_bias` setting (or `MULTIMODE_BIAS` command parameter). See
+Measuring_Resonances.md for details. SAVE_CONFIG clears the now-unused
+`shaper_base_<axis>` option (and a stale comma-separated
+`damping_ratio_<axis>`) whenever a subsequent recommendation switches an axis
+away from `multimode` to a single-frequency shaper or smoother.
+
 20260716: SHAPER_CALIBRATE's shaper/frequency scoring now accounts for
 secondary and tertiary resonance peaks. Previously the acceptable-vibration
 threshold was calibrated only to the single tallest peak, so a shaper that
