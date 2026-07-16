@@ -1570,17 +1570,17 @@ frequency response is calculated (across all probe points) and written into
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
 [FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>]
 [CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]
-[TWO_MODE_BIAS=<bias>]`:
+[MULTIMODE_BIAS=<bias>]`:
 Similarly to `TEST_RESONANCES`, runs the resonance test as configured, and tries
 to find the optimal parameters for the input shaper for the requested axis
 (or both X and Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset,
 its value is taken from `[resonance_tester]` section, with the default being unset.
-`TWO_MODE_BIAS` (default from the `two_mode_bias` setting in
-`[resonance_tester]`) sets how strongly a two-mode (dual-frequency) shaper is
-preferred over the best single-mode candidate: 1.3 (the default) requires a
-decisive win, 1.0 accepts any genuine improvement, and a value below 1.0
-recommends it even when its score is slightly worse than the best single-mode
-shaper -- useful for testing the two-mode shaper without waiting for a clear win.
+`MULTIMODE_BIAS` (default from the `multimode_bias` setting in
+`[resonance_tester]`) sets how strongly a multimode (multi-frequency) shaper is
+preferred over the best single-mode candidate: 1.0 (the default) recommends it
+on any genuine improvement, values above 1.0 require it to win by that margin
+(e.g. 1.3 only on a decisive win), and a value below 1.0 recommends it even
+when its score is slightly worse than the best single-mode shaper.
 See the [Max smoothing](Measuring_Resonances.md#max-smoothing) of the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the

@@ -30,12 +30,21 @@ AUTOTUNE_SHAPERS = [
     "2hump_ei",
 ]
 
-# Base shapers considered for two-mode auto-tuning. Restricted to the
-# low-impulse-count bases: a two-mode shaper convolves two copies of the
-# base, so higher-order bases (zvd, 2hump_ei, 3hump_ei) produce so much
+# Base shapers considered for multimode auto-tuning. Restricted to the
+# low-impulse-count bases: a multimode shaper convolves multiple copies of
+# a base, so higher-order bases (zvd, 2hump_ei, 3hump_ei) produce so much
 # smoothing that they can never win the recommendation, and only clutter
 # the output and slow the search.
-TWO_MODE_AUTOTUNE_BASES = ["zv", "mzv", "ei"]
+MULTIMODE_AUTOTUNE_BASES = ["zv", "mzv", "ei"]
+
+# Largest number of resonance peaks multimode auto-tuning will search for.
+# The search cost grows geometrically with the number of modes (one extra
+# frequency ratio dimension per mode beyond the first, plus a per-base-combo
+# multiplier), so this bounds it to what real printers actually show: more
+# than a handful of distinct, well-separated, significant resonances is rare.
+# Manually configuring more than this many modes (shaper_freq_<axis> with
+# more entries) is still fully supported -- only auto-detection is capped.
+MULTIMODE_MAX_PEAKS = 4
 
 ######################################################################
 # Frequency response calculation and shaper auto-tuning
@@ -92,17 +101,16 @@ CalibrationResult = collections.namedtuple(
         "smoothing",
         "score",
         "max_accel",
-        # Only set for two-mode candidates: base shaper name for each peak
-        # (base2 == base unless mixed-base), second peak frequency
-        # (freq/freq2 are the two design frequencies), and the damping
-        # ratios used for each peak.
-        "base",
-        "base2",
-        "freq2",
-        "damping_ratio",
-        "damping_ratio2",
+        # Only set for multimode candidates (N >= 2 peaks): the base shaper,
+        # design frequency, and damping ratio used at each peak, as
+        # same-length tuples (one entry per peak). `freq` above is always
+        # freqs[0], the reference peak multimode's local search is centered
+        # on.
+        "bases",
+        "freqs",
+        "damping_ratios",
     ),
-    defaults=(None, None, None, None, None),
+    defaults=(None, None, None),
 )
 
 
@@ -301,6 +309,7 @@ class ShaperCalibrate:
                 "docs/Measuring_Resonances.md for more details)."
             )
         self._smoother_integrals_cache = {}
+        self._vibr_threshold_cache = None
 
     def background_process_exec(self, method, args):
         if self.printer is None:
@@ -340,6 +349,87 @@ class ShaperCalibrate:
         calc_proc.join()
         parent_conn.close()
         return res
+
+    def background_process_exec_parallel(self, method, args_list):
+        # Like background_process_exec, but runs one child process per
+        # args tuple with up to cpu_count() of them concurrently -- the
+        # per-shaper fits are independent and CPU-bound, so running them
+        # back to back leaves all but one core idle for the whole
+        # calibration. Results are returned in args_list order.
+        if not args_list:
+            return []
+        if self.printer is None:
+            return [method(*args) for args in args_list]
+        import queuelogger
+
+        try:
+            max_workers = multiprocessing.cpu_count()
+        except NotImplementedError:
+            max_workers = 2
+        max_workers = max(1, min(max_workers, len(args_list)))
+
+        def start_job(args):
+            parent_conn, child_conn = multiprocessing.Pipe()
+
+            def wrapper():
+                queuelogger.clear_bg_logging()
+                try:
+                    res = method(*args)
+                except:
+                    child_conn.send((True, traceback.format_exc()))
+                    child_conn.close()
+                    return
+                child_conn.send((False, res))
+                child_conn.close()
+
+            proc = multiprocessing.Process(target=wrapper)
+            proc.daemon = True
+            proc.start()
+            return proc, parent_conn
+
+        reactor = self.printer.get_reactor()
+        gcode = self.printer.lookup_object("gcode")
+        eventtime = last_report_time = reactor.monotonic()
+        results = [None] * len(args_list)
+        pending = list(enumerate(args_list))
+        active = {}
+        error = None
+        while pending or active:
+            while pending and len(active) < max_workers and error is None:
+                idx, args = pending.pop(0)
+                active[idx] = start_job(args)
+            if error is not None:
+                # An earlier job failed: stop feeding new work, just
+                # drain what is already running.
+                pending = []
+            if not active:
+                break
+            if eventtime > last_report_time + 5.0:
+                last_report_time = eventtime
+                gcode.respond_info("Wait for calculations..", log=False)
+            eventtime = reactor.pause(eventtime + 0.1)
+            for idx in list(active):
+                proc, conn = active[idx]
+                if conn.poll():
+                    is_err, res = conn.recv()
+                    conn.close()
+                    proc.join()
+                    del active[idx]
+                    if is_err:
+                        error = error or res
+                    else:
+                        results[idx] = res
+                elif not proc.is_alive():
+                    # Child died without reporting a result
+                    conn.close()
+                    proc.join()
+                    del active[idx]
+                    error = error or (
+                        "Background calculation process terminated unexpectedly"
+                    )
+        if error is not None:
+            raise self.error("Error in remote calculation: %s" % (error,))
+        return results
 
     def _split_into_windows(self, x, window_size, overlap):
         # Memory-efficient algorithm to split an input 'x' into a series
@@ -420,10 +510,15 @@ class ShaperCalibrate:
         calibration_data.set_numpy(self.numpy)
         return calibration_data
 
-    def _estimate_remaining_vibrations(self, freq_bins, vals, psd):
-        # Calculate the acceptable level of remaining vibrations.
-        # Note that these are not true remaining vibrations, but rather
-        # just a score to compare different shapers between each other.
+    def _calc_vibr_threshold(self, freq_bins, psd):
+        # Everything here depends only on (freq_bins, psd), which are fixed
+        # across the hundreds/thousands of per-candidate-frequency calls a
+        # single fit makes -- so the result is cached on the exact array
+        # objects (identity compare; the cache holds references, so the ids
+        # cannot be recycled while cached) and computed once per fit.
+        cached = self._vibr_threshold_cache
+        if cached is not None and cached[0] is freq_bins and cached[1] is psd:
+            return cached[2], cached[3]
         np = self.numpy
         pos = freq_bins > 0
         ratio = np.zeros_like(psd)
@@ -454,10 +549,25 @@ class ShaperCalibrate:
             band = np.abs(freq_bins - freq_bins[i]) <= 12.0
             thresh_ratio[band] = np.minimum(thresh_ratio[band], ratio[i])
         vibr_threshold = thresh_ratio * (freq_bins + MIN_FREQ) * (1.0 / 33.3)
-        remaining_vibrations = (
-            np.maximum(vals * psd - vibr_threshold, 0) * freq_bins**2
-        ).sum()
         all_vibrations = (psd * freq_bins**2).sum()
+        self._vibr_threshold_cache = (
+            freq_bins,
+            psd,
+            vibr_threshold,
+            all_vibrations,
+        )
+        return vibr_threshold, all_vibrations
+
+    def _estimate_remaining_vibrations(self, freq_bins, vals, psd):
+        # Calculate the acceptable level of remaining vibrations.
+        # Note that these are not true remaining vibrations, but rather
+        # just a score to compare different shapers between each other.
+        vibr_threshold, all_vibrations = self._calc_vibr_threshold(
+            freq_bins, psd
+        )
+        remaining_vibrations = (
+            self.numpy.maximum(vals * psd - vibr_threshold, 0) * freq_bins**2
+        ).sum()
         return remaining_vibrations / all_vibrations
 
     def _get_shaper_smoothing(self, shaper, accel=5000, scv=5.0):
@@ -554,10 +664,30 @@ class ShaperCalibrate:
             vals = estimate_shaper(self.numpy, shaper, dr, test_freq_bins)
             test_shaper_vals = np.maximum(test_shaper_vals, vals)
 
+        # NOTE: max_freq must NOT be expanded to cover test_freqs.max()
+        # below. That was only ever needed for an explicit --shaper_freq
+        # range, and every caller that supplies one already pre-expands its
+        # own max_freq to comfortably cover it (see calibrate_shaper.py's
+        # main()) before calling in. Once MAX_SHAPER_FREQ (the fallback
+        # ceiling for the default, unbounded search) was raised above the
+        # typical max_freq default of 200, folding test_freqs.max() into
+        # that max() silently inflated max_freq to ~300 for every ordinary
+        # fit with no explicit frequency range -- computing each shaper's
+        # `vals` against a wider freq_bins slice than any caller (e.g. the
+        # plotting code, which truncates independently to its own max_freq)
+        # expects, causing a shape mismatch.
+        max_freq = max_freq or MAX_FREQ
+
         if not shaper_freqs:
             shaper_freqs = (None, None, None)
         if isinstance(shaper_freqs, tuple):
-            freq_end = shaper_freqs[1] or MAX_SHAPER_FREQ
+            # The default sweep is capped at max_freq: the PSD is truncated
+            # there, so a design frequency above it puts the shaper's notch
+            # entirely outside the scored data -- it can never win, and
+            # every grid point costs a find_max_accel bisection. The
+            # MAX_SHAPER_FREQ headroom above MAX_FREQ only matters when the
+            # caller actually measured that high (max_freq > 200).
+            freq_end = shaper_freqs[1] or min(MAX_SHAPER_FREQ, max_freq)
             freq_start = min(
                 shaper_freqs[0] or shaper_cfg.min_freq, freq_end - 1e-7
             )
@@ -565,20 +695,6 @@ class ShaperCalibrate:
             test_freqs = np.arange(freq_start, freq_end, freq_step)
         else:
             test_freqs = np.array(shaper_freqs)
-
-        # NOTE: max_freq must NOT be expanded to cover test_freqs.max() here.
-        # That was only ever needed for an explicit --shaper_freq range, and
-        # every caller that supplies one already pre-expands its own max_freq
-        # to comfortably cover it (see calibrate_shaper.py's main()) before
-        # calling in. Once MAX_SHAPER_FREQ (the fallback ceiling for the
-        # default, unbounded search) was raised above the typical max_freq
-        # default of 200, folding test_freqs.max() into this max() silently
-        # inflated max_freq to ~300 for every ordinary fit with no explicit
-        # frequency range -- computing each shaper's `vals` against a wider
-        # freq_bins slice than any caller (e.g. the plotting code, which
-        # truncates independently to its own max_freq) expects, causing a
-        # shape mismatch.
-        max_freq = max_freq or MAX_FREQ
 
         freq_bins = calibration_data.freq_bins
         psd = calibration_data.psd_sum[freq_bins <= max_freq]
@@ -673,10 +789,12 @@ class ShaperCalibrate:
         max_peaks=2,
     ):
         # Look for well-separated local maxima in the PSD that could
-        # each be shaped independently by a two-mode shaper. Returns
+        # each be shaped independently by a multimode shaper. Returns
         # up to `max_peaks` frequencies, sorted by descending PSD
-        # magnitude (i.e. most significant first). Defaults to 2, since
-        # a two-mode shaper targets exactly two resonances.
+        # magnitude (i.e. most significant first). Defaults to 2 since
+        # most callers (e.g. _find_peak_cluster_bounds) only care whether
+        # a narrow band splits into two; find_best_shaper passes
+        # MULTIMODE_MAX_PEAKS explicitly for the top-level peak search.
         np = self.numpy
         mask = (freq_bins >= min_freq) & (freq_bins <= max_freq)
         freqs = freq_bins[mask]
@@ -704,14 +822,16 @@ class ShaperCalibrate:
                 break
         return selected
 
-    def _find_peak_cluster_bounds(self, freq_bins, psd, center_freq, window=10.0):
+    def _find_peak_cluster_bounds(
+        self, freq_bins, psd, center_freq, window=10.0
+    ):
         # A peak reported by _detect_resonance_peaks (whose default
         # min_separation=8.0 merges anything closer together into just the
         # single tallest one) can actually be two distinguishable, genuinely
         # separate resonances only a few Hz apart -- confirmed against real
         # captures (e.g. two peaks 6 Hz apart on one axis, each independently
         # resolvable with a tighter separation, each with its own real PSD
-        # dip between them). fit_two_mode_shaper's local frequency search is
+        # dip between them). fit_multimode_shaper's local frequency search is
         # centered on the single reported peak and would otherwise never
         # learn the second one exists -- missing that the best compromise
         # frequency sits between the two, not at either individually (this
@@ -795,102 +915,205 @@ class ShaperCalibrate:
             return None
         return zeta
 
-    def fit_two_mode_shaper(
+    def fit_multimode_shaper(
         self,
-        base_cfg,
-        base_cfg2,
+        base_cfgs,
         calibration_data,
-        peak1,
-        peak2,
-        damping_ratio1,
-        damping_ratio2,
+        peaks,
+        damping_ratios,
         scv,
         max_smoothing,
         test_damping_ratios,
         max_freq,
     ):
-        # A two-mode shaper's structure is scale-invariant in the ratio
-        # freq2/freq1 (not in freq1 alone), so the search is split into
-        # a coarse ratio sweep (each ratio gets its own damping-ratio-
-        # pessimized response, computed once at freq1=1.0) and a local
-        # freq1 refinement around the detected first peak.
+        # A multimode shaper's structure is scale-invariant in its N-1
+        # freq[i]/freq[0] ratios (not in freq[0] alone). For N=2 (a single
+        # ratio) the search jointly sweeps that ratio and then refines
+        # freq[0] locally, same as the original 2-peak search. Jointly
+        # sweeping all N-1 ratios the same way would cost (grid points) **
+        # (N-1) shaper evaluations, which blows up fast (e.g. 9**3 = 729 for
+        # 4 peaks) -- for N>2 each ratio is instead refined one at a time
+        # (coordinate descent, holding the others fixed at the detected
+        # peaks' own frequency ratio and freq[0] anchored at peaks[0]) before
+        # the same freq[0] local refinement. This is exact for N=2 and an
+        # approximation for N>2 that keeps the search tractable.
         np = self.numpy
+        n = len(peaks)
 
-        damping_ratio1 = damping_ratio1 or shaper_defs.DEFAULT_DAMPING_RATIO
-        damping_ratio2 = damping_ratio2 or damping_ratio1
+        damping_ratios = list(damping_ratios)
+        for i, dr in enumerate(damping_ratios):
+            if not dr:
+                damping_ratios[i] = (
+                    damping_ratios[i - 1]
+                    if i > 0
+                    else shaper_defs.DEFAULT_DAMPING_RATIO
+                )
         test_damping_ratios = test_damping_ratios or TEST_DAMPING_RATIOS
+        base_names = [cfg.name for cfg in base_cfgs]
         name = (
-            base_cfg.name
-            if base_cfg2.name == base_cfg.name
-            else "%s/%s" % (base_cfg.name, base_cfg2.name)
+            base_names[0]
+            if all(b == base_names[0] for b in base_names)
+            else "/".join(base_names)
         )
 
-        base_ratio = peak2 / peak1
-        # If peak2 is actually an unresolved pair of close peaks, widen the
-        # ratio sweep to bracket both instead of just the one that got
-        # reported; add points so the extra range doesn't come at the cost
-        # of coarser resolution right where it matters.
-        cluster2_lo, cluster2_hi = self._find_peak_cluster_bounds(
-            calibration_data.freq_bins, calibration_data.psd_sum, peak2
-        )
-        ratio_lo = min(base_ratio * 0.94, cluster2_lo / peak1)
-        ratio_hi = max(base_ratio * 1.06, cluster2_hi / peak1)
-        n_ratios = (
-            5
-            if (ratio_lo, ratio_hi) == (base_ratio * 0.94, base_ratio * 1.06)
-            else 9
-        )
-        ratios = np.linspace(ratio_lo, ratio_hi, n_ratios)
+        fb, psd_full = calibration_data.freq_bins, calibration_data.psd_sum
 
-        # Same idea for peak1's own local refinement window.
+        def pessimized_vals(shaper, freqs):
+            vals = np.zeros(shape=freqs.shape)
+            for dr in test_damping_ratios:
+                vals = np.maximum(vals, estimate_shaper(np, shaper, dr, freqs))
+            return vals
+
+        def cheap_pessimized_vals(shaper, freqs):
+            # Closed-form response estimate: ~1000x fewer transcendental
+            # ops than estimate_shaper's time-domain simulation. Slightly
+            # different absolute values, but it ranks nearby candidates on
+            # a coarse grid the same way, which is all the screening
+            # passes below use it for -- anything they keep is re-scored
+            # with the accurate estimator before it can influence the
+            # final selection.
+            vals = np.zeros(shape=freqs.shape)
+            for dr in test_damping_ratios:
+                vals = np.maximum(
+                    vals, estimate_shaper_old(np, shaper, dr, freqs)
+                )
+            return vals
+
+        # Score on a band extended past the top peak so its full notch
+        # neighborhood is weighed, but remember the caller's own band: the
+        # stored `vals` must match the freq_bins slice every other
+        # candidate uses (fit_shaper never extends), or downstream
+        # consumers that plot all candidates on one grid (e.g.
+        # calibrate_shaper.py's plot_freq_response) hit a length mismatch.
+        out_max_freq = max_freq or MAX_FREQ
+        max_freq = max(out_max_freq, peaks[-1] * 1.2)
+        freq_bins = fb[fb <= max_freq]
+        psd = psd_full[fb <= max_freq]
+        n_out = int(np.count_nonzero(fb <= out_max_freq))
+
+        # Each secondary peak (i >= 1) gets its own ratio search range: if
+        # it's actually an unresolved pair of close peaks, widen the sweep
+        # to bracket both instead of just the one that got reported, adding
+        # points so the extra range doesn't come at the cost of coarser
+        # resolution right where it matters.
+        ratio_grids = []
+        current_ratios = []
+        for i in range(1, n):
+            base_ratio = peaks[i] / peaks[0]
+            cluster_lo, cluster_hi = self._find_peak_cluster_bounds(
+                fb, psd_full, peaks[i]
+            )
+            ratio_lo = min(base_ratio * 0.94, cluster_lo / peaks[0])
+            ratio_hi = max(base_ratio * 1.06, cluster_hi / peaks[0])
+            n_ratios = (
+                5
+                if (ratio_lo, ratio_hi)
+                == (base_ratio * 0.94, base_ratio * 1.06)
+                else 9
+            )
+            ratio_grids.append(np.linspace(ratio_lo, ratio_hi, n_ratios))
+            current_ratios.append(base_ratio)
+
+        if n > 2:
+            # Coordinate descent: refine one ratio at a time, each
+            # evaluated directly at freq[0] = peaks[0] (not swept -- that
+            # happens in the freq[0] refinement pass below). Two-stage per
+            # dimension: the cheap estimator ranks the whole grid, and only
+            # the top candidates get the expensive accurate estimate --
+            # the descent only has to pick a good starting ratio, so a
+            # cheap ranking with an accurate head-to-head is enough.
+            for dim, grid in enumerate(ratio_grids):
+                screened = []
+                for candidate in grid:
+                    trial = list(current_ratios)
+                    trial[dim] = candidate
+                    trial_freqs = [peaks[0]] + [peaks[0] * r for r in trial]
+                    shaper = shaper_defs.get_multimode_shaper(
+                        base_names, trial_freqs, damping_ratios
+                    )
+                    if (
+                        max_smoothing
+                        and self._get_shaper_smoothing(shaper, scv=scv)
+                        > max_smoothing
+                    ):
+                        continue
+                    vals = cheap_pessimized_vals(shaper, freq_bins)
+                    vibrs = self._estimate_remaining_vibrations(
+                        freq_bins, vals, psd
+                    )
+                    screened.append((vibrs, candidate, shaper))
+                if not screened:
+                    continue
+                screened.sort(key=lambda s: s[0])
+                best_ratio, best_vibrs = current_ratios[dim], None
+                for _, candidate, shaper in screened[:2]:
+                    vals = pessimized_vals(shaper, freq_bins)
+                    vibrs = self._estimate_remaining_vibrations(
+                        freq_bins, vals, psd
+                    )
+                    if best_vibrs is None or vibrs < best_vibrs:
+                        best_vibrs, best_ratio = vibrs, candidate
+                current_ratios[dim] = best_ratio
+            ratio_combos = [tuple(current_ratios)]
+        else:
+            candidate_ratios = list(ratio_grids[0]) if ratio_grids else []
+            if len(candidate_ratios) > 3:
+                # Screen the ratio sweep the same way: each surviving
+                # ratio costs 3 accurate estimate_shaper calls on the
+                # 500-point unit grid below, the dominant cost of the
+                # whole fit, so rank at freq[0] = peaks[0] with the cheap
+                # estimator and keep only the best 3 for the full
+                # ratio x freq[0] search.
+                screened = []
+                for ratio in candidate_ratios:
+                    shaper = shaper_defs.get_multimode_shaper(
+                        base_names,
+                        [peaks[0], peaks[0] * ratio],
+                        damping_ratios,
+                    )
+                    vals = cheap_pessimized_vals(shaper, freq_bins)
+                    vibrs = self._estimate_remaining_vibrations(
+                        freq_bins, vals, psd
+                    )
+                    screened.append((vibrs, ratio))
+                screened.sort(key=lambda s: s[0])
+                candidate_ratios = [r for _, r in screened[:3]]
+            ratio_combos = [(r,) for r in candidate_ratios] or [()]
+
+        # Same idea for peak[0]'s own local refinement window.
         cluster1_lo, cluster1_hi = self._find_peak_cluster_bounds(
-            calibration_data.freq_bins, calibration_data.psd_sum, peak1
+            fb, psd_full, peaks[0]
         )
-        freq_start = max(base_cfg.min_freq, min(peak1 - 4.0, cluster1_lo))
-        freq_end = max(peak1 + 4.0, cluster1_hi)
-        test_freqs1 = np.arange(freq_start, freq_end, 0.5)
-        if test_freqs1.shape[0] == 0:
-            test_freqs1 = np.array([peak1])
-
-        max_freq = max(max_freq or MAX_FREQ, peak2 * 1.2)
-        freq_bins = calibration_data.freq_bins
-        psd = calibration_data.psd_sum[freq_bins <= max_freq]
-        freq_bins = freq_bins[freq_bins <= max_freq]
+        freq_start = max(
+            base_cfgs[0].min_freq, min(peaks[0] - 4.0, cluster1_lo)
+        )
+        freq_end = max(peaks[0] + 4.0, cluster1_hi)
+        test_freqs0 = np.arange(freq_start, freq_end, 0.5)
+        if test_freqs0.shape[0] == 0:
+            test_freqs0 = np.array([peaks[0]])
 
         # Coarser than the single-mode fit's 0.01 step: this grid is
-        # rebuilt on every ratio (unlike single-mode, which pays this
-        # cost only once per base), so keep it cheaper.
+        # rebuilt on every ratio combination (unlike single-mode, which
+        # pays this cost only once per base), so keep it cheaper.
         test_freq_bins = np.arange(0.0, 10.0, 0.02)
         best_res = None
         results = []
-        for ratio in ratios:
-            unit_shaper = shaper_defs.get_two_mode_shaper(
-                base_cfg.name,
-                1.0,
-                ratio,
-                damping_ratio1,
-                damping_ratio2,
-                base_name2=base_cfg2.name,
+        for ratio_combo in ratio_combos:
+            unit_freqs = (1.0,) + ratio_combo
+            unit_shaper = shaper_defs.get_multimode_shaper(
+                base_names, list(unit_freqs), damping_ratios
             )
-            test_shaper_vals = np.zeros(shape=test_freq_bins.shape)
-            for dr in test_damping_ratios:
-                vals = estimate_shaper(np, unit_shaper, dr, test_freq_bins)
-                test_shaper_vals = np.maximum(test_shaper_vals, vals)
-            for test_freq1 in test_freqs1:
-                test_freq2 = test_freq1 * ratio
-                shaper = shaper_defs.get_two_mode_shaper(
-                    base_cfg.name,
-                    test_freq1,
-                    test_freq2,
-                    damping_ratio1,
-                    damping_ratio2,
-                    base_name2=base_cfg2.name,
+            test_shaper_vals = pessimized_vals(unit_shaper, test_freq_bins)
+            for test_freq0 in test_freqs0:
+                test_freqs = [test_freq0 * f for f in unit_freqs]
+                shaper = shaper_defs.get_multimode_shaper(
+                    base_names, test_freqs, damping_ratios
                 )
                 shaper_smoothing = self._get_shaper_smoothing(shaper, scv=scv)
                 if max_smoothing and shaper_smoothing > max_smoothing:
                     continue
                 shaper_vals = np.interp(
-                    freq_bins, test_freq_bins * test_freq1, test_shaper_vals
+                    freq_bins, test_freq_bins * test_freq0, test_shaper_vals
                 )
                 shaper_vibrations = self._estimate_remaining_vibrations(
                     freq_bins, shaper_vals, psd
@@ -903,8 +1126,8 @@ class ShaperCalibrate:
                 )
                 result = CalibrationResult(
                     name="multimode_" + name,
-                    freq=test_freq1,
-                    vals=shaper_vals,
+                    freq=test_freq0,
+                    vals=shaper_vals[:n_out],
                     vibrs=shaper_vibrations,
                     smoothing=shaper_smoothing,
                     score=shaper_score,
@@ -912,11 +1135,9 @@ class ShaperCalibrate:
                     # smoothing) so it is only computed for the single
                     # selected candidate below, not every grid point.
                     max_accel=0.0,
-                    base=base_cfg.name,
-                    base2=base_cfg2.name,
-                    freq2=test_freq2,
-                    damping_ratio=damping_ratio1,
-                    damping_ratio2=damping_ratio2,
+                    bases=tuple(base_names),
+                    freqs=tuple(test_freqs),
+                    damping_ratios=tuple(damping_ratios),
                 )
                 results.append(result)
                 if best_res is None or best_res.vibrs > result.vibrs:
@@ -930,13 +1151,8 @@ class ShaperCalibrate:
                 or res.vibrs < best_res.vibrs + 0.0075
             ):
                 selected = res
-        selected_shaper = shaper_defs.get_two_mode_shaper(
-            base_cfg.name,
-            selected.freq,
-            selected.freq2,
-            damping_ratio1,
-            damping_ratio2,
-            base_name2=base_cfg2.name,
+        selected_shaper = shaper_defs.get_multimode_shaper(
+            base_names, list(selected.freqs), damping_ratios
         )
         max_accel = self.find_max_accel(
             selected_shaper, scv, self._get_shaper_smoothing
@@ -953,24 +1169,35 @@ class ShaperCalibrate:
         max_smoothing=None,
         test_damping_ratios=None,
         max_freq=None,
-        test_two_mode=True,
-        two_mode_bias=1.3,
+        test_multimode=True,
+        multimode_bias=1.0,
         logger=None,
     ):
         best_shaper = None
         all_shapers = []
-        # Only auto-detect two-mode shapers on a default run: an explicit
+        # Only auto-detect multimode shapers on a default run: an explicit
         # shaper list or fixed shaper_freqs means the user has already
         # decided what to test.
-        use_two_mode = test_two_mode and shapers is None and not shaper_freqs
+        use_multimode = test_multimode and shapers is None and not shaper_freqs
         shapers = shapers or AUTOTUNE_SHAPERS
-        for smoother_cfg in shaper_defs.INPUT_SMOOTHERS:
-            if smoother_cfg.name not in shapers:
-                continue
-            smoother = self.background_process_exec(
-                self.fit_shaper,
+        # Fit every candidate concurrently (they are fully independent),
+        # then process the results strictly in the traditional smoothers-
+        # then-shapers order so the logged output and the order-dependent
+        # best-candidate selection below are identical to a serial run.
+        fit_tasks = [
+            (cfg, "smoother", estimate_smoother, self._get_smoother_smoothing)
+            for cfg in shaper_defs.INPUT_SMOOTHERS
+            if cfg.name in shapers
+        ] + [
+            (cfg, "shaper", estimate_shaper, self._get_shaper_smoothing)
+            for cfg in shaper_defs.INPUT_SHAPERS
+            if cfg.name in shapers
+        ]
+        fit_results = self.background_process_exec_parallel(
+            self.fit_shaper,
+            [
                 (
-                    smoother_cfg,
+                    cfg,
                     calibration_data,
                     shaper_freqs,
                     damping_ratio,
@@ -978,64 +1205,20 @@ class ShaperCalibrate:
                     max_smoothing,
                     test_damping_ratios,
                     max_freq,
-                    estimate_smoother,
-                    self._get_smoother_smoothing,
-                ),
-            )
+                    estimator,
+                    get_smoothing,
+                )
+                for cfg, _, estimator, get_smoothing in fit_tasks
+            ],
+        )
+        for (cfg, kind, _, _), shaper in zip(fit_tasks, fit_results):
             if logger is not None:
                 logger(
-                    "Fitted smoother '%s' frequency = %.1f Hz "
+                    "Fitted %s '%s' frequency = %.1f Hz "
                     "(vibration score = %.2f%%, smoothing ~= %.3f,"
                     " combined score = %.3e)"
                     % (
-                        smoother.name,
-                        smoother.freq,
-                        smoother.vibrs * 100.0,
-                        smoother.smoothing,
-                        smoother.score,
-                    )
-                )
-                logger(
-                    "To avoid too much smoothing with '%s', suggested "
-                    "max_accel <= %.0f mm/sec^2"
-                    % (smoother.name, round(smoother.max_accel / 100.0) * 100.0)
-                )
-            all_shapers.append(smoother)
-            if (
-                best_shaper is None
-                or smoother.score * 1.2 < best_shaper.score
-                or (
-                    smoother.score * 1.03 < best_shaper.score
-                    and smoother.smoothing * 1.01 < best_shaper.smoothing
-                )
-            ):
-                # Either the smoother significantly improves the score (by 20%),
-                # or it improves the score and smoothing (by 5% and 10% resp.)
-                best_shaper = smoother
-        for shaper_cfg in shaper_defs.INPUT_SHAPERS:
-            if shaper_cfg.name not in shapers:
-                continue
-            shaper = self.background_process_exec(
-                self.fit_shaper,
-                (
-                    shaper_cfg,
-                    calibration_data,
-                    shaper_freqs,
-                    damping_ratio,
-                    scv,
-                    max_smoothing,
-                    test_damping_ratios,
-                    max_freq,
-                    estimate_shaper,
-                    self._get_shaper_smoothing,
-                ),
-            )
-            if logger is not None:
-                logger(
-                    "Fitted shaper '%s' frequency = %.1f Hz "
-                    "(vibration score = %.2f%%, smoothing ~= %.3f,"
-                    " combined score = %.3e)"
-                    % (
+                        kind,
                         shaper.name,
                         shaper.freq,
                         shaper.vibrs * 100.0,
@@ -1057,25 +1240,29 @@ class ShaperCalibrate:
                     and shaper.smoothing * 1.01 < best_shaper.smoothing
                 )
             ):
-                # Either the shaper significantly improves the score (by 20%),
-                # or it improves the score and smoothing (by 5% and 10% resp.)
+                # Either the candidate significantly improves the score (by
+                # 20%), or it improves the score and smoothing (by 5% and
+                # 10% resp.)
                 best_shaper = shaper
-        if use_two_mode:
-            # Only worth the (much larger) 2D search if the PSD actually
-            # shows two distinct, well-separated resonances; on a typical
+        if use_multimode:
+            # Only worth the (much larger) search if the PSD actually shows
+            # two or more distinct, well-separated resonances; on a typical
             # single-peak printer this is a no-op.
             fb = calibration_data.freq_bins
             psd = calibration_data.psd_sum
             peaks = self._detect_resonance_peaks(
-                fb, psd, MIN_FREQ, max_freq or MAX_FREQ
+                fb,
+                psd,
+                MIN_FREQ,
+                max_freq or MAX_FREQ,
+                max_peaks=MULTIMODE_MAX_PEAKS,
             )
             # Report the damping ratio at each detected peak: useful on its
-            # own (for damping_ratio_<axis> / damping_ratio2_<axis>), and
-            # used below as the two-mode fit's per-peak design assumption
-            # instead of a single shared default. When another peak is
-            # nearby, bound the half-power search on THAT side well short
-            # of it so it doesn't pick up the neighbor's slope instead of
-            # its own; the opposite side has no neighbor to protect
+            # own, and used below as the multimode fit's per-peak design
+            # assumption instead of a single shared default. When another
+            # peak is nearby, bound the half-power search on THAT side well
+            # short of it so it doesn't pick up the neighbor's slope instead
+            # of its own; the opposite side has no neighbor to protect
             # against and is left at _estimate_damping_ratio's own
             # generous default (a resonance can decay asymmetrically --
             # steep on the side facing a neighbor, a gradual shoulder on
@@ -1100,90 +1287,135 @@ class ShaperCalibrate:
                             % (f, dr_est)
                         )
             if len(peaks) >= 2:
-                (peak1, dr1_est), (peak2, dr2_est) = sorted(
-                    zip(peaks[:2], damping_estimates[:2])
-                )
-                damping_ratio1 = dr1_est or damping_ratio
-                damping_ratio2 = dr2_est or damping_ratio1
-                base_cfgs = {c.name: c for c in shaper_defs.INPUT_SHAPERS}
-                two_mode_results = []
-                for base_name in TWO_MODE_AUTOTUNE_BASES:
-                    base_cfg = base_cfgs.get(base_name)
-                    if base_cfg is None:
+                # Order by frequency (ascending), not detection magnitude:
+                # fit_multimode_shaper's search is centered on the
+                # lowest-frequency peak and derives the rest from it.
+                ordered = sorted(zip(peaks, damping_estimates))
+                ordered_peaks = [f for f, _ in ordered]
+                # A missing (None) estimate at peak i falls back to the
+                # previous peak's (possibly also defaulted) value. The seed
+                # must itself never be None (damping_ratio is None on a
+                # default run): the pulse-count pre-filter below convolves a
+                # trial shaper from this list directly, before
+                # fit_multimode_shaper's own None-handling would kick in.
+                ordered_damping_ratios = []
+                prev = damping_ratio or shaper_defs.DEFAULT_DAMPING_RATIO
+                for _, dr_est in ordered:
+                    prev = dr_est or prev
+                    ordered_damping_ratios.append(prev)
+                n_modes = len(ordered_peaks)
+                base_cfgs_by_name = {
+                    c.name: c for c in shaper_defs.INPUT_SHAPERS
+                }
+                # Every combination of bases scales as len(BASES)**n_modes;
+                # only worth it for exactly 2 peaks (9 combos). Beyond that,
+                # search a single base shared across all peaks instead of
+                # letting it blow up (e.g. 3**4 = 81 combos for 4 peaks).
+                if n_modes == 2:
+                    base_combos = [
+                        (b1, b2)
+                        for b1 in MULTIMODE_AUTOTUNE_BASES
+                        for b2 in MULTIMODE_AUTOTUNE_BASES
+                    ]
+                else:
+                    base_combos = [
+                        (b,) * n_modes for b in MULTIMODE_AUTOTUNE_BASES
+                    ]
+                combo_args = []
+                for combo in base_combos:
+                    base_cfgs = [base_cfgs_by_name.get(b) for b in combo]
+                    if any(c is None for c in base_cfgs):
                         continue
-                    for base_name2 in TWO_MODE_AUTOTUNE_BASES:
-                        base_cfg2 = base_cfgs.get(base_name2)
-                        if base_cfg2 is None:
-                            continue
-                        result = self.background_process_exec(
-                            self.fit_two_mode_shaper,
-                            (
-                                base_cfg,
-                                base_cfg2,
-                                calibration_data,
-                                peak1,
-                                peak2,
-                                damping_ratio1,
-                                damping_ratio2,
-                                scv,
-                                max_smoothing,
-                                test_damping_ratios,
-                                max_freq,
-                            ),
+                    # Skip combos whose convolution would exceed the
+                    # firmware's pulse buffer (MAX_SHAPER_PULSES):
+                    # MultiModeInputShaperParams would reject the resulting
+                    # config anyway, and checking here -- the convolution
+                    # itself is cheap, unlike the fit below -- avoids
+                    # wasting the expensive per-candidate search on a
+                    # shaper that could never be saved. This is what keeps
+                    # higher-impulse bases (mzv, ei) from being tried at
+                    # higher peak counts, where their impulse counts
+                    # multiply out past the limit (e.g. 3 impulses ** 4
+                    # peaks = 81 > 32).
+                    trial_A, _ = shaper_defs.get_multimode_shaper(
+                        list(combo), ordered_peaks, ordered_damping_ratios
+                    )
+                    if len(trial_A) > shaper_defs.MAX_SHAPER_PULSES:
+                        continue
+                    combo_args.append(
+                        (
+                            base_cfgs,
+                            calibration_data,
+                            ordered_peaks,
+                            ordered_damping_ratios,
+                            scv,
+                            max_smoothing,
+                            test_damping_ratios,
+                            max_freq,
                         )
-                        if result is not None:
-                            two_mode_results.append(result)
-                if two_mode_results:
-                    # Only surface the single best two-mode candidate: the
+                    )
+                multimode_results = [
+                    result
+                    for result in self.background_process_exec_parallel(
+                        self.fit_multimode_shaper, combo_args
+                    )
+                    if result is not None
+                ]
+                if multimode_results:
+                    # Only surface the single best multimode candidate: the
                     # others differ only by base shaper(s) and just clutter
                     # the graph and console.
-                    two_mode = min(two_mode_results, key=lambda r: r.score)
+                    multimode = min(multimode_results, key=lambda r: r.score)
                     if logger is not None:
+                        freqs_str = " / ".join(
+                            "%.1f" % (f,) for f in multimode.freqs
+                        )
+                        drs_str = " / ".join(
+                            "%.3f" % (d,) for d in multimode.damping_ratios
+                        )
                         logger(
                             "Fitted multimode shaper '%s' frequencies "
-                            "= %.1f / %.1f Hz (damping ratios %.3f / %.3f, "
+                            "= %s Hz (damping ratios %s, "
                             "vibration score = %.2f%%, smoothing ~= %.3f, "
                             "combined score = %.3e)"
                             % (
-                                two_mode.name[len("multimode_") :],
-                                two_mode.freq,
-                                two_mode.freq2,
-                                two_mode.damping_ratio,
-                                two_mode.damping_ratio2,
-                                two_mode.vibrs * 100.0,
-                                two_mode.smoothing,
-                                two_mode.score,
+                                multimode.name[len("multimode_") :],
+                                freqs_str,
+                                drs_str,
+                                multimode.vibrs * 100.0,
+                                multimode.smoothing,
+                                multimode.score,
                             )
                         )
                         logger(
                             "To avoid too much smoothing with multimode "
                             "'%s', suggested max_accel <= %.0f mm/sec^2"
                             % (
-                                two_mode.name[len("multimode_") :],
-                                round(two_mode.max_accel / 100.0) * 100.0,
+                                multimode.name[len("multimode_") :],
+                                round(multimode.max_accel / 100.0) * 100.0,
                             )
                         )
-                    all_shapers.append(two_mode)
-                    # Two-mode requires manually maintaining an extra
-                    # frequency/damping ratio pair, so it is held to a
-                    # configurable margin (two_mode_bias) before it displaces
-                    # the recommendation: 1.3 (the default) requires a
-                    # decisive win, 1.0 accepts any genuine improvement, and
-                    # values below 1.0 actively prefer two-mode -- handy for
-                    # testing it without waiting for a clear score win.
+                    all_shapers.append(multimode)
+                    # Multimode requires manually maintaining extra
+                    # frequency/damping ratio entries, so it is held to a
+                    # configurable margin (multimode_bias) before it
+                    # displaces the recommendation: 1.0 (the default) takes
+                    # multimode on any genuine score improvement, values
+                    # above 1.0 require it to win by that margin (e.g. 1.3
+                    # only on a decisive win), and values below 1.0 prefer
+                    # multimode even when it scores slightly worse.
                     if (
                         best_shaper is None
-                        or two_mode.score * two_mode_bias < best_shaper.score
+                        or multimode.score * multimode_bias < best_shaper.score
                     ):
-                        best_shaper = two_mode
+                        best_shaper = multimode
         return best_shaper, all_shapers
 
     def _autosave_option(self, configfile, section, option):
         # The raw current value of an autosave (SAVE_CONFIG-managed) option,
-        # or None if it isn't currently set. Used to only touch/clear a
-        # legacy option when a prior save actually left one behind, instead
-        # of unconditionally writing reset values into an already-clean
-        # config.
+        # or None if it isn't currently set. Used to only touch/clear an
+        # option when a prior save actually left one behind, instead of
+        # unconditionally writing reset values into an already-clean config.
         autosave = getattr(configfile, "autosave", None)
         if autosave is None or not autosave.fileconfig.has_option(
             section, option
@@ -1191,55 +1423,83 @@ class ShaperCalibrate:
             return None
         return autosave.fileconfig.get(section, option)
 
+    # Canonical option layout for the [input_shaper] autosave section: all
+    # X-axis options first, then Y, each axis in this stem order.
+    _SAVE_OPTION_STEMS = [
+        "shaper_type",
+        "shaper_base",
+        "shaper_freq",
+        "damping_ratio",
+    ]
+
+    def _sort_autosave_options(self, configfile):
+        # SAVE_CONFIG writes the autosave section in option insertion
+        # order, so repeated SHAPER_CALIBRATE runs that add/remove options
+        # (e.g. switching an axis between multimode and a single-frequency
+        # type) gradually scramble the block. Rewrite the section in a
+        # stable canonical order instead: x options first, then y, each in
+        # _SAVE_OPTION_STEMS order, with anything unrecognized after them.
+        section = "input_shaper"
+        autosave = getattr(configfile, "autosave", None)
+        if autosave is None or not autosave.fileconfig.has_section(section):
+            return
+        fileconfig = autosave.fileconfig
+        options = fileconfig.options(section)
+
+        def sort_key(option):
+            for axis_rank, axis in enumerate(("x", "y")):
+                if option.endswith("_" + axis):
+                    stem = option[:-2]
+                    try:
+                        stem_rank = self._SAVE_OPTION_STEMS.index(stem)
+                    except ValueError:
+                        stem_rank = len(self._SAVE_OPTION_STEMS)
+                    return (0, axis_rank, stem_rank, option)
+            return (1, 0, 0, option)
+
+        ordered = sorted(options, key=sort_key)
+        if ordered == options:
+            return
+        values = [(opt, fileconfig.get(section, opt)) for opt in ordered]
+        for option in options:
+            fileconfig.remove_option(section, option)
+        for option, value in values:
+            fileconfig.set(section, option, value)
+
     def save_params(self, configfile, axis, shaper):
         if axis == "xy":
             self.save_params(configfile, "x", shaper)
             self.save_params(configfile, "y", shaper)
             return
         section = "input_shaper"
-        # shaper_base2_<axis>/shaper_freq2_<axis>/damping_ratio2_<axis>
-        # (the legacy paired-value form) are superseded by the
-        # comma-separated multi-mode form written below, and shaper_base_
-        # /damping_ratio_ can be stale leftovers from a prior multimode save
-        # once a different shaper_type is selected. These are removed
-        # outright (not blanked to "") since some readers -- e.g.
-        # TypedInputSmootherParams.damping_ratio -- parse the option with
-        # getfloat() and would fail to start on an empty value.
-        legacy_pair_options = (
-            "shaper_base2_" + axis,
-            "shaper_freq2_" + axis,
-            "damping_ratio2_" + axis,
-        )
-        if shaper.freq2 is not None:
-            bases = [shaper.base, shaper.base2]
-            freqs = [shaper.freq, shaper.freq2]
-            damping_ratios = [shaper.damping_ratio, shaper.damping_ratio2]
+        if shaper.freqs is not None:
             configfile.set(section, "shaper_type_" + axis, "multimode")
-            configfile.set(section, "shaper_base_" + axis, ", ".join(bases))
+            configfile.set(
+                section, "shaper_base_" + axis, ", ".join(shaper.bases)
+            )
             configfile.set(
                 section,
                 "shaper_freq_" + axis,
-                ", ".join("%.1f" % (f,) for f in freqs),
+                ", ".join("%.1f" % (f,) for f in shaper.freqs),
             )
             configfile.set(
                 section,
                 "damping_ratio_" + axis,
-                ", ".join("%.6f" % (d,) for d in damping_ratios),
+                ", ".join("%.6f" % (d,) for d in shaper.damping_ratios),
             )
-            for option in legacy_pair_options:
-                configfile.remove_option(section, option)
         else:
             configfile.set(section, "shaper_type_" + axis, shaper.name)
             configfile.set(
                 section, "shaper_freq_" + axis, "%.1f" % (shaper.freq,)
             )
-            # shaper_base_<axis> is only ever read by TwoModeInputShaperParams,
-            # so it's stale once a non-multimode type is selected.
+            # shaper_base_<axis> is only ever read by MultiModeInputShaperParams,
+            # so it's stale once a non-multimode type is selected. Removed
+            # outright (not blanked to "") since some readers -- e.g.
+            # TypedInputSmootherParams.damping_ratio -- parse the option with
+            # getfloat() and would fail to start on an empty value.
             configfile.remove_option(section, "shaper_base_" + axis)
-            for option in legacy_pair_options:
-                configfile.remove_option(section, option)
             # damping_ratio_<axis> is shared with every other shaper type
-            # (unlike the options above), so it's only removed if a prior
+            # (unlike the option above), so it's only removed if a prior
             # multimode save left a comma-separated list there, which every
             # other shaper type parses as a single float and would fail to
             # start on.
@@ -1248,6 +1508,7 @@ class ShaperCalibrate:
             )
             if raw is not None and "," in raw:
                 configfile.remove_option(section, "damping_ratio_" + axis)
+        self._sort_autosave_options(configfile)
 
     def apply_params(self, input_shaper, axis, shaper):
         if axis == "xy":
@@ -1256,15 +1517,14 @@ class ShaperCalibrate:
             return
         gcode = self.printer.lookup_object("gcode")
         axis = axis.upper()
-        if shaper.freq2 is not None:
+        if shaper.freqs is not None:
             params = {
                 "SHAPER_TYPE_" + axis: "multimode",
-                "SHAPER_BASE_"
-                + axis: "%s, %s" % (shaper.base, shaper.base2),
-                "SHAPER_FREQ_"
-                + axis: "%s, %s" % (shaper.freq, shaper.freq2),
-                "DAMPING_RATIO_" + axis: "%s, %s"
-                % (shaper.damping_ratio, shaper.damping_ratio2),
+                "SHAPER_BASE_" + axis: ", ".join(shaper.bases),
+                "SHAPER_FREQ_" + axis: ", ".join(str(f) for f in shaper.freqs),
+                "DAMPING_RATIO_" + axis: ", ".join(
+                    str(d) for d in shaper.damping_ratios
+                ),
             }
         else:
             params = {
@@ -1291,12 +1551,14 @@ class ShaperCalibrate:
                 csvfile.write("freq,psd_x,psd_y,psd_z,psd_xyz,accel_per_hz")
                 if shapers:
                     for shaper in shapers:
-                        if shaper.freq2 is not None:
-                            # Two frequencies joined with '/' so the label
-                            # stays a single comma-delimited CSV field.
+                        if shaper.freqs is not None:
+                            # Frequencies joined with '/' so the label stays
+                            # a single comma-delimited CSV field.
+                            freqs_label = "/".join(
+                                "%.1f" % (f,) for f in shaper.freqs
+                            )
                             csvfile.write(
-                                ",%s(%.1f/%.1f)"
-                                % (shaper.name, shaper.freq, shaper.freq2)
+                                ",%s(%s)" % (shaper.name, freqs_label)
                             )
                         else:
                             csvfile.write(

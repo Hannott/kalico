@@ -343,11 +343,12 @@ class ResonanceTester:
             )
 
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
-        # Score margin by which a two-mode shaper must beat the best
-        # single-mode shaper to be recommended (see find_best_shaper): 1.3
-        # requires a decisive win, 1.0 accepts any genuine improvement, and
-        # values below 1.0 actively prefer two-mode shapers.
-        self.two_mode_bias = config.getfloat("two_mode_bias", 1.3, above=0.0)
+        # Score margin by which a multimode shaper must beat the best
+        # single-mode shaper to be recommended (see find_best_shaper): 1.0
+        # (the default) takes it on any genuine improvement, values above
+        # 1.0 require a win by that margin, and values below 1.0 actively
+        # prefer multimode shapers.
+        self.multimode_bias = config.getfloat("multimode_bias", 1.0, above=0.0)
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -560,8 +561,8 @@ class ResonanceTester:
         max_smoothing = gcmd.get_float(
             "MAX_SMOOTHING", self.max_smoothing, minval=0.05
         )
-        two_mode_bias = gcmd.get_float(
-            "TWO_MODE_BIAS", self.two_mode_bias, above=0.0
+        multimode_bias = gcmd.get_float(
+            "MULTIMODE_BIAS", self.multimode_bias, above=0.0
         )
 
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
@@ -598,21 +599,20 @@ class ResonanceTester:
                 max_smoothing=max_smoothing,
                 scv=scv,
                 max_freq=max_freq,
-                two_mode_bias=two_mode_bias,
+                multimode_bias=multimode_bias,
                 logger=gcmd.respond_info,
             )
-            if best_shaper.freq2 is not None:
+            if best_shaper.freqs is not None:
+                base_label = (
+                    best_shaper.bases[0]
+                    if len(set(best_shaper.bases)) == 1
+                    else ", ".join(best_shaper.bases)
+                )
+                freq_label = ", ".join("%.1f" % (f,) for f in best_shaper.freqs)
                 gcmd.respond_info(
                     "Recommended shaper_type_%s = multimode "
-                    "(base=%s, %s), shaper_freq_%s = %.1f, %.1f Hz"
-                    % (
-                        axis_name,
-                        best_shaper.base,
-                        best_shaper.base2,
-                        axis_name,
-                        best_shaper.freq,
-                        best_shaper.freq2,
-                    )
+                    "(base=%s), shaper_freq_%s = %s Hz"
+                    % (axis_name, base_label, axis_name, freq_label)
                 )
             else:
                 gcmd.respond_info(

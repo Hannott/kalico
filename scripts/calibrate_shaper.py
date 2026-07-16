@@ -78,7 +78,7 @@ def calibrate_shaper(
     max_smoothing,
     test_damping_ratios,
     max_freq,
-    two_mode_bias=1.3,
+    multimode_bias=1.0,
 ):
     helper = shaper_calibrate.ShaperCalibrate(printer=None)
     if isinstance(datas[0], shaper_calibrate.CalibrationData):
@@ -101,7 +101,7 @@ def calibrate_shaper(
         max_smoothing=max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
-        two_mode_bias=two_mode_bias,
+        multimode_bias=multimode_bias,
         logger=print,
     )
     if not shaper:
@@ -110,20 +110,19 @@ def calibrate_shaper(
             % (",".join(shapers))
         )
         return None, None, None
-    if shaper.freq2 is not None:
+    if shaper.freqs is not None:
         base_label = (
-            shaper.base
-            if shaper.base2 == shaper.base
-            else "%s, base2=%s" % (shaper.base, shaper.base2)
+            shaper.bases[0]
+            if len(set(shaper.bases)) == 1
+            else ", ".join(shaper.bases)
         )
+        freq_label = " / ".join("%.1f" % (f,) for f in shaper.freqs)
         print(
-            "Recommended shaper is 2mode (base=%s) @ %.1f Hz / %.1f Hz"
-            % (base_label, shaper.freq, shaper.freq2)
+            "Recommended shaper is multimode (base=%s) @ %s Hz"
+            % (base_label, freq_label)
         )
     else:
-        print(
-            "Recommended shaper is %s @ %.1f Hz" % (shaper.name, shaper.freq)
-        )
+        print("Recommended shaper is %s @ %.1f Hz" % (shaper.name, shaper.freq))
     if csv_output is not None:
         helper.save_calibration_data(csv_output, calibration_data, all_shapers)
     return shaper.name, all_shapers, calibration_data
@@ -174,11 +173,10 @@ def plot_freq_response(
     ax2.set_ylabel("Shaper vibration reduction (ratio)")
     best_shaper_vals = None
     for shaper in shapers:
-        if shaper.freq2 is not None:
-            freq_label = "%.1f/%.1f Hz" % (shaper.freq, shaper.freq2)
-            dr_label = ", dr=%.3f/%.3f" % (
-                shaper.damping_ratio,
-                shaper.damping_ratio2,
+        if shaper.freqs is not None:
+            freq_label = "/".join("%.1f" % (f,) for f in shaper.freqs) + " Hz"
+            dr_label = ", dr=" + "/".join(
+                "%.3f" % (d,) for d in shaper.damping_ratios
             )
         else:
             freq_label = "%.1f Hz" % (shaper.freq,)
@@ -307,13 +305,13 @@ def main():
         help="a comma-separated list of shapers to test",
     )
     opts.add_option(
-        "--two_mode_bias",
+        "--multimode_bias",
         type="float",
-        dest="two_mode_bias",
-        default=1.3,
-        help="score margin a two-mode shaper must beat the best single-mode "
-        + "shaper by to be recommended (1.3=default/decisive win, "
-        + "1.0=any gain, <1.0=prefer two-mode)",
+        dest="multimode_bias",
+        default=1.0,
+        help="score margin a multimode shaper must beat the best single-mode "
+        + "shaper by to be recommended (1.0=default/any gain, "
+        + "1.3=decisive win, <1.0=prefer multimode)",
     )
     opts.add_option(
         "--damping_ratio",
@@ -403,7 +401,7 @@ def main():
         max_smoothing=options.max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
-        two_mode_bias=options.two_mode_bias,
+        multimode_bias=options.multimode_bias,
     )
     if selected_shaper is None:
         return

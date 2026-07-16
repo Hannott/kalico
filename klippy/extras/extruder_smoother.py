@@ -133,7 +133,10 @@ def _calc_extruder_smoother(np, shaper_name, t, velocities, n, t_sm):
     # Solve the equality-constrained least squares via its KKT system,
     # penalizing negative values of h(tau) toward zero. Strict h(tau) >= 0
     # is not attainable at these polynomial orders, and pushing the penalty
-    # harder degrades both the fit and the conditioning.
+    # harder degrades both the fit and the conditioning. The -2e-3 break
+    # threshold below is absolute (h integrates to 1 over tau in [-1/2, 1/2]),
+    # so for tall, narrow kernels such as zvd at high damping the residual
+    # undershoot is ~1% of the peak, and well under that for the rest.
     K = np.zeros(shape=(n + n_c, n + n_c))
     K[:n, n:] = E.T
     K[n:, :n] = E
@@ -203,18 +206,16 @@ def get_extruder_smoother(
     return smoother, (t, velocities)
 
 
-def get_multi_mode_extruder_smoother(
+def get_multimode_extruder_smoother(
     base_names,
     freqs,
     damping_ratios,
     smooth_time,
     normalize_coeffs=True,
 ):
-    # Generalization of get_two_mode_extruder_smoother to N >= 2 peaks:
-    # every peak contributes its own row of target velocities (evaluated
+    # Every peak contributes its own row of target velocities (evaluated
     # with its own base shaper's frequency-optimization range and its own
-    # damping ratio), stacked together into one fit -- the same idea as
-    # the two-mode case, just looped over N instead of hardcoded to 2.
+    # damping ratio), stacked together into one fit.
     try:
         np = importlib.import_module("numpy")
     except ImportError:
@@ -229,16 +230,14 @@ def get_multi_mode_extruder_smoother(
         for b in base_names
     ]
     # A single shaper_freq can be normalized away (a shaper's relative
-    # impulse structure is scale-invariant), but a multi-mode shaper's
+    # impulse structure is scale-invariant), but a multimode shaper's
     # structure depends on the frequency *ratios*, not just an overall
     # scale. Fit in a ratio-preserving unit system (freqs[0] -> 1.0, the
     # rest scaled by freqs[i] / freqs[0]) and let init_smoother rescale
     # the result to the real smooth_time below, exactly as the
     # single-mode path does.
     ratios = [f / freqs[0] for f in freqs]
-    A, T = shaper_defs.get_multi_mode_shaper(
-        base_names, ratios, damping_ratios
-    )
+    A, T = shaper_defs.get_multimode_shaper(base_names, ratios, damping_ratios)
     # The order must accommodate whichever base needs the most terms; with
     # exactly 2 matching bases this is exactly the previous lookup.
     n = max(cfg.order for cfg in cfgs)
@@ -263,22 +262,3 @@ def get_multi_mode_extruder_smoother(
     # carry over to a multi-peak fit.
     C_e = _calc_extruder_smoother(np, "multimode", t, velocities, n, t_sm_unit)
     return shaper_defs.init_smoother(C_e[::-1], smooth_time, normalize_coeffs)
-
-
-def get_two_mode_extruder_smoother(
-    base_name,
-    freq1,
-    freq2,
-    damping_ratio1,
-    damping_ratio2,
-    smooth_time,
-    normalize_coeffs=True,
-    base_name2=None,
-):
-    return get_multi_mode_extruder_smoother(
-        [base_name, base_name2 or base_name],
-        [freq1, freq2],
-        [damping_ratio1, damping_ratio2],
-        smooth_time,
-        normalize_coeffs=normalize_coeffs,
-    )
