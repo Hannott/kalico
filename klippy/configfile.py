@@ -657,6 +657,31 @@ class PrinterConfig:
             self.status_save_pending = pending
             self.save_config_pending = True
 
+    def remove_option(self, section, option):
+        # Unlike set(), this drops the option from the eventual SAVE_CONFIG
+        # output entirely instead of writing a value (an empty string is not
+        # a safe stand-in: some readers parse the option with getfloat() and
+        # would fail to start on a blank value).
+        if self.autosave.fileconfig.has_option(section, option):
+            self.autosave.fileconfig.remove_option(section, option)
+            pending = dict(self.status_save_pending)
+            if section in pending and pending[section] is not None:
+                pending[section] = dict(pending[section])
+                pending[section].pop(option, None)
+            self.status_save_pending = pending
+            self.save_config_pending = True
+            logging.info("save_config: remove [%s] %s", section, option)
+        elif (
+            section in self.status_save_pending
+            and self.status_save_pending[section] is not None
+            and option in self.status_save_pending[section]
+        ):
+            pending = dict(self.status_save_pending)
+            pending[section] = dict(pending[section])
+            del pending[section][option]
+            self.status_save_pending = pending
+            self.save_config_pending = True
+
     def _disallow_include_conflicts(self, regular_data, cfgname, gcode):
         config = self._build_config_wrapper(regular_data, cfgname)
         for section in self.autosave.fileconfig.sections():
