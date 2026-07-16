@@ -14,7 +14,7 @@ from . import shaper_defs
 MIN_FREQ = 5.0
 MAX_FREQ = 200.0
 WINDOW_T_SEC = 0.5
-MAX_SHAPER_FREQ = 150.0
+MAX_SHAPER_FREQ = 300.0
 
 TEST_DAMPING_RATIOS = [0.075, 0.1, 0.15]
 
@@ -550,10 +550,30 @@ class ShaperCalibrate:
             vals = estimate_shaper(self.numpy, shaper, dr, test_freq_bins)
             test_shaper_vals = np.maximum(test_shaper_vals, vals)
 
+        # NOTE: max_freq must NOT be expanded to cover test_freqs.max()
+        # below. That was only ever needed for an explicit --shaper_freq
+        # range, and every caller that supplies one already pre-expands its
+        # own max_freq to comfortably cover it (see calibrate_shaper.py's
+        # main()) before calling in. Once MAX_SHAPER_FREQ (the fallback
+        # ceiling for the default, unbounded search) was raised above the
+        # typical max_freq default of 200, folding test_freqs.max() into
+        # that max() silently inflated max_freq to ~300 for every ordinary
+        # fit with no explicit frequency range -- computing each shaper's
+        # `vals` against a wider freq_bins slice than any caller (e.g. the
+        # plotting code, which truncates independently to its own max_freq)
+        # expects, causing a shape mismatch.
+        max_freq = max_freq or MAX_FREQ
+
         if not shaper_freqs:
             shaper_freqs = (None, None, None)
         if isinstance(shaper_freqs, tuple):
-            freq_end = shaper_freqs[1] or MAX_SHAPER_FREQ
+            # The default sweep is capped at max_freq: the PSD is truncated
+            # there, so a design frequency above it puts the shaper's notch
+            # entirely outside the scored data -- it can never win, and
+            # every grid point costs a find_max_accel bisection. The
+            # MAX_SHAPER_FREQ headroom above MAX_FREQ only matters when the
+            # caller actually measured that high (max_freq > 200).
+            freq_end = shaper_freqs[1] or min(MAX_SHAPER_FREQ, max_freq)
             freq_start = min(
                 shaper_freqs[0] or shaper_cfg.min_freq, freq_end - 1e-7
             )
@@ -561,8 +581,6 @@ class ShaperCalibrate:
             test_freqs = np.arange(freq_start, freq_end, freq_step)
         else:
             test_freqs = np.array(shaper_freqs)
-
-        max_freq = max(max_freq or MAX_FREQ, test_freqs.max())
 
         freq_bins = calibration_data.freq_bins
         psd = calibration_data.psd_sum[freq_bins <= max_freq]
