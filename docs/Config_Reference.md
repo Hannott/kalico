@@ -2398,6 +2398,15 @@ section of the measuring resonances guide for more information on
 #   auto-calibration (with 'SHAPER_CALIBRATE' command). By default no
 #   maximum smoothing is specified. Refer to Measuring_Resonances guide
 #   for more details on using this feature.
+#multimode_bias: 1.0
+#   Score margin by which a multimode (multi-frequency) shaper must beat the
+#   best single-mode shaper during 'SHAPER_CALIBRATE' before it is
+#   recommended. 1.0 (the default) recommends it on any genuine score
+#   improvement; values above 1.0 require it to win by that margin (e.g.
+#   1.3 only on a decisive win), useful if you prefer single-mode shapers
+#   unless multimode is clearly better; and values below 1.0 prefer
+#   multimode even when its score is slightly worse. Can be overridden per
+#   command with the MULTIMODE_BIAS parameter.
 #move_speed: 50
 #   The speed (in mm/s) to move the toolhead to and between test points
 #   during the calibration. The default is 50.
