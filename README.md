@@ -12,6 +12,46 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html) for more information on *some* of the differences from Klipper.
 
+## ⚠️ This branch (multimode-shaping-v3): config changes vs upstream
+
+This branch is not yet merged into `main` and changes the config in ways that
+aren't in mainline Kalico. If you're running this branch, read this section
+before using `SHAPER_CALIBRATE` or `SAVE_CONFIG`. Full details are in
+[Config_Changes.md](docs/Config_Changes.md).
+
+- **New `multimode` input shaper type** ([Config_Reference.md#input_shaper](docs/Config_Reference.md#input_shaper)) —
+  `[input_shaper]` gains a `multimode` shaper that convolves a base shaper
+  tuned to each of 2 or more resonance peaks at once, instead of a single
+  frequency. Configure with `shaper_type_<axis>: multimode`, a comma-separated
+  `shaper_freq_<axis>` (e.g. `32.1, 68.4`), and optionally a comma-separated
+  `shaper_base_<axis>` / `damping_ratio_<axis>` per peak.
+
+- **`SHAPER_CALIBRATE` auto-detects multimode shapers** ([Measuring_Resonances.md](docs/Measuring_Resonances.md), [G-Codes.md#shaper_calibrate](docs/G-Codes.md#shaper_calibrate)) —
+  when the frequency response shows two or more distinct, well-separated
+  resonance peaks, calibration now also fits and can recommend a `multimode`
+  shaper. How readily it's recommended over a single-frequency shaper is
+  controlled by the new `[resonance_tester] multimode_bias` config option
+  (or the `MULTIMODE_BIAS=` parameter on the command).
+
+- **Shaper scoring now weighs secondary/tertiary peaks** — the
+  vibration score used to pick a shaper and frequency no longer looks only at
+  the single tallest resonance peak. On axes with more than one significant
+  peak this can change the recommended shaper/frequency versus upstream, even
+  without any config changes. If your axis has more than one visible
+  resonance peak, consider re-running calibration.
+
+- **Bugfix: smoother shapers now accept `shaper_freq_<axis>` / `damping_ratio_<axis>`** ([Bleeding_Edge.md](docs/Bleeding_Edge.md)) —
+  previously, a config saved by `SHAPER_CALIBRATE` + `SAVE_CONFIG` for a
+  `smooth_*` shaper type could fail to reload with `Option 'shaper_freq_x' is
+  not valid`. These are now accepted as aliases for `smoother_freq_<axis>` /
+  used directly, so the saved config round-trips correctly.
+
+- **Motion change, no config change required** — a missing coefficient in
+  the `3hump_ei` shaper definition was corrected, and the extruder
+  pressure-advance smoother kernels are now fit more accurately. Toolhead and
+  extruder motion under input shaping may differ slightly from upstream as a
+  result.
+
 ## Features merged into the main branch:
 
 - [core: no Python2 tests; no PRU boards](https://github.com/KalicoCrew/kalico/pull/39)
