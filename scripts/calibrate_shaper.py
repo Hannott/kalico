@@ -202,7 +202,12 @@ def plot_freq_response(
             linestyle=linestyle,
             linewidth=linewidth,
         )
-    vibr_thresh = (psd[freqs > 0] / freqs[freqs > 0]).max() * (freqs + 5) / 33.3
+    # Plot the same acceptance threshold the scoring actually uses (flat
+    # psd.max()/SHAPER_VIBRATION_REDUCTION, lowered near each detected
+    # resonance peak) instead of duplicating the formula here.
+    vibr_thresh, _ = shaper_calibrate.ShaperCalibrate(
+        printer=None
+    )._calc_vibr_threshold(freqs, psd)
     ax.plot(
         freqs, vibr_thresh, label="Acceptable\nvibrations", color="lightgrey"
     )

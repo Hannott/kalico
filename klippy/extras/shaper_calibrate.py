@@ -520,36 +520,43 @@ class ShaperCalibrate:
         if cached is not None and cached[0] is freq_bins and cached[1] is psd:
             return cached[2], cached[3]
         np = self.numpy
-        pos = freq_bins > 0
-        ratio = np.zeros_like(psd)
-        ratio[pos] = psd[pos] / freq_bins[pos]
-        global_ratio = ratio[pos].max()
-        thresh_ratio = np.full_like(ratio, global_ratio)
-        # A secondary or tertiary resonance peak can be much shorter than
-        # the dominant one yet still contribute meaningfully once
-        # f^2-weighted below. The single global threshold above is
-        # calibrated to the dominant peak alone and can completely miss a
-        # shaper that leaves such a peak unshaped (its vals*psd never
-        # clears a threshold set by a much taller, unrelated peak).
-        #
-        # Detect distinct local peaks in the PSD and, in the immediate
-        # vicinity of any peak weaker than the dominant one, lower the
-        # threshold to that peak's own ratio. This only ever lowers the
-        # threshold, and only near an actual detected peak, so a
-        # single-peak PSD (the common case) scores identically to before.
-        is_peak = np.zeros_like(psd, dtype=bool)
-        is_peak[1:-1] = (
-            (psd[1:-1] > psd[:-2])
-            & (psd[1:-1] >= psd[2:])
-            & (psd[1:-1] > 0.05 * psd.max())
+        # Mainline Klipper's flat acceptance threshold: the input shaper can
+        # only reduce the amplitude of vibrations by SHAPER_VIBRATION_REDUCTION
+        # times, so vibrations below that level can be ignored.
+        vibr_threshold = np.full_like(
+            psd, psd.max() / shaper_defs.SHAPER_VIBRATION_REDUCTION
         )
-        for i in np.nonzero(is_peak & pos)[0]:
-            if ratio[i] >= global_ratio:
-                continue
+        # That single threshold is calibrated to the dominant peak alone, so
+        # a shaper that leaves a materially weaker but still significant
+        # secondary resonance unshaped can score near-perfect (its vals*psd
+        # never clears a threshold set by a much taller, unrelated peak) --
+        # hiding exactly the case a multimode shaper exists to solve. Near
+        # each genuinely detected resonance peak, lower the threshold to that
+        # peak's own acceptance level so leaving it unshaped costs score.
+        #
+        # Only peaks passing the same prominence/separation criteria as the
+        # multimode auto-detection count: lowering the threshold near mere
+        # local maxima (e.g. noise ridges or a taller peak's shoulder) forces
+        # near-total suppression of background content that no realizable
+        # shaper could deliver, and lets the noise floor out-vote the actual
+        # resonances in the fit. For a single-peak PSD (the common case) the
+        # only detected peak is the dominant one and its own level equals the
+        # global threshold, so scoring matches mainline exactly.
+        peaks = self._detect_resonance_peaks(
+            freq_bins,
+            psd,
+            MIN_FREQ,
+            freq_bins.max(),
+            max_peaks=MULTIMODE_MAX_PEAKS,
+        )
+        for peak_freq in peaks:
+            i = int(np.argmin(np.abs(freq_bins - peak_freq)))
             band = np.abs(freq_bins - freq_bins[i]) <= 12.0
-            thresh_ratio[band] = np.minimum(thresh_ratio[band], ratio[i])
-        vibr_threshold = thresh_ratio * (freq_bins + MIN_FREQ) * (1.0 / 33.3)
-        all_vibrations = (psd * freq_bins**2).sum()
+            vibr_threshold[band] = np.minimum(
+                vibr_threshold[band],
+                psd[i] / shaper_defs.SHAPER_VIBRATION_REDUCTION,
+            )
+        all_vibrations = np.maximum(psd - vibr_threshold, 0).sum()
         self._vibr_threshold_cache = (
             freq_bins,
             psd,
@@ -565,8 +572,8 @@ class ShaperCalibrate:
         vibr_threshold, all_vibrations = self._calc_vibr_threshold(
             freq_bins, psd
         )
-        remaining_vibrations = (
-            self.numpy.maximum(vals * psd - vibr_threshold, 0) * freq_bins**2
+        remaining_vibrations = self.numpy.maximum(
+            vals * psd - vibr_threshold, 0
         ).sum()
         return remaining_vibrations / all_vibrations
 
@@ -706,7 +713,7 @@ class ShaperCalibrate:
             shaper = shaper_cfg.init_func(test_freq, damping_ratio)
             shaper_smoothing = get_shaper_smoothing(shaper, scv=scv)
             if max_smoothing and shaper_smoothing > max_smoothing and best_res:
-                return best_res
+                return best_res, results
             shaper_vals = np.interp(
                 freq_bins, test_freq_bins * test_freq, test_shaper_vals
             )
@@ -718,10 +725,7 @@ class ShaperCalibrate:
             # the growth of smoothing. The formula itself does not have any
             # special meaning, it simply shows good results on real user data
             shaper_score = shaper_smoothing * (
-                2.0 * shaper_vibrations**1.5
-                + shaper_vibrations * 0.2
-                + 0.001
-                + shaper_smoothing * 0.002
+                shaper_vibrations**1.5 + shaper_vibrations * 0.2 + 0.01
             )
             results.append(
                 CalibrationResult(
@@ -741,12 +745,17 @@ class ShaperCalibrate:
         # much worse than the 'best' one, but gives much less smoothing
         selected = best_res
         for res in results[::-1]:
-            if res.score < selected.score and (
-                res.vibrs < best_res.vibrs * 1.2
-                or res.vibrs < best_res.vibrs + 0.0075
+            if (
+                res.vibrs < best_res.vibrs * 1.1 + 0.0005
+                and res.score < selected.score
             ):
                 selected = res
-        return selected
+        # The full per-frequency results list is returned alongside the
+        # selection so find_best_shaper can run mainline's strictly-better
+        # upgrade walk (a same-type candidate at another frequency that beats
+        # the current cross-shaper best on BOTH vibrations and smoothing
+        # takes over the recommendation).
+        return selected, results
 
     def _bisect(self, func, eps=1e-8):
         left = right = 1.0
@@ -1119,10 +1128,7 @@ class ShaperCalibrate:
                     freq_bins, shaper_vals, psd
                 )
                 shaper_score = shaper_smoothing * (
-                    2.0 * shaper_vibrations**1.5
-                    + shaper_vibrations * 0.2
-                    + 0.001
-                    + shaper_smoothing * 0.002
+                    shaper_vibrations**1.5 + shaper_vibrations * 0.2 + 0.01
                 )
                 result = CalibrationResult(
                     name="multimode_" + name,
@@ -1146,9 +1152,9 @@ class ShaperCalibrate:
             return None
         selected = best_res
         for res in results[::-1]:
-            if res.score < selected.score and (
-                res.vibrs < best_res.vibrs * 1.2
-                or res.vibrs < best_res.vibrs + 0.0075
+            if (
+                res.vibrs < best_res.vibrs * 1.1 + 0.0005
+                and res.score < selected.score
             ):
                 selected = res
         selected_shaper = shaper_defs.get_multimode_shaper(
@@ -1211,7 +1217,30 @@ class ShaperCalibrate:
                 for cfg, _, estimator, get_smoothing in fit_tasks
             ],
         )
-        for (cfg, kind, _, _), shaper in zip(fit_tasks, fit_results):
+        for (cfg, kind, _, _), (shaper, results) in zip(
+            fit_tasks, fit_results
+        ):
+            if (
+                best_shaper is None
+                or shaper.score * 1.2 < best_shaper.score
+                or (
+                    shaper.score * 1.05 < best_shaper.score
+                    and shaper.smoothing * 1.1 < best_shaper.smoothing
+                )
+            ):
+                # Either the candidate significantly improves the score (by
+                # 20%), or it improves the score and smoothing (by 5% and
+                # 10% resp.)
+                best_shaper = shaper
+            # Mainline's upgrade walk: any of this candidate's other tested
+            # frequencies that beats the current best on BOTH remaining
+            # vibrations and smoothing is strictly better and takes over.
+            for s in results[::-1]:
+                if (
+                    s.vibrs < best_shaper.vibrs
+                    and s.smoothing < best_shaper.smoothing
+                ):
+                    best_shaper = shaper = s
             if logger is not None:
                 logger(
                     "Fitted %s '%s' frequency = %.1f Hz "
@@ -1232,18 +1261,17 @@ class ShaperCalibrate:
                     % (shaper.name, round(shaper.max_accel / 100.0) * 100.0)
                 )
             all_shapers.append(shaper)
-            if (
-                best_shaper is None
-                or shaper.score * 1.2 < best_shaper.score
-                or (
-                    shaper.score * 1.03 < best_shaper.score
-                    and shaper.smoothing * 1.01 < best_shaper.smoothing
-                )
-            ):
-                # Either the candidate significantly improves the score (by
-                # 20%), or it improves the score and smoothing (by 5% and
-                # 10% resp.)
-                best_shaper = shaper
+        if best_shaper is not None and best_shaper.name == "zv":
+            # Mainline's ZV demotion: ZV is the narrowest shaper and wins
+            # mostly on its minimal smoothing -- if any other candidate
+            # leaves meaningfully (10%+) less vibration, prefer it.
+            for tuned_shaper in all_shapers:
+                if (
+                    tuned_shaper.name != "zv"
+                    and tuned_shaper.vibrs * 1.1 < best_shaper.vibrs
+                ):
+                    best_shaper = tuned_shaper
+                    break
         if use_multimode:
             # Only worth the (much larger) search if the PSD actually shows
             # two or more distinct, well-separated resonances; on a typical

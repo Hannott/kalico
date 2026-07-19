@@ -8,6 +8,20 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260720: SHAPER_CALIBRATE's remaining-vibration scoring reverts to mainline
+Klipper's flat acceptance threshold and unweighted vibration sum, dropping
+the frequency-squared bin weighting and frequency-proportional threshold
+introduced with the modified calibration approach. That weighting let
+high-frequency floor noise outvote an actual low-frequency resonance, so on
+spectra with significant content above the dominant peak the tuner could
+recommend a shaper frequency far above every resonance, leaving the printer's
+real peak essentially unshaped. Secondary resonance peaks still lower the
+acceptance threshold in their vicinity (so multimode shapers keep getting
+credit for shaping them), but only genuinely detected resonance peaks now
+qualify, not every local maximum. The shaper score formula and the
+selection tolerances also revert to mainline's. Recommendations change on
+most axes -- re-run shaper calibration after upgrading.
+
 20260716: `[input_shaper]` gains a `multimode` shaper type that convolves a
 base shaper tuned to each of 2 or more resonance frequencies, placing a notch
 at every one of them. Configure it with `shaper_type_<axis>: multimode`,
