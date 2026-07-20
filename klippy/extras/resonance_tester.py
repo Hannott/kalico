@@ -6,6 +6,7 @@
 import logging
 import math
 import os
+import tempfile
 import time
 from contextlib import contextmanager
 
@@ -343,6 +344,12 @@ class ResonanceTester:
             )
 
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
+        # Score margin by which a multimode shaper must beat the best
+        # single-mode shaper to be recommended (see find_best_shaper): 1.0
+        # (the default) takes it on any genuine improvement, values above
+        # 1.0 require a win by that margin, and values below 1.0 actively
+        # prefer multimode shapers.
+        self.multimode_bias = config.getfloat("multimode_bias", 1.0, above=0.0)
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -555,6 +562,9 @@ class ResonanceTester:
         max_smoothing = gcmd.get_float(
             "MAX_SMOOTHING", self.max_smoothing, minval=0.05
         )
+        multimode_bias = gcmd.get_float(
+            "MULTIMODE_BIAS", self.multimode_bias, above=0.0
+        )
 
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
@@ -590,19 +600,29 @@ class ResonanceTester:
                 max_smoothing=max_smoothing,
                 scv=scv,
                 max_freq=max_freq,
+                multimode_bias=multimode_bias,
                 logger=gcmd.respond_info,
             )
-            gcmd.respond_info(
-                "Recommended shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
-                % (axis_name, best_shaper.name, axis_name, best_shaper.freq)
-            )
-            if input_shaper is not None:
-                helper.apply_params(
-                    input_shaper, axis_name, best_shaper.name, best_shaper.freq
+            if best_shaper.freqs is not None:
+                base_label = (
+                    best_shaper.bases[0]
+                    if len(set(best_shaper.bases)) == 1
+                    else ", ".join(best_shaper.bases)
                 )
-            helper.save_params(
-                configfile, axis_name, best_shaper.name, best_shaper.freq
-            )
+                freq_label = ", ".join("%.1f" % (f,) for f in best_shaper.freqs)
+                gcmd.respond_info(
+                    "Recommended shaper_type_%s = multimode "
+                    "(base=%s), shaper_freq_%s = %s Hz"
+                    % (axis_name, base_label, axis_name, freq_label)
+                )
+            else:
+                gcmd.respond_info(
+                    "Recommended shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
+                    % (axis_name, best_shaper.name, axis_name, best_shaper.freq)
+                )
+            if input_shaper is not None:
+                helper.apply_params(input_shaper, axis_name, best_shaper)
+            helper.save_params(configfile, axis_name, best_shaper)
             csv_name = self.save_calibration_data(
                 "calibration_data",
                 name_suffix,
@@ -663,7 +683,7 @@ class ResonanceTester:
         if point:
             name += "_%.3f_%.3f_%.3f" % (point[0], point[1], point[2])
         name += "_" + name_suffix
-        return os.path.join("/tmp", name + ".csv")
+        return os.path.join(tempfile.gettempdir(), name + ".csv")
 
     def save_calibration_data(
         self,

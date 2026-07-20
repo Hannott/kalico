@@ -78,6 +78,7 @@ def calibrate_shaper(
     max_smoothing,
     test_damping_ratios,
     max_freq,
+    multimode_bias=1.0,
 ):
     helper = shaper_calibrate.ShaperCalibrate(printer=None)
     if isinstance(datas[0], shaper_calibrate.CalibrationData):
@@ -100,6 +101,7 @@ def calibrate_shaper(
         max_smoothing=max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
+        multimode_bias=multimode_bias,
         logger=print,
     )
     if not shaper:
@@ -108,7 +110,19 @@ def calibrate_shaper(
             % (",".join(shapers))
         )
         return None, None, None
-    print("Recommended shaper is %s @ %.1f Hz" % (shaper.name, shaper.freq))
+    if shaper.freqs is not None:
+        base_label = (
+            shaper.bases[0]
+            if len(set(shaper.bases)) == 1
+            else ", ".join(shaper.bases)
+        )
+        freq_label = " / ".join("%.1f" % (f,) for f in shaper.freqs)
+        print(
+            "Recommended shaper is multimode (base=%s) @ %s Hz"
+            % (base_label, freq_label)
+        )
+    else:
+        print("Recommended shaper is %s @ %.1f Hz" % (shaper.name, shaper.freq))
     if csv_output is not None:
         helper.save_calibration_data(csv_output, calibration_data, all_shapers)
     return shaper.name, all_shapers, calibration_data
@@ -159,9 +173,18 @@ def plot_freq_response(
     ax2.set_ylabel("Shaper vibration reduction (ratio)")
     best_shaper_vals = None
     for shaper in shapers:
-        label = "%s (%.1f Hz, vibr=%.1f%%, sm~=%.2f, accel<=%.f)" % (
+        if shaper.freqs is not None:
+            freq_label = "/".join("%.1f" % (f,) for f in shaper.freqs) + " Hz"
+            dr_label = ", dr=" + "/".join(
+                "%.3f" % (d,) for d in shaper.damping_ratios
+            )
+        else:
+            freq_label = "%.1f Hz" % (shaper.freq,)
+            dr_label = ""
+        label = "%s (%s%s, vibr=%.1f%%, sm~=%.2f, accel<=%.f)" % (
             shaper.name.upper(),
-            shaper.freq,
+            freq_label,
+            dr_label,
             shaper.vibrs * 100.0,
             shaper.smoothing,
             round(shaper.max_accel / 100.0) * 100.0,
@@ -179,7 +202,12 @@ def plot_freq_response(
             linestyle=linestyle,
             linewidth=linewidth,
         )
-    vibr_thresh = (psd[freqs > 0] / freqs[freqs > 0]).max() * (freqs + 5) / 33.3
+    # Plot the same acceptance threshold the scoring actually uses (flat
+    # psd.max()/SHAPER_VIBRATION_REDUCTION, lowered near each detected
+    # resonance peak) instead of duplicating the formula here.
+    vibr_thresh, _ = shaper_calibrate.ShaperCalibrate(
+        printer=None
+    )._calc_vibr_threshold(freqs, psd)
     ax.plot(
         freqs, vibr_thresh, label="Acceptable\nvibrations", color="lightgrey"
     )
@@ -282,6 +310,15 @@ def main():
         help="a comma-separated list of shapers to test",
     )
     opts.add_option(
+        "--multimode_bias",
+        type="float",
+        dest="multimode_bias",
+        default=1.0,
+        help="score margin a multimode shaper must beat the best single-mode "
+        + "shaper by to be recommended (1.0=default/any gain, "
+        + "1.3=decisive win, <1.0=prefer multimode)",
+    )
+    opts.add_option(
         "--damping_ratio",
         type="float",
         dest="damping_ratio",
@@ -369,6 +406,7 @@ def main():
         max_smoothing=options.max_smoothing,
         test_damping_ratios=test_damping_ratios,
         max_freq=max_freq,
+        multimode_bias=options.multimode_bias,
     )
     if selected_shaper is None:
         return

@@ -171,6 +171,9 @@ configuration between multiple sections. References take the form of
 `${section.option}` to look up a value elsewhere in your configuration. Note,
 that constants must always be lower case.
 
+References are a plain text substitution: the referenced value is copied
+as-is. Expressions and Python-like functions are not evaluated.
+
 Optionally, a `[constants]` section can be used specifically to store
 these values. Unused constants will display a warning. However, `[constants]`
 will display an error if none of the constants are used.
@@ -241,8 +244,6 @@ max_accel:
 #   decelerate to zero at each corner. The value specified here may be
 #   changed at runtime using the SET_VELOCITY_LIMIT command. The
 #   default is 5mm/s.
-#max_accel_to_decel:
-#   This parameter is deprecated and should no longer be used.
 ```
 
 ### [stepper]
@@ -782,6 +783,12 @@ max_z_accel:
 # stepper controlling the X-Y movement.
 [stepper_x]
 
+# Additional steppers may be added to the X rail as [stepper_x1],
+# [stepper_x2], etc. Each additional X stepper is driven with the
+# mirrored belt direction. Combined with additional Y steppers
+# ([stepper_y1]) this supports four motor hybrid machines such as the
+# RatRig V-Core hybrid.
+
 # The stepper_y section is used to describe the stepper controlling
 # the Y axis.
 [stepper_y]
@@ -818,6 +825,10 @@ max_z_accel:
 # The stepper_x section is used to describe the X axis as well as the
 # stepper controlling the X-Z movement.
 [stepper_x]
+
+# Additional steppers may be added to the X rail as [stepper_x1],
+# [stepper_x2], etc. Each additional X stepper is driven with the
+# mirrored belt direction.
 
 # The stepper_y section is used to describe the stepper controlling
 # the Y axis.
@@ -2177,29 +2188,44 @@ the [command reference](G-Codes.md#input_shaper).
 #   should suppress. For more complex shapers, like 2- and 3-hump EI
 #   input shapers, this parameter can be set from different
 #   considerations. The default value is 0, which disables input
-#   shaping for X axis.
+#   shaping for X axis. When shaper_type(_x) is multimode, this is a
+#   comma-separated list of 2 or more frequencies, one per resonance
+#   peak (e.g. "45.2, 79.5").
 #shaper_freq_y: 0
 #   A frequency (in Hz) of the input shaper for Y axis. This is
 #   usually a resonance frequency of Y axis that the input shaper
 #   should suppress. For more complex shapers, like 2- and 3-hump EI
 #   input shapers, this parameter can be set from different
 #   considerations. The default value is 0, which disables input
-#   shaping for Y axis.
+#   shaping for Y axis. When shaper_type(_y) is multimode, this is a
+#   comma-separated list of 2 or more frequencies, one per resonance
+#   peak (e.g. "45.2, 79.5").
 #shaper_type: mzv
 #   A type of the input shaper to use for both X and Y axes. Supported
-#   shapers are zv, mzv, zvd, ei, 2hump_ei, and 3hump_ei. The default
-#   is mzv input shaper.
+#   shapers are zv, mzv, zvd, ei, 2hump_ei, 3hump_ei, and multimode. The
+#   default is mzv input shaper.
 #shaper_type_x:
 #shaper_type_y:
 #   If shaper_type is not set, these two parameters can be used to
 #   configure different input shapers for X and Y axes. The same
 #   values are supported as for shaper_type parameter.
+#shaper_base_x: mzv
+#shaper_base_y: mzv
+#   Only used when shaper_type(_x/_y) is multimode. The base shaper
+#   convolved together at each resonance frequency listed in
+#   shaper_freq_x/y: either a single value (used for every peak) or a
+#   comma-separated list matching shaper_freq_x/y one-for-one (e.g. a
+#   different base per peak). Supported bases are the same as for
+#   shaper_type. The default is mzv.
 #damping_ratio_x: 0.1
 #damping_ratio_y: 0.1
 #   Damping ratios of vibrations of X and Y axes used by input shapers
 #   to improve vibration suppression. Default value is 0.1 which is a
 #   good all-round value for most printers. In most circumstances this
-#   parameter requires no tuning and should not be changed.
+#   parameter requires no tuning and should not be changed. When
+#   shaper_type(_x/_y) is multimode, this may also be a comma-separated
+#   list matching shaper_freq_x/y one-for-one, to give each peak its own
+#   damping ratio.
 ```
 
 ### [adxl345]
@@ -2383,6 +2409,15 @@ section of the measuring resonances guide for more information on
 #   auto-calibration (with 'SHAPER_CALIBRATE' command). By default no
 #   maximum smoothing is specified. Refer to Measuring_Resonances guide
 #   for more details on using this feature.
+#multimode_bias: 1.0
+#   Score margin by which a multimode (multi-frequency) shaper must beat the
+#   best single-mode shaper during 'SHAPER_CALIBRATE' before it is
+#   recommended. 1.0 (the default) recommends it on any genuine score
+#   improvement; values above 1.0 require it to win by that margin (e.g.
+#   1.3 only on a decisive win), useful if you prefer single-mode shapers
+#   unless multimode is clearly better; and values below 1.0 prefer
+#   multimode even when its score is slightly worse. Can be overridden per
+#   command with the MULTIMODE_BIAS parameter.
 #move_speed: 50
 #   The speed (in mm/s) to move the toolhead to and between test points
 #   during the calibration. The default is 50.
@@ -3728,6 +3763,23 @@ max_temp: 325
 #   Ignore the temp limits (if set to true, the min and max temp can be omitted)
 #echo_limits_to_console: False
 #   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
+```
+
+### INDX temperature sensor
+
+Temperature reported by a [Bondtech INDX toolboard](#indx). The
+default "heater" kind reports the nozzle temperature and is the one
+to use for the extruder; the other kinds are mainly diagnostic.
+
+```
+sensor_type: indx
+#indx_sensor: heater
+#   The temperature to report. Available kinds are "heater" (nozzle
+#   temperature), "sensor" (IR sensor die temperature), "board"
+#   (toolboard temperature), "bracket" (sensor bracket temperature),
+#   "ldc_coil" (eddy current probe coil temperature), "check_model"
+#   (thermal model prediction) and "check_model_delta" (difference
+#   between the model prediction and the measured temperature).
 ```
 
 
@@ -6172,6 +6224,91 @@ sensor_type:
 See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more details on maximum for tap quality.
 
 ## Board specific hardware support
+
+### [indx]
+
+Support for the Bondtech INDX toolboard with its inductive nozzle
+heater, contactless IR temperature sensor and on-board PID
+controller. The toolboard must run Kalico firmware built with the
+"Bondtech INDX Heater" option enabled. See the
+[INDX document](INDX.md) for setup and calibration instructions and
+[G-Codes](G-Codes.md#indx) for the available commands.
+
+The module registers named aliases for the toolboard pins (e.g.
+`<mcu>:motor_step`, `<mcu>:part_cooling`, `<mcu>:endstop`), exposes
+the nozzle heater as the virtual pin `indx:heater`, the nozzle
+temperature as `sensor_type: indx`, and automatically manages the
+heatsink fan. The heater will not heat until INDX_CALIBRATE has been
+run.
+
+```
+[indx]
+mcu:
+#   The name of the mcu config section for the INDX toolboard (e.g.
+#   "indxmcu" when the toolboard is defined as "[mcu indxmcu]"). This
+#   parameter must be provided.
+#part_cooling_fan: fan
+#   Name of the part cooling fan object on the tool. The fan speed is
+#   used by the thermal model to compensate for part cooling airflow.
+#   Set to an empty string to disable.
+#pid_kp: 4.0
+#pid_ti: 0.0
+#pid_td: 0.0
+#pid_b: 1.0
+#   Parameters for the PID controller running on the toolboard. The
+#   defaults should work for most setups.
+#max_temp_nozzle: 305.0
+#max_temp_sensor: 130.0
+#max_temp_bracket: 130.0
+#max_temp_board: 100.0
+#   Maximum allowed temperature for the nozzle, the IR sensor die,
+#   the sensor bracket and the toolboard. Exceeding any of these
+#   triggers a shutdown.
+#max_model_error: 50.0
+#   Maximum allowed difference (in Celsius) between the measured
+#   nozzle temperature and the thermal model prediction before a
+#   shutdown is triggered.
+#coil_time_on:
+#coil_time_off:
+#coil_time_on_first:
+#   Inductive coil drive timings in microseconds. These are measured
+#   by INDX_CALIBRATE and stored by SAVE_CONFIG; they should not
+#   normally be set by hand.
+#max_power:
+#model_max_power_temp_coeff:
+#model_thermal_capacity:
+#model_to_ambient_r:
+#   Thermal model parameters. These are measured by INDX_CALIBRATE
+#   and stored by SAVE_CONFIG; they should not normally be set by
+#   hand.
+#model_filament_diameter: 1.75
+#model_filament_density: 1.20
+#model_filament_heat_capacity: 1.8
+#   Filament parameters used by the thermal model to account for the
+#   energy carried away by extruded filament. The density is in
+#   g/cm^3 and the heat capacity in J/(g*K). These can also be
+#   measured with INDX_LOAD_FILAMENT or changed at runtime with
+#   INDX_SET_MODEL_PARAMS.
+#model_part_cooling_fan_a: 0.0
+#model_part_cooling_fan_k: 0.0
+#   Part cooling fan compensation for the thermal model, measured by
+#   INDX_FAN_CALIBRATE and stored by SAVE_CONFIG.
+#model_ambient_blend_board: 0.0
+#model_ambient_blend_bracket: 1.0
+#model_ambient_blend_sensor: 1.0
+#   Relative weights of the toolboard, sensor bracket and IR sensor
+#   die temperatures when estimating the ambient temperature for the
+#   thermal model.
+#model_error_application: 1.0
+#   Fraction of the observed model error fed back into the thermal
+#   model on each update.
+#ir_sensor_exponent:
+#ir_sensor_obj_gain:
+#ir_sensor_bracket_gain:
+#   Override the IR sensor tuning parameters stored in the sensor
+#   EEPROM. All three must be provided if any is given. These should
+#   not normally be set.
+```
 
 ### [sx1509]
 

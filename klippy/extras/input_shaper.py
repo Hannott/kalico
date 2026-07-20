@@ -168,6 +168,222 @@ class CustomInputShaperParams:
         )
 
 
+class MultiModeInputShaperParams:
+    # Multimode shaper: convolution of a base shaper tuned to each of
+    # N >= 2 resonance frequencies, placing a notch at every one of them.
+    # Configured per axis with shaper_freq_<axis>, an optional
+    # shaper_base_<axis> (default mzv), and optional per-peak
+    # damping_ratio_<axis>, each of which accepts either a single value or
+    # a comma-separated list (e.g. "shaper_freq_x: 45.2, 79.5, 132.6"); a
+    # list shorter than the others is broadcast if it has exactly one
+    # entry. The extruder gets a fitted smoother counterpart (see
+    # extruder_smoother.get_multimode_extruder_smoother), same as the
+    # named single-mode shapers.
+    SHAPER_TYPE = "multimode"
+    DEFAULT_BASE = "mzv"
+
+    def __init__(self, axis, config):
+        self.axis = axis
+        self.bases = [self.DEFAULT_BASE]
+        self.damping_ratios = [shaper_defs.DEFAULT_DAMPING_RATIO]
+        self.freqs = [0.0]
+        self.n, self.A, self.T = 0, [], []
+        if config is not None:
+
+            def get_raw(key):
+                return config.get(key, None)
+
+            bases = self._parse_field(
+                get_raw,
+                "shaper_base_" + axis,
+                [self.DEFAULT_BASE],
+                lambda s: s.strip().lower(),
+                config.error,
+            )
+            for base in bases:
+                self._check_base(base, config.error)
+            damping_ratios = self._parse_field(
+                get_raw,
+                "damping_ratio_" + axis,
+                [shaper_defs.DEFAULT_DAMPING_RATIO],
+                float,
+                config.error,
+                minval=0.0,
+                maxval=1.0,
+            )
+            freqs = self._parse_field(
+                get_raw,
+                "shaper_freq_" + axis,
+                [0.0],
+                float,
+                config.error,
+                minval=0.0,
+            )
+            self._build_shaper(bases, damping_ratios, freqs, config.error)
+
+    def _parse_field(
+        self,
+        get_raw,
+        key,
+        default_values,
+        parser,
+        error,
+        minval=None,
+        maxval=None,
+    ):
+        # A field may be a single value (broadcast to every peak) or a
+        # comma-separated list (one value per peak).
+        raw = get_raw(key)
+        if raw is None:
+            values = list(default_values)
+        else:
+            parts = [p.strip() for p in raw.split(",") if p.strip()]
+            values = (
+                [parser(p) for p in parts] if parts else list(default_values)
+            )
+        for v in values:
+            if minval is not None and v < minval:
+                raise error(
+                    "%s: value %s in '%s' is below minimum %s"
+                    % (self.axis, v, key, minval)
+                )
+            if maxval is not None and v > maxval:
+                raise error(
+                    "%s: value %s in '%s' is above maximum %s"
+                    % (self.axis, v, key, maxval)
+                )
+        return values
+
+    def _reconcile(self, values, n, name, error):
+        # Broadcast a single shared value across all N peaks, or require an
+        # exact per-peak match; anything else is an unambiguous config
+        # mistake (e.g. exactly 2 bases given for 3 frequencies).
+        if len(values) == n:
+            return list(values)
+        if len(values) == 1:
+            return list(values) * n
+        raise error(
+            "%s: '%s' has %d value(s), expected 1 or %d (matching the "
+            "number of frequencies)" % (self.axis, name, len(values), n)
+        )
+
+    def _check_base(self, base, error):
+        if base not in shaper_defs.MULTIMODE_BASES:
+            raise error(
+                "Unsupported multimode base shaper '%s' (choose one of: %s)"
+                % (base, ", ".join(sorted(shaper_defs.MULTIMODE_BASES)))
+            )
+
+    def _build_shaper(self, bases, damping_ratios, freqs, error):
+        # Validates and builds from the given (already-parsed) values, and
+        # only assigns to self on full success -- a failed SET_INPUT_SHAPER
+        # must not leave the params half-updated (reporting new frequencies
+        # while still shaping with the old impulses).
+        if len(freqs) < 2 or any(f <= 0.0 for f in freqs):
+            self.bases, self.damping_ratios, self.freqs = (
+                bases,
+                damping_ratios,
+                freqs,
+            )
+            self.n, self.A, self.T = 0, [], []
+            return
+        n = len(freqs)
+        bases = self._reconcile(bases, n, "shaper_base", error)
+        damping_ratios = self._reconcile(
+            damping_ratios, n, "damping_ratio", error
+        )
+        for base in bases:
+            self._check_base(base, error)
+        A, T = shaper_defs.get_multimode_shaper(bases, freqs, damping_ratios)
+        # The discrete shaper mechanism has a fixed-size pulse buffer
+        # (MAX_SHAPER_PULSES in kin_shaper.h); a convolution silently
+        # exceeding it would otherwise disable shaping without warning.
+        if len(A) > shaper_defs.MAX_SHAPER_PULSES:
+            raise error(
+                "multimode shaper for axis %s: base(s) '%s' produce %d impulses,"
+                " more than the %d the firmware supports; use shorter"
+                " base shaper(s) (e.g. zv or mzv)"
+                % (
+                    self.axis,
+                    "/".join(bases),
+                    len(A),
+                    shaper_defs.MAX_SHAPER_PULSES,
+                )
+            )
+        self.bases, self.damping_ratios, self.freqs = (
+            bases,
+            damping_ratios,
+            freqs,
+        )
+        self.n, self.A, self.T = len(A), A, T
+
+    def get_type(self):
+        return self.SHAPER_TYPE
+
+    def get_axis(self):
+        return self.axis
+
+    def update(self, shaper_type, gcmd):
+        if shaper_type != self.SHAPER_TYPE:
+            raise gcmd.error("Unsupported shaper type: %s" % (shaper_type,))
+        axis = self.axis.upper()
+
+        # A gcode field that's entirely absent from this command keeps the
+        # CURRENT full list (a partial update, e.g. SET_INPUT_SHAPER
+        # SHAPER_FREQ_X=... alone leaves the bases as they were); a field
+        # that IS given replaces its whole list, so changing one entry of
+        # an N>2 list means restating all N values.
+        def get_raw(key):
+            return gcmd.get(key, None)
+
+        bases = self._parse_field(
+            get_raw,
+            "SHAPER_BASE_" + axis,
+            self.bases,
+            lambda s: s.strip().lower(),
+            gcmd.error,
+        )
+        for base in bases:
+            self._check_base(base, gcmd.error)
+        damping_ratios = self._parse_field(
+            get_raw,
+            "DAMPING_RATIO_" + axis,
+            self.damping_ratios,
+            float,
+            gcmd.error,
+            minval=0.0,
+            maxval=1.0,
+        )
+        freqs = self._parse_field(
+            get_raw,
+            "SHAPER_FREQ_" + axis,
+            self.freqs,
+            float,
+            gcmd.error,
+            minval=0.0,
+        )
+        self._build_shaper(bases, damping_ratios, freqs, gcmd.error)
+
+    def get_shaper(self):
+        return self.n, self.A, self.T
+
+    def get_status(self):
+        return collections.OrderedDict(
+            [
+                ("shaper_type", self.SHAPER_TYPE),
+                ("shaper_base", ", ".join(self.bases)),
+                (
+                    "shaper_freq",
+                    ", ".join("%.3f" % (f,) for f in self.freqs),
+                ),
+                (
+                    "damping_ratio",
+                    ", ".join("%.6f" % (d,) for d in self.damping_ratios),
+                ),
+            ]
+        )
+
+
 class AxisInputShaper:
     def __init__(self, params):
         self.params = params
@@ -238,16 +454,35 @@ class AxisInputShaper:
         else:
             shaper_type = self.get_type()
             status = self.params.get_status()
-            damping_ratio = float(
-                status.get("damping_ratio", shaper_defs.DEFAULT_DAMPING_RATIO)
-            )
-
-            C_e, t_sm = extruder_smoother.get_extruder_smoother(
-                shaper_type,
-                self.T[-1] - self.T[0],
-                damping_ratio,
-                normalize_coeffs=False,
-            )
+            if shaper_type == MultiModeInputShaperParams.SHAPER_TYPE:
+                # get_status() joins with ", " (comma-space); float() tolerates
+                # the leading space on its own, but a dict lookup (the base
+                # name, below) does not, so strip every element explicitly.
+                bases = [b.strip() for b in status["shaper_base"].split(",")]
+                freqs = [float(f) for f in status["shaper_freq"].split(",")]
+                damping_ratios = [
+                    float(d) for d in status["damping_ratio"].split(",")
+                ]
+                smoother_fn = extruder_smoother.get_multimode_extruder_smoother
+                C_e, t_sm = smoother_fn(
+                    bases,
+                    freqs,
+                    damping_ratios,
+                    self.T[-1] - self.T[0],
+                    normalize_coeffs=False,
+                )
+            else:
+                damping_ratio = float(
+                    status.get(
+                        "damping_ratio", shaper_defs.DEFAULT_DAMPING_RATIO
+                    )
+                )
+                C_e, t_sm = extruder_smoother.get_extruder_smoother(
+                    shaper_type,
+                    self.T[-1] - self.T[0],
+                    damping_ratio,
+                    normalize_coeffs=False,
+                )
             smoother_offset = self.t_offs - 0.5 * t_sm
             success = (
                 ffi_lib.extruder_set_smoothing_params(
@@ -529,6 +764,8 @@ class ShaperFactory:
             return AxisInputSmoother(CustomInputSmootherParams(axis, config))
         if type_name == CustomInputShaperParams.SHAPER_TYPE:
             return AxisInputShaper(CustomInputShaperParams(axis, config))
+        if type_name == MultiModeInputShaperParams.SHAPER_TYPE:
+            return AxisInputShaper(MultiModeInputShaperParams(axis, config))
         if type_name in TypedInputShaperParams.shapers:
             return AxisInputShaper(
                 TypedInputShaperParams(axis, type_name, config)
@@ -558,7 +795,15 @@ class ShaperFactory:
             shaper.update(shaper_type, gcmd)
             return shaper
         except gcmd.error:
-            pass
+            # The rebuild below exists to handle a shaper TYPE switch (the
+            # old params object can't represent the new type). For a
+            # same-type update the error is a genuine validation failure --
+            # retrying on a fresh params object must not swallow it, or an
+            # invalid command can "succeed" against default state (e.g. a
+            # multimode SHAPER_FREQ list whose length no longer matches the
+            # configured SHAPER_BASE list would silently reset the bases).
+            if shaper_type == shaper.get_type():
+                raise
         shaper = self._create_shaper(shaper.get_axis(), shaper_type)
         if shaper is None:
             raise gcmd.error("Unsupported shaper type '%s'" % (shaper_type,))
