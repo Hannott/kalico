@@ -210,7 +210,19 @@ def estimate_smoother_old(np, smoother, test_damping_ratio, test_freqs):
     )
 
 
-def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
+def _sliding_windows(np, m, wl):
+    nrows = m.shape[-1] - wl + 1
+    n = m.strides[-1]
+    return np.lib.stride_tricks.as_strided(
+        m, shape=(m.shape[0], nrows, wl), strides=(m.strides[0], n, n)
+    )
+
+
+def _prepare_smoother_estimate(np, smoother, test_freqs):
+    # The smoother geometry (time grid, weights, convolution windows) depends
+    # only on the smoother and the test frequencies, not on the damping ratio.
+    # fit_shaper evaluates estimate_smoother once per test damping ratio, so it
+    # computes this context once and reuses it across all of them.
     C, t_sm = smoother[0], smoother[1]
     hst = t_sm * 0.5
 
@@ -233,19 +245,27 @@ def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
     w[time < -hst] = 0.0
     norms = (w * dt[:, np.newaxis]).sum(axis=-1)
 
-    min_v = -step_response_min_velocity(test_damping_ratio)
-
     omega = 2.0 * math.pi * test_freqs[test_freqs > 0.0]
 
     wm = np.count_nonzero(time < -hst, axis=-1).min()
     wp = np.count_nonzero(time <= hst, axis=-1).max()
 
-    def get_windows(m, wl):
-        nrows = m.shape[-1] - wl + 1
-        n = m.strides[-1]
-        return np.lib.stride_tricks.as_strided(
-            m, shape=(m.shape[0], nrows, wl), strides=(m.strides[0], n, n)
-        )
+    w_dt = w[:, wm:wp] * (np.reciprocal(norms) * dt)[:, np.newaxis]
+    return {
+        "test_freqs": test_freqs,
+        "time": time,
+        "omega": omega,
+        "wl": wp - wm,
+        "w_dt_rev": w_dt[:, ::-1],
+    }
+
+
+def _eval_smoother_estimate(np, ctx, test_damping_ratio):
+    test_freqs = ctx["test_freqs"]
+    time = ctx["time"]
+    omega = ctx["omega"]
+
+    min_v = -step_response_min_velocity(test_damping_ratio)
 
     # The velocity of the smoothed response is the smoother convolved
     # with the analytic velocity of the step response
@@ -253,14 +273,20 @@ def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
         step_response_velocity(np, time, omega, test_damping_ratio)
         / omega[:, np.newaxis]
     )
-    w_dt = w[:, wm:wp] * (np.reciprocal(norms) * dt)[:, np.newaxis]
-    velocity = np.einsum("ijk,ik->ij", get_windows(s_v, wp - wm), w_dt[:, ::-1])
+    velocity = np.einsum(
+        "ijk,ik->ij", _sliding_windows(np, s_v, ctx["wl"]), ctx["w_dt_rev"]
+    )
     res = np.zeros(shape=test_freqs.shape)
     # The smoothed velocity is C^1, a parabolic refinement of the discrete
     # minimum is sufficient
     res[test_freqs > 0.0] = -_refined_min(np, velocity) / min_v
     res[test_freqs <= 0.0] = 1.0
     return res
+
+
+def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
+    ctx = _prepare_smoother_estimate(np, smoother, test_freqs)
+    return _eval_smoother_estimate(np, ctx, test_damping_ratio)
 
 
 class ShaperCalibrate:
@@ -315,6 +341,80 @@ class ShaperCalibrate:
         calc_proc.join()
         parent_conn.close()
         return res
+
+    def background_processes_exec(self, jobs):
+        # Run several independent calculations concurrently, at most one OS
+        # process per CPU, and return their results in the order of 'jobs'.
+        # find_best_shaper fits many candidate shapers that don't depend on
+        # each other, so this spreads them across the host's cores.
+        jobs = list(jobs)
+        if self.printer is None:
+            return [method(*args) for method, args in jobs]
+        import os
+
+        import queuelogger
+
+        try:
+            cpus = os.cpu_count() or 1
+        except NotImplementedError:
+            cpus = 1
+        max_workers = max(1, min(len(jobs), cpus))
+
+        def make_wrapper(method, args, child_conn):
+            def wrapper():
+                queuelogger.clear_bg_logging()
+                try:
+                    res = method(*args)
+                except:
+                    child_conn.send((True, traceback.format_exc()))
+                    child_conn.close()
+                    return
+                child_conn.send((False, res))
+                child_conn.close()
+
+            return wrapper
+
+        reactor = self.printer.get_reactor()
+        gcode = self.printer.lookup_object("gcode")
+        results = [None] * len(jobs)
+        running = {}  # job index -> (calc_proc, parent_conn)
+        next_job = 0
+        completed = 0
+        first_error = None
+        eventtime = last_report_time = reactor.monotonic()
+        while completed < len(jobs):
+            # Top up the pool with pending jobs
+            while len(running) < max_workers and next_job < len(jobs):
+                method, args = jobs[next_job]
+                parent_conn, child_conn = multiprocessing.Pipe()
+                calc_proc = multiprocessing.Process(
+                    target=make_wrapper(method, args, child_conn)
+                )
+                calc_proc.daemon = True
+                calc_proc.start()
+                running[next_job] = (calc_proc, parent_conn)
+                next_job += 1
+            # Collect any jobs that have finished
+            for idx in list(running):
+                calc_proc, parent_conn = running[idx]
+                if parent_conn.poll():
+                    is_err, res = parent_conn.recv()
+                    calc_proc.join()
+                    parent_conn.close()
+                    del running[idx]
+                    completed += 1
+                    if is_err:
+                        if first_error is None:
+                            first_error = res
+                    else:
+                        results[idx] = res
+            if eventtime > last_report_time + 5.0:
+                last_report_time = eventtime
+                gcode.respond_info("Wait for calculations..", log=False)
+            eventtime = reactor.pause(eventtime + 0.1)
+        if first_error is not None:
+            raise self.error("Error in remote calculation: %s" % (first_error,))
+        return results
 
     def _split_into_windows(self, x, window_size, overlap):
         # Memory-efficient algorithm to split an input 'x' into a series
@@ -476,6 +576,39 @@ class ShaperCalibrate:
         offset_90 = math.sqrt(offset_90_x**2 + offset_90_y**2)
         return max(offset_90, abs(offset_180))
 
+    # Both smoothing models are linear in half_accel = accel/2. The offset
+    # helpers below return that decomposition as
+    #   offset_180  = half_accel * b180
+    #   offset_90_x = c90x + half_accel * b90x
+    #   offset_90_y = c90y + half_accel * b90y
+    # so find_max_accel can solve for the target smoothing analytically.
+    def _smoother_offset_coeffs(self, smoother, scv):
+        i_180, jp1, jp2, jn1, jn2 = self._calc_smoother_integrals(smoother)
+        return i_180, scv * jp1, jp2, scv * jn1, -jn2
+
+    def _shaper_offset_coeffs(self, shaper, scv):
+        A, T = shaper
+        inv_D = 1.0 / sum(A)
+        ts = shaper_defs.get_shaper_offset(A, T)
+        b180 = c90x = b90x = c90y = b90y = 0.0
+        for i in range(len(T)):
+            d = T[i] - ts
+            ad2 = A[i] * d * d
+            b180 += ad2
+            if T[i] >= ts:
+                c90x += A[i] * scv * d
+                b90x += ad2
+            else:
+                c90y += A[i] * scv * d
+                b90y -= ad2
+        return (
+            inv_D * b180,
+            inv_D * c90x,
+            inv_D * b90x,
+            inv_D * c90y,
+            inv_D * b90y,
+        )
+
     def fit_shaper(
         self,
         shaper_cfg,
@@ -500,9 +633,19 @@ class ShaperCalibrate:
         test_shaper_vals = np.zeros(shape=test_freq_bins.shape)
         # Exact damping ratio of the printer is unknown, pessimizing
         # remaining vibrations over possible damping values
-        for dr in test_damping_ratios:
-            vals = estimate_shaper(self.numpy, shaper, dr, test_freq_bins)
-            test_shaper_vals = np.maximum(test_shaper_vals, vals)
+        if estimate_shaper is estimate_smoother:
+            # The smoother geometry is damping-independent; build it once and
+            # reuse across the tested damping ratios (only s_v/min_v differ).
+            est_ctx = _prepare_smoother_estimate(
+                self.numpy, shaper, test_freq_bins
+            )
+            for dr in test_damping_ratios:
+                vals = _eval_smoother_estimate(self.numpy, est_ctx, dr)
+                test_shaper_vals = np.maximum(test_shaper_vals, vals)
+        else:
+            for dr in test_damping_ratios:
+                vals = estimate_shaper(self.numpy, shaper, dr, test_freq_bins)
+                test_shaper_vals = np.maximum(test_shaper_vals, vals)
 
         if not shaper_freqs:
             shaper_freqs = (None, None, None)
@@ -570,35 +713,41 @@ class ShaperCalibrate:
                 selected = res
         return selected
 
-    def _bisect(self, func, eps=1e-8):
-        left = right = 1.0
-        if not func(eps):
-            return 0.0
-        while not func(left):
-            right = left
-            left *= 0.5
-        if right == left:
-            while func(right):
-                right *= 2.0
-        while right - left > eps:
-            middle = (left + right) * 0.5
-            if func(middle):
-                left = middle
-            else:
-                right = middle
-        return left
+    # Empirically chosen smoothing level that produces good projections for
+    # max_accel without much smoothing.
+    TARGET_SMOOTHING = 0.12
 
     def find_max_accel(self, s, scv, get_smoothing):
-        # Just some empirically chosen value which produces good projections
-        # for max_accel without much smoothing
-        TARGET_SMOOTHING = 0.12
-        max_accel = self._bisect(
-            lambda test_accel: (
-                get_smoothing(s, test_accel, scv) <= TARGET_SMOOTHING
-            ),
-            1e-2,
-        )
-        return max_accel
+        # smoothing(accel) = max(|half*b180|, hypot(c90x + half*b90x,
+        # c90y + half*b90y)) with half = accel/2. Both terms are monotone /
+        # convex, so {accel >= 0: smoothing <= target} is the interval
+        # [0, max_accel]; solve for its upper end directly instead of
+        # bisecting get_smoothing ~30 times per candidate frequency.
+        if get_smoothing == self._get_smoother_smoothing:
+            b180, c90x, b90x, c90y, b90y = self._smoother_offset_coeffs(s, scv)
+        else:
+            b180, c90x, b90x, c90y, b90y = self._shaper_offset_coeffs(s, scv)
+        target = self.TARGET_SMOOTHING
+        inf = float("inf")
+        # 180-turn offset |half * b180| reaches the target here
+        half_180 = target / abs(b180) if b180 else inf
+        # 90-turn offset^2 = A*half^2 + B*half + C; solve == target^2
+        A = b90x * b90x + b90y * b90y
+        B = 2.0 * (c90x * b90x + c90y * b90y)
+        C = c90x * c90x + c90y * c90y
+        if C > target * target:
+            # Already above the target at accel 0 (smoothing(0) = sqrt(C))
+            return 0.0
+        if A == 0.0:
+            half_90 = inf
+        else:
+            disc = B * B - 4.0 * A * (C - target * target)
+            half_90 = (-B + math.sqrt(disc)) / (2.0 * A)
+        half_accel = min(half_180, half_90)
+        if half_accel == inf:
+            # Unreachable for physical smoothers/shapers (b180 > 0)
+            return 0.0
+        return 2.0 * half_accel
 
     def find_best_shaper(
         self,
@@ -615,78 +764,64 @@ class ShaperCalibrate:
         best_shaper = None
         all_shapers = []
         shapers = shapers or AUTOTUNE_SHAPERS
+        # Build the independent fit jobs (smoothers first, then shapers, in
+        # their definition order) and fit them concurrently across CPUs. The
+        # kind label only selects the log wording below.
+        jobs = []
+        job_kinds = []
         for smoother_cfg in shaper_defs.INPUT_SMOOTHERS:
             if smoother_cfg.name not in shapers:
                 continue
-            smoother = self.background_process_exec(
-                self.fit_shaper,
+            jobs.append(
                 (
-                    smoother_cfg,
-                    calibration_data,
-                    shaper_freqs,
-                    damping_ratio,
-                    scv,
-                    max_smoothing,
-                    test_damping_ratios,
-                    max_freq,
-                    estimate_smoother,
-                    self._get_smoother_smoothing,
-                ),
+                    self.fit_shaper,
+                    (
+                        smoother_cfg,
+                        calibration_data,
+                        shaper_freqs,
+                        damping_ratio,
+                        scv,
+                        max_smoothing,
+                        test_damping_ratios,
+                        max_freq,
+                        estimate_smoother,
+                        self._get_smoother_smoothing,
+                    ),
+                )
             )
-            if logger is not None:
-                logger(
-                    "Fitted smoother '%s' frequency = %.1f Hz "
-                    "(vibration score = %.2f%%, smoothing ~= %.3f,"
-                    " combined score = %.3e)"
-                    % (
-                        smoother.name,
-                        smoother.freq,
-                        smoother.vibrs * 100.0,
-                        smoother.smoothing,
-                        smoother.score,
-                    )
-                )
-                logger(
-                    "To avoid too much smoothing with '%s', suggested "
-                    "max_accel <= %.0f mm/sec^2"
-                    % (smoother.name, round(smoother.max_accel / 100.0) * 100.0)
-                )
-            all_shapers.append(smoother)
-            if (
-                best_shaper is None
-                or smoother.score * 1.2 < best_shaper.score
-                or (
-                    smoother.score * 1.03 < best_shaper.score
-                    and smoother.smoothing * 1.01 < best_shaper.smoothing
-                )
-            ):
-                # Either the smoother significantly improves the score (by 20%),
-                # or it improves the score and smoothing (by 5% and 10% resp.)
-                best_shaper = smoother
+            job_kinds.append("smoother")
         for shaper_cfg in shaper_defs.INPUT_SHAPERS:
             if shaper_cfg.name not in shapers:
                 continue
-            shaper = self.background_process_exec(
-                self.fit_shaper,
+            jobs.append(
                 (
-                    shaper_cfg,
-                    calibration_data,
-                    shaper_freqs,
-                    damping_ratio,
-                    scv,
-                    max_smoothing,
-                    test_damping_ratios,
-                    max_freq,
-                    estimate_shaper,
-                    self._get_shaper_smoothing,
-                ),
+                    self.fit_shaper,
+                    (
+                        shaper_cfg,
+                        calibration_data,
+                        shaper_freqs,
+                        damping_ratio,
+                        scv,
+                        max_smoothing,
+                        test_damping_ratios,
+                        max_freq,
+                        estimate_shaper,
+                        self._get_shaper_smoothing,
+                    ),
+                )
             )
+            job_kinds.append("shaper")
+
+        fitted = self.background_processes_exec(jobs)
+
+        for kind, shaper in zip(job_kinds, fitted):
             if logger is not None:
                 logger(
-                    "Fitted shaper '%s' frequency = %.1f Hz "
+                    "Fitted %s '%s' frequency = %.1f Hz "
                     "(vibration score = %.2f%%, smoothing ~= %.3f,"
                     " combined score = %.3e)"
                     % (
+                        kind,
                         shaper.name,
                         shaper.freq,
                         shaper.vibrs * 100.0,
