@@ -243,7 +243,19 @@ def estimate_smoother_old(np, smoother, test_damping_ratio, test_freqs):
     )
 
 
-def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
+def _sliding_windows(np, m, wl):
+    nrows = m.shape[-1] - wl + 1
+    n = m.strides[-1]
+    return np.lib.stride_tricks.as_strided(
+        m, shape=(m.shape[0], nrows, wl), strides=(m.strides[0], n, n)
+    )
+
+
+def _prepare_smoother_estimate(np, smoother, test_freqs):
+    # The smoother geometry (time grid, weights, convolution windows) depends
+    # only on the smoother and the test frequencies, not on the damping ratio.
+    # fit_shaper evaluates estimate_smoother once per test damping ratio, so it
+    # computes this context once and reuses it across all of them.
     C, t_sm = smoother[0], smoother[1]
     hst = t_sm * 0.5
 
@@ -266,19 +278,27 @@ def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
     w[time < -hst] = 0.0
     norms = (w * dt[:, np.newaxis]).sum(axis=-1)
 
-    min_v = -step_response_min_velocity(test_damping_ratio)
-
     omega = 2.0 * math.pi * test_freqs[test_freqs > 0.0]
 
     wm = np.count_nonzero(time < -hst, axis=-1).min()
     wp = np.count_nonzero(time <= hst, axis=-1).max()
 
-    def get_windows(m, wl):
-        nrows = m.shape[-1] - wl + 1
-        n = m.strides[-1]
-        return np.lib.stride_tricks.as_strided(
-            m, shape=(m.shape[0], nrows, wl), strides=(m.strides[0], n, n)
-        )
+    w_dt = w[:, wm:wp] * (np.reciprocal(norms) * dt)[:, np.newaxis]
+    return {
+        "test_freqs": test_freqs,
+        "time": time,
+        "omega": omega,
+        "wl": wp - wm,
+        "w_dt_rev": w_dt[:, ::-1],
+    }
+
+
+def _eval_smoother_estimate(np, ctx, test_damping_ratio):
+    test_freqs = ctx["test_freqs"]
+    time = ctx["time"]
+    omega = ctx["omega"]
+
+    min_v = -step_response_min_velocity(test_damping_ratio)
 
     # The velocity of the smoothed response is the smoother convolved
     # with the analytic velocity of the step response
@@ -286,14 +306,20 @@ def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
         step_response_velocity(np, time, omega, test_damping_ratio)
         / omega[:, np.newaxis]
     )
-    w_dt = w[:, wm:wp] * (np.reciprocal(norms) * dt)[:, np.newaxis]
-    velocity = np.einsum("ijk,ik->ij", get_windows(s_v, wp - wm), w_dt[:, ::-1])
+    velocity = np.einsum(
+        "ijk,ik->ij", _sliding_windows(np, s_v, ctx["wl"]), ctx["w_dt_rev"]
+    )
     res = np.zeros(shape=test_freqs.shape)
     # The smoothed velocity is C^1, a parabolic refinement of the discrete
     # minimum is sufficient
     res[test_freqs > 0.0] = -_refined_min(np, velocity) / min_v
     res[test_freqs <= 0.0] = 1.0
     return res
+
+
+def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
+    ctx = _prepare_smoother_estimate(np, smoother, test_freqs)
+    return _eval_smoother_estimate(np, ctx, test_damping_ratio)
 
 
 class ShaperCalibrate:
@@ -643,6 +669,39 @@ class ShaperCalibrate:
         offset_90 = math.sqrt(offset_90_x**2 + offset_90_y**2)
         return max(offset_90, abs(offset_180))
 
+    # Both smoothing models are linear in half_accel = accel/2. The offset
+    # helpers below return that decomposition as
+    #   offset_180  = half_accel * b180
+    #   offset_90_x = c90x + half_accel * b90x
+    #   offset_90_y = c90y + half_accel * b90y
+    # so find_max_accel can solve for the target smoothing analytically.
+    def _smoother_offset_coeffs(self, smoother, scv):
+        i_180, jp1, jp2, jn1, jn2 = self._calc_smoother_integrals(smoother)
+        return i_180, scv * jp1, jp2, scv * jn1, -jn2
+
+    def _shaper_offset_coeffs(self, shaper, scv):
+        A, T = shaper
+        inv_D = 1.0 / sum(A)
+        ts = shaper_defs.get_shaper_offset(A, T)
+        b180 = c90x = b90x = c90y = b90y = 0.0
+        for i in range(len(T)):
+            d = T[i] - ts
+            ad2 = A[i] * d * d
+            b180 += ad2
+            if T[i] >= ts:
+                c90x += A[i] * scv * d
+                b90x += ad2
+            else:
+                c90y += A[i] * scv * d
+                b90y -= ad2
+        return (
+            inv_D * b180,
+            inv_D * c90x,
+            inv_D * b90x,
+            inv_D * c90y,
+            inv_D * b90y,
+        )
+
     def fit_shaper(
         self,
         shaper_cfg,
@@ -667,9 +726,19 @@ class ShaperCalibrate:
         test_shaper_vals = np.zeros(shape=test_freq_bins.shape)
         # Exact damping ratio of the printer is unknown, pessimizing
         # remaining vibrations over possible damping values
-        for dr in test_damping_ratios:
-            vals = estimate_shaper(self.numpy, shaper, dr, test_freq_bins)
-            test_shaper_vals = np.maximum(test_shaper_vals, vals)
+        if estimate_shaper is estimate_smoother:
+            # The smoother geometry is damping-independent; build it once and
+            # reuse across the tested damping ratios (only s_v/min_v differ).
+            est_ctx = _prepare_smoother_estimate(
+                self.numpy, shaper, test_freq_bins
+            )
+            for dr in test_damping_ratios:
+                vals = _eval_smoother_estimate(self.numpy, est_ctx, dr)
+                test_shaper_vals = np.maximum(test_shaper_vals, vals)
+        else:
+            for dr in test_damping_ratios:
+                vals = estimate_shaper(self.numpy, shaper, dr, test_freq_bins)
+                test_shaper_vals = np.maximum(test_shaper_vals, vals)
 
         # NOTE: max_freq must NOT be expanded to cover test_freqs.max()
         # below. That was only ever needed for an explicit --shaper_freq
@@ -691,7 +760,7 @@ class ShaperCalibrate:
             # The default sweep is capped at max_freq: the PSD is truncated
             # there, so a design frequency above it puts the shaper's notch
             # entirely outside the scored data -- it can never win, and
-            # every grid point costs a find_max_accel bisection. The
+            # every grid point costs a find_max_accel evaluation. The
             # MAX_SHAPER_FREQ headroom above MAX_FREQ only matters when the
             # caller actually measured that high (max_freq > 200).
             freq_end = shaper_freqs[1] or min(MAX_SHAPER_FREQ, max_freq)
@@ -757,35 +826,41 @@ class ShaperCalibrate:
         # takes over the recommendation).
         return selected, results
 
-    def _bisect(self, func, eps=1e-8):
-        left = right = 1.0
-        if not func(eps):
-            return 0.0
-        while not func(left):
-            right = left
-            left *= 0.5
-        if right == left:
-            while func(right):
-                right *= 2.0
-        while right - left > eps:
-            middle = (left + right) * 0.5
-            if func(middle):
-                left = middle
-            else:
-                right = middle
-        return left
+    # Empirically chosen smoothing level that produces good projections for
+    # max_accel without much smoothing.
+    TARGET_SMOOTHING = 0.12
 
     def find_max_accel(self, s, scv, get_smoothing):
-        # Just some empirically chosen value which produces good projections
-        # for max_accel without much smoothing
-        TARGET_SMOOTHING = 0.12
-        max_accel = self._bisect(
-            lambda test_accel: (
-                get_smoothing(s, test_accel, scv) <= TARGET_SMOOTHING
-            ),
-            1e-2,
-        )
-        return max_accel
+        # smoothing(accel) = max(|half*b180|, hypot(c90x + half*b90x,
+        # c90y + half*b90y)) with half = accel/2. Both terms are monotone /
+        # convex, so {accel >= 0: smoothing <= target} is the interval
+        # [0, max_accel]; solve for its upper end directly instead of
+        # bisecting get_smoothing ~30 times per candidate frequency.
+        if get_smoothing == self._get_smoother_smoothing:
+            b180, c90x, b90x, c90y, b90y = self._smoother_offset_coeffs(s, scv)
+        else:
+            b180, c90x, b90x, c90y, b90y = self._shaper_offset_coeffs(s, scv)
+        target = self.TARGET_SMOOTHING
+        inf = float("inf")
+        # 180-turn offset |half * b180| reaches the target here
+        half_180 = target / abs(b180) if b180 else inf
+        # 90-turn offset^2 = A*half^2 + B*half + C; solve == target^2
+        A = b90x * b90x + b90y * b90y
+        B = 2.0 * (c90x * b90x + c90y * b90y)
+        C = c90x * c90x + c90y * c90y
+        if C > target * target:
+            # Already above the target at accel 0 (smoothing(0) = sqrt(C))
+            return 0.0
+        if A == 0.0:
+            half_90 = inf
+        else:
+            disc = B * B - 4.0 * A * (C - target * target)
+            half_90 = (-B + math.sqrt(disc)) / (2.0 * A)
+        half_accel = min(half_180, half_90)
+        if half_accel == inf:
+            # Unreachable for physical smoothers/shapers (b180 > 0)
+            return 0.0
+        return 2.0 * half_accel
 
     def _detect_resonance_peaks(
         self,
@@ -1137,8 +1212,8 @@ class ShaperCalibrate:
                     vibrs=shaper_vibrations,
                     smoothing=shaper_smoothing,
                     score=shaper_score,
-                    # max_accel is expensive (a bisection over the
-                    # smoothing) so it is only computed for the single
+                    # max_accel is only meaningful for the final
+                    # recommendation, so it is computed for the single
                     # selected candidate below, not every grid point.
                     max_accel=0.0,
                     bases=tuple(base_names),
