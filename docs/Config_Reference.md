@@ -2447,6 +2447,28 @@ section of the measuring resonances guide for more information on
 #   non-zero value in order to not poison the measurements.
 #   To enable it, start by setting it to 1.2 sec which is a good all-round
 #   choice. Set it to 0 do disable it. The default is 0.
+#crosstalk_calibration: True
+#   Before the first probe point's sweep for an axis, run a few slow,
+#   resonance-safe back-and-forth moves along that axis alone and check
+#   how much of that motion registers on the perpendicular accelerometer
+#   channel. A non-zero result at this deliberately low, sub-resonance
+#   frequency indicates the accelerometer itself is not mounted exactly
+#   orthogonally to the frame (rather than a genuine mechanical
+#   resonance), so it is subtracted from the perpendicular channel for
+#   the rest of the run. Can be disabled per command with
+#   CROSSTALK_CALIBRATE=0. The default is True.
+#crosstalk_test_freq: 2.0
+#   Frequency (Hz) of the probing moves used to detect accelerometer
+#   cross-axis leakage. Must stay well below the printer's real first
+#   resonance, or genuine mechanical coupling could be mistaken for
+#   sensor misalignment. The default is 2.0 Hz.
+#crosstalk_test_cycles: 4
+#   Number of oscillation cycles to run when probing for cross-axis
+#   leakage. The default is 4.
+#crosstalk_warn_ratio: 0.1
+#   If the detected cross-axis leakage exceeds this fraction (0.1 = 10%)
+#   of the primary-axis signal, a warning is printed suggesting the
+#   accelerometer's mounting be checked. The default is 0.1.
 ```
 
 ## Config file helpers
