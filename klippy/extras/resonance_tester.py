@@ -39,6 +39,45 @@ class TestAxis:
         return (self._vib_dir[0] * l, self._vib_dir[1] * l)
 
 
+def _gen_fixed_freq_test(freq, accel, num_periods):
+    # A short, constant-frequency back-and-forth move (no sweep) used to
+    # probe accelerometer cross-axis leakage before the real test starts.
+    t_seg = 0.25 / freq
+    res = []
+    sign = 1.0
+    t = 0.0
+    for _ in range(int(round(num_periods * 4))):
+        t += t_seg
+        res.append((t, sign * accel, freq))
+        sign = -sign
+    return res
+
+
+def _crosstalk_ratio(samples, axis_name):
+    # Least-squares slope (through the means, i.e. DC bias is ignored) of
+    # the perpendicular-axis reading vs. the primary-axis reading: the
+    # fraction of primary-axis motion that leaks into the perpendicular
+    # channel, attributable to the accelerometer not being mounted exactly
+    # orthogonally to the frame.
+    primary_idx, perp_idx = (1, 2) if axis_name == "x" else (2, 1)
+    n = len(samples)
+    sum_p = sum_q = sum_pp = sum_pq = 0.0
+    for s in samples:
+        p = s[primary_idx]
+        q = s[perp_idx]
+        sum_p += p
+        sum_q += q
+        sum_pp += p * p
+        sum_pq += p * q
+    mean_p = sum_p / n
+    mean_q = sum_q / n
+    var_p = sum_pp / n - mean_p * mean_p
+    if var_p <= 0.0:
+        return None
+    cov_pq = sum_pq / n - mean_p * mean_q
+    return cov_pq / var_p
+
+
 def _parse_axis(gcmd, raw_axis):
     if raw_axis is None:
         return None
@@ -350,6 +389,26 @@ class ResonanceTester:
         # 1.0 require a win by that margin, and values below 1.0 actively
         # prefer multimode shapers.
         self.multimode_bias = config.getfloat("multimode_bias", 1.0, above=0.0)
+        # Accelerometer cross-axis leakage detection: before the first probe
+        # point's sweep for an axis, run a few slow, resonance-safe
+        # back-and-forth moves along that axis alone and check how much of
+        # that motion registers on the perpendicular accelerometer channel.
+        # A non-zero result at this deliberately low frequency indicates the
+        # accelerometer itself is not mounted orthogonally (rather than a
+        # real mechanical resonance), so it is subtracted from the
+        # perpendicular channel for the rest of the run.
+        self.crosstalk_calibration = config.getboolean(
+            "crosstalk_calibration", True
+        )
+        self.crosstalk_test_freq = config.getfloat(
+            "crosstalk_test_freq", 2.0, minval=0.5, maxval=5.0
+        )
+        self.crosstalk_test_cycles = config.getint(
+            "crosstalk_test_cycles", 4, minval=2
+        )
+        self.crosstalk_warn_ratio = config.getfloat(
+            "crosstalk_warn_ratio", 0.1, minval=0.0, maxval=1.0
+        )
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -386,6 +445,54 @@ class ResonanceTester:
                 )
                 raise
 
+    def _measure_crosstalk(self, gcmd, axis, chip, crosstalk_ratios):
+        axis_name = axis.get_name()
+        if axis_name not in ("x", "y"):
+            # Cross-axis leakage correction only makes sense for the
+            # machine-aligned X/Y tests; skip custom AXIS=dx,dy directions.
+            return
+        key = (chip.name, axis_name)
+        if key in crosstalk_ratios:
+            return
+        freq = self.crosstalk_test_freq
+        accel = self.generator.get_accel_per_hz() * freq
+        test_seq = _gen_fixed_freq_test(
+            freq, accel, self.crosstalk_test_cycles
+        )
+        aclient = chip.start_internal_client()
+        self.executor.run_test(test_seq, axis, gcmd)
+        aclient.finish_measurements()
+        if not aclient.has_valid_samples():
+            return
+        samples = aclient.get_samples()
+        if len(samples) < 20:
+            return
+        ratio = _crosstalk_ratio(samples, axis_name)
+        if ratio is None:
+            return
+        crosstalk_ratios[key] = ratio
+        gcmd.respond_info(
+            "Accelerometer '%s': %.1f%% of %s-axis motion registers on "
+            "the perpendicular axis; compensating for calibration."
+            % (chip.name, abs(ratio) * 100.0, axis_name.upper())
+        )
+        if abs(ratio) > self.crosstalk_warn_ratio:
+            gcmd.respond_info(
+                "WARNING: accelerometer '%s' shows unusually high "
+                "cross-axis coupling (%.1f%%) -- check that it is "
+                "mounted securely and its axes are aligned with the "
+                "printer frame." % (chip.name, abs(ratio) * 100.0)
+            )
+
+    def _correct_crosstalk(self, samples, axis_name, ratio):
+        primary_idx, perp_idx = (1, 2) if axis_name == "x" else (2, 1)
+        corrected = []
+        for s in samples:
+            s = list(s)
+            s[perp_idx] -= ratio * s[primary_idx]
+            corrected.append(s)
+        return corrected
+
     def _run_test(
         self,
         gcmd,
@@ -402,9 +509,19 @@ class ResonanceTester:
         # from gcmd
         self.generator.prepare_test(gcmd)
 
+        crosstalk_enabled = bool(
+            gcmd.get_int(
+                "CROSSTALK_CALIBRATE",
+                int(self.crosstalk_calibration),
+                minval=0,
+                maxval=1,
+            )
+        )
+        crosstalk_ratios = {}
+
         test_points = [test_point] if test_point else self.probe_points
 
-        for point in test_points:
+        for point_idx, point in enumerate(test_points):
             toolhead.manual_move(point, self.move_speed)
             if len(test_points) > 1 or test_point is not None:
                 gcmd.respond_info(
@@ -416,16 +533,28 @@ class ResonanceTester:
                 if len(axes) > 1:
                     gcmd.respond_info("Testing axis %s" % axis.get_name())
 
-                raw_values = []
+                chips = []
                 if accel_chips is None:
                     for chip_axis, chip in self.accel_chips:
                         if axis.matches(chip_axis):
-                            aclient = chip.start_internal_client()
-                            raw_values.append((chip_axis, aclient, chip.name))
+                            chips.append((chip_axis, chip))
                 else:
                     for chip in accel_chips:
-                        aclient = chip.start_internal_client()
-                        raw_values.append((axis, aclient, chip.name))
+                        chips.append((axis, chip))
+
+                if crosstalk_enabled and point_idx == 0:
+                    for chip_axis, chip in chips:
+                        self._measure_crosstalk(
+                            gcmd, axis, chip, crosstalk_ratios
+                        )
+                    if chips:
+                        toolhead.wait_moves()
+                        toolhead.dwell(0.500)
+
+                raw_values = []
+                for chip_axis, chip in chips:
+                    aclient = chip.start_internal_client()
+                    raw_values.append((chip_axis, aclient, chip.name))
 
                 # Generate moves
                 test_seq = self.generator.gen_test()
@@ -452,7 +581,16 @@ class ResonanceTester:
                         raise gcmd.error(
                             "accelerometer '%s' measured no data" % (chip_name,)
                         )
-                    new_data = helper.process_accelerometer_data(aclient)
+                    ratio = crosstalk_ratios.get((chip_name, axis.get_name()))
+                    if ratio is not None:
+                        samples = self._correct_crosstalk(
+                            aclient.get_samples(), axis.get_name(), ratio
+                        )
+                        new_data = helper.process_accelerometer_data(
+                            helper.numpy.array(samples)
+                        )
+                    else:
+                        new_data = helper.process_accelerometer_data(aclient)
                     if calibration_data[axis] is None:
                         calibration_data[axis] = new_data
                     else:

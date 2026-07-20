@@ -1696,7 +1696,8 @@ all enabled accelerometer chips.
 `TEST_RESONANCES AXIS=<axis> [OUTPUT=<resonances,raw_data>]
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
 [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<chip_name>]
-[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=<0:1>]`: Runs
+[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=<0:1>]
+[CROSSTALK_CALIBRATE=<0:1>]`: Runs
 the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
@@ -1709,7 +1710,12 @@ more configured accel chips, delimited with comma, for example
 they will override the corresponding fields configured in `[resonance_tester]`.
 If `INPUT_SHAPING=0` or not set(default), disables input shaping for the resonance
 testing, because it is not valid to run the resonance testing with the input shaper
-enabled. `OUTPUT` parameter is a comma-separated list of which outputs
+enabled. For AXIS=X or AXIS=Y (not a custom direction), and unless disabled
+with `CROSSTALK_CALIBRATE=0` (default from the `crosstalk_calibration`
+setting in `[resonance_tester]`), a short, low-frequency, resonance-safe
+probing move is run first to detect and compensate for accelerometer
+cross-axis leakage; see [resonance_tester](Config_Reference.md#resonance_tester)
+for details. `OUTPUT` parameter is a comma-separated list of which outputs
 will be written. If `raw_data` is requested, then the raw
 accelerometer data is written into a file or a series of files
 `/tmp/raw_data_<axis>_[<chip_name>_][<point>_]<name>.csv` with
@@ -1724,7 +1730,7 @@ frequency response is calculated (across all probe points) and written into
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
 [FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>]
 [CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]
-[MULTIMODE_BIAS=<bias>]`:
+[MULTIMODE_BIAS=<bias>] [CROSSTALK_CALIBRATE=<0:1>]`:
 Similarly to `TEST_RESONANCES`, runs the resonance test as configured, and tries
 to find the optimal parameters for the input shaper for the requested axis
 (or both X and Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset,
