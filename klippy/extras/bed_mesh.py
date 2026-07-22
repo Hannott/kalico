@@ -476,6 +476,7 @@ class BedMeshCalibrate:
         self.orig_config = {"radius": None, "origin": None}
         self.radius = self.origin = None
         self.mesh_min = self.mesh_max = (0.0, 0.0)
+        self.auto_mesh_min = self.auto_mesh_max = False
         self.adaptive_margin = config.getfloat("adaptive_margin", 0.0)
         self.zero_ref_pos = config.getfloatlist(
             "zero_reference_position", None, count=2
@@ -678,15 +679,29 @@ class BedMeshCalibrate:
         else:
             # rectangular
             x_cnt, y_cnt = parse_config_pair(config, "probe_count", 3, minval=3)
-            min_x, min_y = config.getfloatlist("mesh_min", count=2)
-            max_x, max_y = config.getfloatlist("mesh_max", count=2)
+            mesh_min = config.getfloatlist("mesh_min", None, count=2)
+            mesh_max = config.getfloatlist("mesh_max", None, count=2)
+            self.auto_mesh_min = mesh_min is None
+            self.auto_mesh_max = mesh_max is None
+            if self.auto_mesh_min or self.auto_mesh_max:
+                def_min, def_max = self._get_default_bounds(config)
+                if mesh_min is None:
+                    mesh_min = def_min
+                if mesh_max is None:
+                    mesh_max = def_max
+            min_x, min_y = mesh_min
+            max_x, max_y = mesh_max
             if max_x <= min_x or max_y <= min_y:
                 raise config.error("bed_mesh: invalid min/max points")
             # Note: mesh_margin is intentionally not applied here. Doing so
             # correctly requires the probe's x/y offsets (to avoid biasing
             # the inset on the side the offset already constrains), which
             # aren't reliably available until the printer has connected.
-            # See _apply_margin(), called from update_config().
+            # See _apply_margin(), called from update_config().  The same
+            # applies to deduced (auto) mesh bounds: they are stored here
+            # as the full X/Y travel range and clamped to the probe's
+            # reachable range in update_config(), via _apply_margin() or
+            # _clamp_auto_bounds().
         orig_cfg["x_count"] = mesh_cfg["x_count"] = x_cnt
         orig_cfg["y_count"] = mesh_cfg["y_count"] = y_cnt
         orig_cfg["mesh_min"] = self.mesh_min = (min_x, min_y)
@@ -749,6 +764,31 @@ class BedMeshCalibrate:
                         )
             self.faulty_regions.append((c1, c3))
         self._verify_algorithm(config.error)
+
+    def _get_default_bounds(self, config):
+        # Deduce the default mesh area from the X/Y travel limits
+        # (position_min/position_max) when mesh_min and/or mesh_max are
+        # omitted. Probe offsets cannot be reconciled at config time (see
+        # the note in _init_mesh_config); update_config() clamps these
+        # bounds to the probe's reachable range before points are
+        # generated.
+        bounds = []
+        for axis in "xy":
+            section = "stepper_" + axis
+            if not config.has_section(section):
+                raise config.error(
+                    "bed_mesh: 'mesh_min' and 'mesh_max' are required as "
+                    "there is no [%s] section to deduce them from" % (section,)
+                )
+            stepper_cfg = config.getsection(section)
+            bounds.append(
+                (
+                    stepper_cfg.getfloat("position_min", 0.0, note_valid=False),
+                    stepper_cfg.getfloat("position_max", note_valid=False),
+                )
+            )
+        (min_x, max_x), (min_y, max_y) = bounds
+        return (min_x, min_y), (max_x, max_y)
 
     def _verify_algorithm(self, error):
         params = self.mesh_config
@@ -952,15 +992,24 @@ class BedMeshCalibrate:
                 self.mesh_config["y_count"] = cnt
                 need_cfg_update = True
         else:
-            explicit_bounds = "MESH_MIN" in params or "MESH_MAX" in params
-            if not explicit_bounds and self.mesh_margin:
-                self._apply_margin(gcmd.error, probe_method)
-            if "MESH_MIN" in params:
+            explicit_min = "MESH_MIN" in params
+            explicit_max = "MESH_MAX" in params
+            if explicit_min:
                 self.mesh_min = parse_gcmd_coord(gcmd, "MESH_MIN")
                 need_cfg_update = True
-            if "MESH_MAX" in params:
+            if explicit_max:
                 self.mesh_max = parse_gcmd_coord(gcmd, "MESH_MAX")
                 need_cfg_update = True
+            clamp_min = self.auto_mesh_min and not explicit_min
+            clamp_max = self.auto_mesh_max and not explicit_max
+            if not explicit_min and not explicit_max and self.mesh_margin:
+                self._apply_margin(gcmd.error, probe_method)
+            elif clamp_min or clamp_max:
+                # Deduced (auto) mesh bounds span the full X/Y travel
+                # range, so any side not explicitly configured or
+                # overridden needs the reachability clamp, even when
+                # mesh_margin is 0.
+                self._clamp_auto_bounds(probe_method, clamp_min, clamp_max)
             if "PROBE_COUNT" in params:
                 x_cnt, y_cnt = parse_gcmd_pair(gcmd, "PROBE_COUNT", minval=3)
                 self.mesh_config["x_count"] = x_cnt
@@ -1007,6 +1056,25 @@ class BedMeshCalibrate:
         max_x, max_y = self.mesh_max
         min_x, max_x = self._margin_bounds(error, min_x, max_x, x_offset)
         min_y, max_y = self._margin_bounds(error, min_y, max_y, y_offset)
+        self.mesh_min = (min_x, min_y)
+        self.mesh_max = (max_x, max_y)
+
+    def _clamp_auto_bounds(self, probe_method, clamp_min, clamp_max):
+        # Deduced (auto) mesh bounds equal the printer's X/Y travel limits,
+        # so a mesh point right at a bound may need the toolhead beyond
+        # those limits once the probe's offset is applied. Pull each
+        # deduced (non-overridden) side in to the probe's reachable range:
+        # P is probeable only if P - offset stays within the travel limits,
+        # i.e. P within [axis_min + offset, axis_max + offset].
+        x_offset, y_offset = self._get_probe_xy_offsets(probe_method)
+        min_x, min_y = self.mesh_min
+        max_x, max_y = self.mesh_max
+        if clamp_min:
+            min_x += max(x_offset, 0.0)
+            min_y += max(y_offset, 0.0)
+        if clamp_max:
+            max_x += min(x_offset, 0.0)
+            max_y += min(y_offset, 0.0)
         self.mesh_min = (min_x, min_y)
         self.mesh_max = (max_x, max_y)
 

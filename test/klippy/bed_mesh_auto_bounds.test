@@ -1,0 +1,7 @@
+# Test that bed_mesh starts up with mesh_min/mesh_max omitted, deducing
+# the mesh bounds from the X/Y travel limits
+CONFIG bed_mesh_auto_bounds.cfg
+DICTIONARY atmega2560.dict
+
+# If we get here, config parsing deduced the mesh bounds without crashing
+G28

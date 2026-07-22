@@ -1314,20 +1314,27 @@ Visual Examples:
 #mesh_min:
 #   Defines the minimum X, Y coordinate of the mesh for rectangular
 #   beds. This coordinate is relative to the probe's location. This
-#   will be the first point probed, nearest to the origin. This
-#   parameter must be provided for rectangular beds. If, given the
-#   probe's x_offset/y_offset, a generated mesh point would require the
-#   probe to travel outside the printer's axis limits, BED_MESH_CALIBRATE
-#   fails with an error identifying the offending point rather than
-#   failing later with a generic "Move out of range". This check (and
-#   the x_offset/y_offset it uses) only applies to automatic probing;
-#   it is skipped for BED_MESH_CALIBRATE METHOD=manual, since manual
-#   probing moves the nozzle itself rather than an offset probe.
+#   will be the first point probed, nearest to the origin. If omitted,
+#   it defaults to the minimum X/Y travel positions (position_min of
+#   [stepper_x] and [stepper_y]); bounds deduced this way are
+#   additionally clamped at calibration time so that, given the probe's
+#   x_offset/y_offset, every probe move stays within the printer's axis
+#   limits. Explicitly configured bounds are never clamped: if, given
+#   the probe's x_offset/y_offset, a generated mesh point would require
+#   the probe to travel outside the printer's axis limits,
+#   BED_MESH_CALIBRATE fails with an error identifying the offending
+#   point rather than failing later with a generic "Move out of range".
+#   This check (and the x_offset/y_offset it uses) only applies to
+#   automatic probing; it is skipped for BED_MESH_CALIBRATE
+#   METHOD=manual, since manual probing moves the nozzle itself rather
+#   than an offset probe.
 #mesh_max:
 #   Defines the maximum X, Y coordinate of the mesh for rectangular
 #   beds. Adheres to the same principle as mesh_min, however this will
-#   be the furthest point probed from the bed's origin. This parameter
-#   must be provided for rectangular beds.
+#   be the furthest point probed from the bed's origin. If omitted, it
+#   defaults to the maximum X/Y travel positions (position_max of
+#   [stepper_x] and [stepper_y]), clamped by the probe's offsets as
+#   described under mesh_min.
 #mesh_margin:
 #   An optional margin (in mm) to keep between the outermost mesh points
 #   and the edge of the configured mesh area (mesh_min/mesh_max, or
@@ -1342,7 +1349,8 @@ Visual Examples:
 #   applies to automatic probing; with METHOD=manual the margin is
 #   applied symmetrically since there is no probe offset to account for.
 #   This only affects the default mesh area; explicitly passing
-#   MESH_MIN/MESH_MAX to BED_MESH_CALIBRATE bypasses it.
+#   MESH_MIN/MESH_MAX to BED_MESH_CALIBRATE bypasses it, along with
+#   the clamping of deduced bounds described under mesh_min.
 #probe_count: 3, 3
 #   For rectangular beds, this is a comma separate pair of integer
 #   values X, Y defining the number of points to probe along each

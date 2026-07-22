@@ -38,15 +38,17 @@ probe_count: 5, 3
   The Z coordinate the probe rises to prior to traveling between points.
 
 - `mesh_min: 35, 6`\
-  _Required_\
+  _Default Value: deduced from the printer's travel limits_\
   The first probed coordinate, nearest to the origin.  This coordinate
-  is relative to the probe's location.
+  is relative to the probe's location.  May be omitted, see
+  [Automatic mesh bounds](#automatic-mesh-bounds) below.
 
 - `mesh_max: 240, 198`\
-  _Required_\
+  _Default Value: deduced from the printer's travel limits_\
   The probed coordinate farthest from the origin.  This is not necessarily
   the last point probed, as the probing process occurs in a zig-zag fashion.
-  As with `mesh_min`, this coordinate is relative to the probe's location.
+  As with `mesh_min`, this coordinate is relative to the probe's location
+  and may be omitted.
 
 - `probe_count: 5, 3`\
   _Default Value: 3, 3_\
@@ -64,6 +66,31 @@ when the probe is at `mesh_min` the nozzle will be at (11, 1), and when the prob
 is at `mesh_max`, the nozzle will be at (206, 193).
 
 ![bedmesh_rect_basic](img/bedmesh_rect_basic.svg)
+
+#### Automatic mesh bounds
+
+For rectangular beds, `mesh_min` and `mesh_max` may be omitted, either
+individually or together.  An omitted bound defaults to the printer's X/Y
+travel limits as configured by `position_min`/`position_max` in
+`[stepper_x]` and `[stepper_y]`.  Since a probe with a non-zero `x_offset`/`y_offset` cannot
+reach the entire travel range, bounds deduced this way are automatically
+clamped when `BED_MESH_CALIBRATE` runs so that every generated probe move
+stays within the printer's travel limits.  Explicitly configured bounds
+are never clamped this way; they instead fail validation with an error if
+a mesh point is unreachable.
+
+Two caveats apply.  First, the travel range describes where the toolhead
+can move, not where the bed surface actually is - if the two differ (for
+example, `position_min` reaches beyond the bed's edge), either set
+`mesh_min`/`mesh_max` explicitly or use `mesh_margin` to inset the deduced
+area.  Second, the deduction requires `[stepper_x]` and `[stepper_y]`
+sections; on kinematics without them (such as deltas, which use round
+beds anyway) explicit bounds are required.
+
+Passing `MESH_MIN`/`MESH_MAX` to `BED_MESH_CALIBRATE` overrides the
+deduced bounds, and just like explicitly configured bounds those values
+are validated rather than clamped.  If only one of the two is passed, the
+other side keeps its deduced value and is still clamped.
 
 ### Round beds
 This example assumes a printer equipped with a round bed radius of 100mm.
@@ -132,7 +159,10 @@ mesh_margin: 5
   Margin (in mm) to keep between the outermost probed points and the edge
   of the mesh area defined by `mesh_min`/`mesh_max` (or `mesh_radius`, for
   round beds). For round beds this simply reduces the effective
-  `mesh_radius` by this amount.
+  `mesh_radius` by this amount. When `mesh_min`/`mesh_max` are omitted
+  (see [Automatic mesh bounds](#automatic-mesh-bounds)), the margin is
+  measured from the deduced travel-range bounds, which is useful when the
+  travel range extends slightly beyond the printable bed surface.
 
 For rectangular beds, a non-zero probe `x_offset`/`y_offset` can already
 force the toolhead away from one side of the mesh area more than the other,

@@ -8,6 +8,13 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260722: `[bed_mesh]` no longer requires `mesh_min` and `mesh_max` for
+rectangular beds. When omitted, the mesh area defaults to the X/Y travel
+range (`position_min`/`position_max` of `[stepper_x]`/`[stepper_y]`) and
+is automatically clamped at calibration time so the probe's
+`x_offset`/`y_offset` never forces a move outside the printer's axis
+limits. Explicitly configured bounds behave as before.
+
 20260720: SHAPER_CALIBRATE's remaining-vibration scoring reverts to mainline
 Klipper's flat acceptance threshold and unweighted vibration sum, dropping
 the frequency-squared bin weighting and frequency-proportional threshold
