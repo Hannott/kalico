@@ -10,10 +10,15 @@ All dates in this document are approximate.
 
 20260722: `[bed_mesh]` no longer requires `mesh_min` and `mesh_max` for
 rectangular beds. When omitted, the mesh area defaults to the X/Y travel
-range (`position_min`/`position_max` of `[stepper_x]`/`[stepper_y]`) and
-is automatically clamped at calibration time so the probe's
-`x_offset`/`y_offset` never forces a move outside the printer's axis
-limits. Explicitly configured bounds behave as before.
+range (`position_min`/`position_max` of `[stepper_x]`/`[stepper_y]`).
+Additionally, `BED_MESH_CALIBRATE` now reconciles the mesh area - whether
+configured, deduced, or passed as `MESH_MIN`/`MESH_MAX` - against the
+probe's reachable range, shrinking it to fit (with a printed message)
+instead of failing with an out-of-range error when the probe's
+`x_offset`/`y_offset` would push a point beyond the axis limits. This
+changes the behavior introduced earlier on this branch, where explicitly
+configured bounds failed fast instead of being adjusted. Reconciliation
+applies to automatic probing only; `METHOD=manual` is unaffected.
 
 20260720: SHAPER_CALIBRATE's remaining-vibration scoring reverts to mainline
 Klipper's flat acceptance threshold and unweighted vibration sum, dropping

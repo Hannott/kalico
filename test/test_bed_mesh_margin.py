@@ -163,8 +163,7 @@ class TestApplyMargin:
 
 class TestDefaultBounds:
     """Deduction of mesh_min/mesh_max from stepper travel limits when the
-    options are omitted, plus the reachability clamp those deduced bounds
-    receive in _clamp_auto_bounds() when no mesh_margin applies.
+    options are omitted.
     """
 
     def test_deduces_bounds_from_stepper_limits(self):
@@ -199,16 +198,24 @@ class TestDefaultBounds:
         with pytest.raises(_GCodeError, match="stepper_y"):
             bmc._get_default_bounds(config)
 
-    def test_deduced_bounds_clamped_by_probe_offsets(self):
+
+class TestReachabilityClamp:
+    """With mesh_margin=0, _apply_margin reduces to a pure reachability
+    clamp. This applies to *every* mesh area - configured, deduced from the
+    travel limits, or passed via gcode - so a probe offset can never push a
+    point out of range; the area is shrunk to fit instead of failing.
+    """
+
+    def test_clamps_full_travel_bounds(self):
         # Real-world scenario: X travel -1..301, Y travel -1..251 with a
-        # probe at x_offset=-25, y_offset=-21 and no mesh_margin. The
-        # deduced full-travel bounds must be pulled in on the max side of
-        # each axis so every probe move stays within the travel limits.
+        # probe at x_offset=-25, y_offset=-21 and no mesh_margin. The max
+        # side of each axis is pulled in so every probe move stays within
+        # the travel limits (the exact numbers from the user's error).
         probe = _FakeProbe(x_offset=-25.0, y_offset=-21.0)
         bmc = _make_calibrate(mesh_margin=0.0, probe=probe)
         bmc.mesh_min = (-1.0, -1.0)
         bmc.mesh_max = (301.0, 251.0)
-        bmc._clamp_auto_bounds("automatic", clamp_min=True, clamp_max=True)
+        bmc._apply_margin(_err)
         assert bmc.mesh_min == (-1.0, -1.0)
         assert bmc.mesh_max == (276.0, 230.0)
 
@@ -217,30 +224,42 @@ class TestDefaultBounds:
         bmc = _make_calibrate(mesh_margin=0.0, probe=probe)
         bmc.mesh_min = (0.0, 0.0)
         bmc.mesh_max = (300.0, 250.0)
-        bmc._clamp_auto_bounds("automatic", clamp_min=True, clamp_max=True)
+        bmc._apply_margin(_err)
         assert bmc.mesh_min == (25.0, 21.0)
         assert bmc.mesh_max == (300.0, 250.0)
 
-    def test_explicit_gcode_side_is_not_clamped(self):
-        # BED_MESH_CALIBRATE MESH_MIN=... with auto config bounds: only
-        # the still-deduced max side gets clamped; the explicit min side
-        # is left for _check_probe_bounds to validate.
+    def test_explicit_config_bounds_are_clamped_not_rejected(self):
+        # The key change: even bounds the user set explicitly are shrunk
+        # to the reachable range rather than failing calibration.
         probe = _FakeProbe(x_offset=-25.0, y_offset=-21.0)
         bmc = _make_calibrate(mesh_margin=0.0, probe=probe)
-        bmc.mesh_min = (50.0, 50.0)
-        bmc.mesh_max = (301.0, 251.0)
-        bmc._clamp_auto_bounds("automatic", clamp_min=False, clamp_max=True)
-        assert bmc.mesh_min == (50.0, 50.0)
-        assert bmc.mesh_max == (276.0, 230.0)
+        bmc.mesh_min = (0.0, 0.0)
+        bmc.mesh_max = (300.0, 250.0)
+        bmc._apply_margin(_err)
+        assert bmc.mesh_min == (0.0, 0.0)
+        assert bmc.mesh_max == (275.0, 229.0)
 
-    def test_manual_method_skips_clamping(self):
+    def test_manual_method_is_a_noop_without_margin(self):
         probe = _FakeProbe(x_offset=-25.0, y_offset=-21.0)
         bmc = _make_calibrate(mesh_margin=0.0, probe=probe)
         bmc.mesh_min = (-1.0, -1.0)
         bmc.mesh_max = (301.0, 251.0)
-        bmc._clamp_auto_bounds("manual", clamp_min=True, clamp_max=True)
+        bmc._apply_margin(_err, probe_method="manual")
         assert bmc.mesh_min == (-1.0, -1.0)
         assert bmc.mesh_max == (301.0, 251.0)
+
+    def test_gcode_side_skips_margin_but_still_clamps(self):
+        # A side backed by a gcode MESH_MIN/MESH_MAX argument (margin_max=
+        # False) is not inset by mesh_margin, but is still reachability-
+        # clamped. Here x_offset=-25 forces the max side in to 276
+        # regardless; the min side (margin_min=True) takes the 10mm margin.
+        probe = _FakeProbe(x_offset=-25.0, y_offset=0.0)
+        bmc = _make_calibrate(mesh_margin=10.0, probe=probe)
+        bmc.mesh_min = (0.0, 0.0)
+        bmc.mesh_max = (301.0, 200.0)
+        bmc._apply_margin(_err, margin_min=True, margin_max=False)
+        assert bmc.mesh_min == (10.0, 10.0)
+        assert bmc.mesh_max == (276.0, 200.0)
 
 
 class TestMarginKeepsPointsReachable:

@@ -476,7 +476,6 @@ class BedMeshCalibrate:
         self.orig_config = {"radius": None, "origin": None}
         self.radius = self.origin = None
         self.mesh_min = self.mesh_max = (0.0, 0.0)
-        self.auto_mesh_min = self.auto_mesh_max = False
         self.adaptive_margin = config.getfloat("adaptive_margin", 0.0)
         self.zero_ref_pos = config.getfloatlist(
             "zero_reference_position", None, count=2
@@ -681,27 +680,28 @@ class BedMeshCalibrate:
             x_cnt, y_cnt = parse_config_pair(config, "probe_count", 3, minval=3)
             mesh_min = config.getfloatlist("mesh_min", None, count=2)
             mesh_max = config.getfloatlist("mesh_max", None, count=2)
-            self.auto_mesh_min = mesh_min is None
-            self.auto_mesh_max = mesh_max is None
-            if self.auto_mesh_min or self.auto_mesh_max:
+            if mesh_min is None or mesh_max is None:
                 def_min, def_max = self._get_default_bounds(config)
+                # Re-fetch omitted bounds with the deduced value as the
+                # default so it is recorded in printer.configfile.settings
+                # (a None default is intentionally not recorded there).
+                # Macros such as KAMP read mesh_min/mesh_max from that
+                # section and would otherwise crash on the missing key.
                 if mesh_min is None:
-                    mesh_min = def_min
+                    mesh_min = config.getfloatlist("mesh_min", def_min, count=2)
                 if mesh_max is None:
-                    mesh_max = def_max
+                    mesh_max = config.getfloatlist("mesh_max", def_max, count=2)
             min_x, min_y = mesh_min
             max_x, max_y = mesh_max
             if max_x <= min_x or max_y <= min_y:
                 raise config.error("bed_mesh: invalid min/max points")
-            # Note: mesh_margin is intentionally not applied here. Doing so
-            # correctly requires the probe's x/y offsets (to avoid biasing
-            # the inset on the side the offset already constrains), which
-            # aren't reliably available until the printer has connected.
-            # See _apply_margin(), called from update_config().  The same
-            # applies to deduced (auto) mesh bounds: they are stored here
-            # as the full X/Y travel range and clamped to the probe's
-            # reachable range in update_config(), via _apply_margin() or
-            # _clamp_auto_bounds().
+            # Note: neither mesh_margin nor the reachability clamp is
+            # applied here. Both need the probe's x/y offsets (to avoid
+            # biasing the inset on the side the offset already constrains),
+            # which aren't reliably available until the printer has
+            # connected. update_config() reconciles the stored bounds -
+            # whether configured or deduced from the full travel range -
+            # against the reachable range via _apply_margin().
         orig_cfg["x_count"] = mesh_cfg["x_count"] = x_cnt
         orig_cfg["y_count"] = mesh_cfg["y_count"] = y_cnt
         orig_cfg["mesh_min"] = self.mesh_min = (min_x, min_y)
@@ -1000,16 +1000,34 @@ class BedMeshCalibrate:
             if explicit_max:
                 self.mesh_max = parse_gcmd_coord(gcmd, "MESH_MAX")
                 need_cfg_update = True
-            clamp_min = self.auto_mesh_min and not explicit_min
-            clamp_max = self.auto_mesh_max and not explicit_max
-            if not explicit_min and not explicit_max and self.mesh_margin:
-                self._apply_margin(gcmd.error, probe_method)
-            elif clamp_min or clamp_max:
-                # Deduced (auto) mesh bounds span the full X/Y travel
-                # range, so any side not explicitly configured or
-                # overridden needs the reachability clamp, even when
-                # mesh_margin is 0.
-                self._clamp_auto_bounds(probe_method, clamp_min, clamp_max)
+            # Always reconcile the bounds against the probe's reachable
+            # range, whatever their source (configured, deduced from the
+            # travel limits, or passed as MESH_MIN/MESH_MAX), so a probe
+            # offset can never push a mesh point outside the axis limits -
+            # the area is shrunk to fit instead of failing calibration.
+            # mesh_margin is additionally applied to any side not
+            # overridden by a gcode argument; a gcode MESH_MIN/MESH_MAX is
+            # taken to be the intended bound already (e.g. an adaptive
+            # region computed by a macro) and is not inset further.
+            requested = (self.mesh_min, self.mesh_max)
+            self._apply_margin(
+                gcmd.error,
+                probe_method,
+                margin_min=not explicit_min,
+                margin_max=not explicit_max,
+            )
+            if (self.mesh_min, self.mesh_max) != requested:
+                gcmd.respond_info(
+                    "bed_mesh: mesh_min/mesh_max adjusted to (%.2f, %.2f) / "
+                    "(%.2f, %.2f) to account for the probe offset and "
+                    "mesh_margin"
+                    % (
+                        self.mesh_min[0],
+                        self.mesh_min[1],
+                        self.mesh_max[0],
+                        self.mesh_max[1],
+                    )
+                )
             if "PROBE_COUNT" in params:
                 x_cnt, y_cnt = parse_gcmd_pair(gcmd, "PROBE_COUNT", minval=3)
                 self.mesh_config["x_count"] = x_cnt
@@ -1042,55 +1060,62 @@ class BedMeshCalibrate:
             return 0.0, 0.0
         return probe.get_offsets()[:2]
 
-    def _apply_margin(self, error, probe_method="automatic"):
-        # Inset mesh_min/mesh_max by mesh_margin so no mesh point sits within
-        # mesh_margin of the configured area's edge. A mesh point P is only
-        # probeable if the toolhead can reach P - offset, so the true bound
-        # for P is the intersection of the desired margin standoff
-        # [axis_min+margin, axis_max-margin] with the reachable range
-        # [axis_min+offset, axis_max+offset] (see _check_probe_bounds) -
-        # i.e. whichever of the two constraints is more restrictive wins,
-        # per side; they are not additive.
+    def _apply_margin(
+        self, error, probe_method="automatic", margin_min=True, margin_max=True
+    ):
+        # Inset mesh_min/mesh_max so no mesh point sits within mesh_margin
+        # of the configured area's edge, and so every point stays within
+        # the probe's reachable range. A mesh point P is only probeable if
+        # the toolhead can reach P - offset, so the true bound for P is the
+        # intersection of the desired margin standoff [axis_min+margin,
+        # axis_max-margin] with the reachable range [axis_min+offset,
+        # axis_max+offset] (see _check_probe_bounds) - whichever of the two
+        # constraints is more restrictive wins, per side; they are not
+        # additive. With mesh_margin=0 this reduces to a pure reachability
+        # clamp. margin_min/margin_max select whether the mesh_margin
+        # standoff applies to the min/max side; a side backed by a gcode
+        # MESH_MIN/MESH_MAX argument gets reachability only.
         x_offset, y_offset = self._get_probe_xy_offsets(probe_method)
         min_x, min_y = self.mesh_min
         max_x, max_y = self.mesh_max
-        min_x, max_x = self._margin_bounds(error, min_x, max_x, x_offset)
-        min_y, max_y = self._margin_bounds(error, min_y, max_y, y_offset)
+        min_x, max_x = self._margin_bounds(
+            error, min_x, max_x, x_offset, margin_min, margin_max
+        )
+        min_y, max_y = self._margin_bounds(
+            error, min_y, max_y, y_offset, margin_min, margin_max
+        )
         self.mesh_min = (min_x, min_y)
         self.mesh_max = (max_x, max_y)
 
-    def _clamp_auto_bounds(self, probe_method, clamp_min, clamp_max):
-        # Deduced (auto) mesh bounds equal the printer's X/Y travel limits,
-        # so a mesh point right at a bound may need the toolhead beyond
-        # those limits once the probe's offset is applied. Pull each
-        # deduced (non-overridden) side in to the probe's reachable range:
-        # P is probeable only if P - offset stays within the travel limits,
-        # i.e. P within [axis_min + offset, axis_max + offset].
-        x_offset, y_offset = self._get_probe_xy_offsets(probe_method)
-        min_x, min_y = self.mesh_min
-        max_x, max_y = self.mesh_max
-        if clamp_min:
-            min_x += max(x_offset, 0.0)
-            min_y += max(y_offset, 0.0)
-        if clamp_max:
-            max_x += min(x_offset, 0.0)
-            max_y += min(y_offset, 0.0)
-        self.mesh_min = (min_x, min_y)
-        self.mesh_max = (max_x, max_y)
-
-    def _margin_bounds(self, error, axis_min, axis_max, offset):
-        margin = self.mesh_margin
-        new_min = axis_min + max(margin, offset)
-        new_max = axis_max - max(margin, -offset)
+    def _margin_bounds(
+        self,
+        error,
+        axis_min,
+        axis_max,
+        offset,
+        margin_min=True,
+        margin_max=True,
+    ):
+        m_min = self.mesh_margin if margin_min else 0.0
+        m_max = self.mesh_margin if margin_max else 0.0
+        new_min = axis_min + max(m_min, offset)
+        new_max = axis_max - max(m_max, -offset)
         if new_max <= new_min:
             raise error(
                 "bed_mesh: mesh_margin (%.2f), combined with the probe's "
                 "offset, leaves no usable mesh area between %.2f and %.2f"
-                % (margin, axis_min, axis_max)
+                % (self.mesh_margin, axis_min, axis_max)
             )
         return new_min, new_max
 
     def _check_probe_bounds(self, error, probe_method="automatic"):
+        # update_config() reconciles mesh_min/mesh_max against the reachable
+        # range (see _apply_margin), so the generated mesh points can no
+        # longer land out of range. This check remains as a safety net and,
+        # importantly, still validates the separate zero_reference_position
+        # (appended in _get_adjusted_points), which is not clamped. A tiny
+        # tolerance absorbs floating-point error at bounds that now sit
+        # exactly on the reachable edge.
         if self.radius is not None:
             # Round mesh geometry is generally paired with kinematics
             # (e.g. delta) whose travel envelope isn't a simple rectangle,
@@ -1105,14 +1130,15 @@ class BedMeshCalibrate:
         x_offset, y_offset = self._get_probe_xy_offsets(probe_method)
         if not x_offset and not y_offset:
             return
+        tol = 1e-6
         for pt in self._get_adjusted_points():
             probe_x = pt[0] - x_offset
             probe_y = pt[1] - y_offset
             if (
-                probe_x < axis_min[0]
-                or probe_x > axis_max[0]
-                or probe_y < axis_min[1]
-                or probe_y > axis_max[1]
+                probe_x < axis_min[0] - tol
+                or probe_x > axis_max[0] + tol
+                or probe_y < axis_min[1] - tol
+                or probe_y > axis_max[1] + tol
             ):
                 safe_min_x = axis_min[0] + max(x_offset, 0.0)
                 safe_max_x = axis_max[0] + min(x_offset, 0.0)

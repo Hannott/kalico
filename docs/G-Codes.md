@@ -200,15 +200,18 @@ to define the probed area. The optional `ADAPTIVE_MARGIN` value overrides the
 `adaptive_margin` option specified in the config file.
 
 For rectangular beds probed automatically (the default, i.e. METHOD is not
-manual), each generated mesh point is checked against the printer's axis
-limits combined with the probe's `x_offset`/`y_offset`: if reaching a point
-would require the probe to travel outside those limits, the command fails
-immediately with an error identifying the offending point, rather than
-later failing mid-calibration with a generic "Move out of range". The
-`mesh_margin` option (see [Config_Reference.md](Config_Reference.md#bed_mesh))
-is reconciled with this same axis-limit constraint. Neither of these applies
-when METHOD=manual, since manual probing moves the nozzle itself and there is
-no probe offset to account for.
+manual), the mesh area is reconciled against the printer's axis limits
+combined with the probe's `x_offset`/`y_offset`: if reaching a point would
+require the probe to travel outside those limits, the mesh area is shrunk
+to fit (and the adjusted `mesh_min`/`mesh_max` are reported) rather than
+failing mid-calibration with a generic "Move out of range". This applies
+whether the bounds are configured, deduced from the travel limits, or
+passed as `MESH_MIN`/`MESH_MAX`. The `mesh_margin` option (see
+[Config_Reference.md](Config_Reference.md#bed_mesh)) is reconciled with this
+same axis-limit constraint, except that it is not applied to a bound
+supplied via `MESH_MIN`/`MESH_MAX`. None of this applies when METHOD=manual,
+since manual probing moves the nozzle itself and there is no probe offset to
+account for.
 
 #### BED_MESH_OUTPUT
 `BED_MESH_OUTPUT PGP=[<0:1>]`: This command outputs the current probed

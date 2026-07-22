@@ -5,3 +5,7 @@ DICTIONARY atmega2560.dict
 
 # If we get here, config parsing deduced the mesh bounds without crashing
 G28
+
+# Deduced bounds must be readable from configfile.settings (regression
+# test for macros that read mesh_min/mesh_max from there)
+CHECK_MESH_BOUNDS

@@ -72,12 +72,17 @@ is at `mesh_max`, the nozzle will be at (206, 193).
 For rectangular beds, `mesh_min` and `mesh_max` may be omitted, either
 individually or together.  An omitted bound defaults to the printer's X/Y
 travel limits as configured by `position_min`/`position_max` in
-`[stepper_x]` and `[stepper_y]`.  Since a probe with a non-zero `x_offset`/`y_offset` cannot
-reach the entire travel range, bounds deduced this way are automatically
-clamped when `BED_MESH_CALIBRATE` runs so that every generated probe move
-stays within the printer's travel limits.  Explicitly configured bounds
-are never clamped this way; they instead fail validation with an error if
-a mesh point is unreachable.
+`[stepper_x]` and `[stepper_y]`.
+
+A probe with a non-zero `x_offset`/`y_offset` cannot reach the entire
+travel range, so when `BED_MESH_CALIBRATE` runs it reconciles the mesh
+area against the reachable range and shrinks it to fit if necessary,
+printing a message with the adjusted bounds.  This happens whether the
+bounds were deduced from the travel limits or configured explicitly - in
+either case the mesh area is trimmed to what the probe can reach instead
+of failing calibration with an out-of-range error.  (The reconciliation
+applies only to automatic probing; `METHOD=manual` moves the nozzle
+directly and is left untouched.)
 
 Two caveats apply.  First, the travel range describes where the toolhead
 can move, not where the bed surface actually is - if the two differ (for
@@ -88,9 +93,16 @@ sections; on kinematics without them (such as deltas, which use round
 beds anyway) explicit bounds are required.
 
 Passing `MESH_MIN`/`MESH_MAX` to `BED_MESH_CALIBRATE` overrides the
-deduced bounds, and just like explicitly configured bounds those values
-are validated rather than clamped.  If only one of the two is passed, the
-other side keeps its deduced value and is still clamped.
+deduced or configured bounds.  Those values are still reconciled for
+reachability, but `mesh_margin` is not applied to a side supplied this
+way (a passed-in bound - e.g. an adaptive region computed by a macro - is
+taken as already intended).  If only one of the two is passed, the other
+side keeps its deduced or configured value.
+
+The deduced bounds are also exposed as `mesh_min`/`mesh_max` under
+`printer.configfile.settings.bed_mesh`, so adaptive-meshing macros (such
+as KAMP) that read the mesh extents from there continue to work when the
+options are omitted.
 
 ### Round beds
 This example assumes a printer equipped with a round bed radius of 100mm.
