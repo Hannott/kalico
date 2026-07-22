@@ -1315,12 +1315,34 @@ Visual Examples:
 #   Defines the minimum X, Y coordinate of the mesh for rectangular
 #   beds. This coordinate is relative to the probe's location. This
 #   will be the first point probed, nearest to the origin. This
-#   parameter must be provided for rectangular beds.
+#   parameter must be provided for rectangular beds. If, given the
+#   probe's x_offset/y_offset, a generated mesh point would require the
+#   probe to travel outside the printer's axis limits, BED_MESH_CALIBRATE
+#   fails with an error identifying the offending point rather than
+#   failing later with a generic "Move out of range". This check (and
+#   the x_offset/y_offset it uses) only applies to automatic probing;
+#   it is skipped for BED_MESH_CALIBRATE METHOD=manual, since manual
+#   probing moves the nozzle itself rather than an offset probe.
 #mesh_max:
 #   Defines the maximum X, Y coordinate of the mesh for rectangular
 #   beds. Adheres to the same principle as mesh_min, however this will
 #   be the furthest point probed from the bed's origin. This parameter
 #   must be provided for rectangular beds.
+#mesh_margin:
+#   An optional margin (in mm) to keep between the outermost mesh points
+#   and the edge of the configured mesh area (mesh_min/mesh_max, or
+#   mesh_radius for round beds), so that no point is probed right at the
+#   edge. Default is 0 (disabled).
+#   For rectangular beds, when the probe has a nonzero x_offset/y_offset,
+#   this margin is reconciled with the axis-limit constraint described
+#   under mesh_min above: on each side, whichever requirement demands
+#   more clearance wins, so the margin is never simply added on top of
+#   the offset - it only ever adds the clearance the offset doesn't
+#   already provide. As with the check above, this offset-awareness only
+#   applies to automatic probing; with METHOD=manual the margin is
+#   applied symmetrically since there is no probe offset to account for.
+#   This only affects the default mesh area; explicitly passing
+#   MESH_MIN/MESH_MAX to BED_MESH_CALIBRATE bypasses it.
 #probe_count: 3, 3
 #   For rectangular beds, this is a comma separate pair of integer
 #   values X, Y defining the number of points to probe along each
