@@ -254,7 +254,7 @@ class Palette2:
     )
 
     def cmd_O1(self, gcmd):
-        logging.info("Initializing print with Pallete 2")
+        logging.info("Initializing print with Palette 2")
         if not self._check_P2(gcmd):
             raise self.printer.command_error(
                 "Cannot initialize print, palette 2 is not connected"
