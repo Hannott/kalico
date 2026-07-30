@@ -22,9 +22,9 @@ class ResonanceModel:
             weights = config.getfloatlist("peak_weights_" + axis, ())
             if len(freqs) != len(dampings) or len(freqs) != len(weights):
                 raise config.error(
-                    "resonance_model: peak_freqs_%s, peak_dampings_%s and"
-                    " peak_weights_%s must have the same number of entries"
-                    % (axis, axis, axis)
+                    f"resonance_model: peak_freqs_{axis}, peak_dampings_{axis} and"
+                    f" peak_weights_{axis} must have the same number of"
+                    " entries"
                 )
             self.peaks[axis] = list(zip(freqs, dampings, weights))
         gcode = self.printer.lookup_object("gcode")
@@ -82,33 +82,36 @@ class ResonanceModel:
             if not peaks:
                 gcmd.respond_info(
                     "SAVE_RESONANCE_MODEL: no significant peaks found for"
-                    " axis %s, leaving it unchanged" % (axis,)
+                    f" axis {axis}, leaving it unchanged"
                 )
                 continue
             self.peaks[axis] = peaks
             configfile.set(
                 "resonance_model",
                 "peak_freqs_" + axis,
-                ", ".join("%.3f" % f for f, _d, _w in peaks),
+                ", ".join(f"{f:.3f}" for f, _d, _w in peaks),
             )
             configfile.set(
                 "resonance_model",
                 "peak_dampings_" + axis,
-                ", ".join("%.6f" % d for _f, d, _w in peaks),
+                ", ".join(f"{d:.6f}" for _f, d, _w in peaks),
             )
             configfile.set(
                 "resonance_model",
                 "peak_weights_" + axis,
-                ", ".join("%.6f" % w for _f, _d, w in peaks),
+                ", ".join(f"{w:.6f}" for _f, _d, w in peaks),
             )
             reports.append(
-                "%s: %s"
-                % (axis, ", ".join("%.2fHz" % f for f, _d, _w in peaks))
+                "{}: {}".format(
+                    axis,
+                    ", ".join(f"{f:.2f}Hz" for f, _d, _w in peaks),
+                )
             )
         gcmd.respond_info(
-            "Resonance model saved for %s. The SAVE_CONFIG command will"
-            " update the printer config file and restart the printer."
-            % ("; ".join(reports) if reports else "no axes")
+            "Resonance model saved for {}. The SAVE_CONFIG command will"
+            " update the printer config file and restart the printer.".format(
+                "; ".join(reports) if reports else "no axes"
+            )
         )
 
 
