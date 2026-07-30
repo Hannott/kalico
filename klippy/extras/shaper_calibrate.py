@@ -999,6 +999,51 @@ class ShaperCalibrate:
             return None
         return zeta
 
+    def extract_resonance_peaks(
+        self,
+        calibration_data,
+        max_peaks=MULTIMODE_MAX_PEAKS,
+        min_freq=None,
+        max_freq=None,
+    ):
+        """A compact (freq, damping_ratio, weight) description of the real
+        resonance peaks in `calibration_data`, for resonance_model.py to
+        persist (like a bed_mesh profile) so resonance_ramp.py's notch-pair
+        search has real measured data at print time instead of only
+        whatever a human typed into unified_notch_freq.
+
+        Reuses this class's own peak detection (_detect_resonance_peaks,
+        which already discards anything below a prominence threshold --
+        there is no separate "is this significant" step to add) and damping
+        estimation (_estimate_damping_ratio) -- the same building blocks
+        find_best_shaper uses to recommend a multimode shaper, here
+        returned as plain data instead of consumed into a shaper choice.
+        `weight` is each peak's PSD magnitude relative to the tallest peak
+        found (so it is always in (0, 1], with no absolute PSD units
+        reaching the caller).
+        """
+        np = self.numpy
+        freq_bins = calibration_data.freq_bins
+        psd = calibration_data.psd_sum
+        lo = min_freq if min_freq is not None else MIN_FREQ
+        hi = max_freq if max_freq is not None else float(freq_bins[-1])
+        freqs = self._detect_resonance_peaks(
+            freq_bins, psd, lo, hi, max_peaks=max_peaks
+        )
+        if not freqs:
+            return []
+        vals = np.interp(freqs, freq_bins, psd)
+        top = float(max(vals))
+        if top <= 0.0:
+            return []
+        peaks = []
+        for f0, v in zip(freqs, vals):
+            damping = self._estimate_damping_ratio(freq_bins, psd, f0)
+            if damping is None:
+                damping = shaper_defs.DEFAULT_DAMPING_RATIO
+            peaks.append((float(f0), float(damping), float(v) / top))
+        return peaks
+
     def fit_multimode_shaper(
         self,
         base_cfgs,
@@ -1292,9 +1337,7 @@ class ShaperCalibrate:
                 for cfg, _, estimator, get_smoothing in fit_tasks
             ],
         )
-        for (cfg, kind, _, _), (shaper, results) in zip(
-            fit_tasks, fit_results
-        ):
+        for (cfg, kind, _, _), (shaper, results) in zip(fit_tasks, fit_results):
             if (
                 best_shaper is None
                 or shaper.score * 1.2 < best_shaper.score
