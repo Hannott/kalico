@@ -93,6 +93,24 @@ def test_extract_resonance_peaks_respects_max_peaks():
     print("  max_peaks caps how many peaks are returned OK")
 
 
+def test_shoulder_peak_damping_is_not_inflated_by_its_neighbour():
+    # A mode sitting on the flank of a taller one measures the NEIGHBOUR's
+    # slope as its own half-power width unless the search is bounded short
+    # of it. On a real capture (48.5 Hz shoulder beside a dominant 57.5 Hz
+    # peak) the unbounded estimate came out 0.165 -- about 3x any plausible
+    # printer damping ratio -- and that value is persisted to the config.
+    helper = shaper_calibrate.ShaperCalibrate(None)
+    data = synthetic_calibration_data(
+        [(48.5, 0.055, 4.0), (57.7, 0.048, 9.0), (92.0, 0.045, 1.0)]
+    )
+    peaks = helper.extract_resonance_peaks(data)
+    by_freq = {round(f): d for f, d, _w in peaks}
+    shoulder = [d for f, d in by_freq.items() if 46 <= f <= 51]
+    assert shoulder, by_freq
+    assert shoulder[0] <= 0.12, shoulder
+    print("  a shoulder peak's damping is not inflated by its neighbour OK")
+
+
 class FakeGCmd:
     def __init__(self, params):
         self.params = params
@@ -254,6 +272,7 @@ def main():
     test_extract_resonance_peaks_weight_is_relative()
     test_extract_resonance_peaks_ignores_flat_noise_floor()
     test_extract_resonance_peaks_respects_max_peaks()
+    test_shoulder_peak_damping_is_not_inflated_by_its_neighbour()
     test_get_model_empty_when_nothing_saved()
     test_config_loads_persisted_peaks()
     test_mismatched_list_lengths_are_a_config_error()
