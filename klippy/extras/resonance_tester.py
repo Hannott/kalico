@@ -322,6 +322,12 @@ class ResonanceTester:
             )
 
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
+        # Last completed SHAPER_CALIBRATE's CalibrationData per axis name
+        # ("x"/"y"), so a separate module (resonance_model.py) can extract
+        # and persist a compact peak model afterwards without re-running the
+        # test. Local to this session only -- SHAPER_CALIBRATE itself never
+        # persisted this beyond its own local variables before.
+        self.last_calibration_data = {}
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
         )
@@ -566,6 +572,7 @@ class ResonanceTester:
                 % (axis_name,)
             )
             calibration_data[axis].normalize_to_frequencies()
+            self.last_calibration_data[axis_name] = calibration_data[axis]
             systime = self.printer.get_reactor().monotonic()
             toolhead = self.printer.lookup_object("toolhead")
             toolhead_info = toolhead.get_status(systime)
