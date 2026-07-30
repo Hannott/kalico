@@ -244,6 +244,21 @@ max_accel:
 #   decelerate to zero at each corner. The value specified here may be
 #   changed at runtime using the SET_VELOCITY_LIMIT command. The
 #   default is 5mm/s.
+#resonance_shaping: False
+#   Enable experimental resonance-weighted acceleration shaping for
+#   ordinary moves. When enabled, this reshapes a move's acceleration into
+#   a jerk-limited ramp whose notch frequency pair is chosen automatically
+#   from a [resonance_model] saved after SHAPER_CALIBRATE, instead of a
+#   fixed manually configured frequency. A move that does not fit the
+#   shaped ramp within its own already-planned length (very short/fast
+#   segments) falls back to the stock hard trapezoid unchanged. Requires a
+#   [resonance_model] section with saved peaks (see SAVE_RESONANCE_MODEL in
+#   G-Codes.md); without one, this option has no effect and moves use the
+#   stock trapezoid. The default is False.
+#resonance_jerk_dt: 0.001
+#   Integration time step in seconds for the emitted jerk-limited slices
+#   when resonance_shaping is enabled. Smaller values create more
+#   motion-queue entries. The default is 0.001.
 ```
 
 ### [stepper]
@@ -2498,6 +2513,30 @@ section of the measuring resonances guide for more information on
 #   If the detected cross-axis leakage exceeds this fraction (0.1 = 10%)
 #   of the primary-axis signal, a warning is printed suggesting the
 #   accelerometer's mounting be checked. The default is 0.1.
+```
+
+### [resonance_model]
+
+Persists a compact resonance-vibration model -- a handful of measured peak
+frequency/damping/weight triples per axis -- for the `[printer]`
+`resonance_shaping` option, the same way `[bed_mesh]` persists a probed
+profile. Populated by the `SAVE_RESONANCE_MODEL` command (see
+[G-Codes.md](G-Codes.md#resonance_model)) after a `SHAPER_CALIBRATE` run;
+not intended to be hand-written.
+
+```
+[resonance_model]
+#peak_freqs_x:
+#peak_dampings_x:
+#peak_weights_x:
+#peak_freqs_y:
+#peak_dampings_y:
+#peak_weights_y:
+#   Comma-separated parallel lists (frequency in Hz, damping ratio, and
+#   relative weight in (0, 1]) describing each axis's significant measured
+#   resonance peaks, one entry per peak. Written by SAVE_RESONANCE_MODEL;
+#   not normally edited by hand. All three lists for a given axis must have
+#   the same number of entries. The default is empty (no saved model).
 ```
 
 ## Config file helpers

@@ -432,6 +432,12 @@ class PrinterExtruder:
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.last_position = [0.0, 0.0, 0.0]
+        # Segment-emission bookkeeping (resonance_shaping): which move the
+        # current run of move_segment calls belongs to, its start position,
+        # and how far along it we are -- see move_segment.
+        self._seg_move = None
+        self._seg_move_start = None
+        self._seg_pos = 0.0
         # Setup hotend heater
         pheaters = self.printer.load_object(config, "heaters")
         gcode_id = "T%d" % (extruder_num,)
@@ -608,6 +614,60 @@ class PrinterExtruder:
         extr_d = abs(move.axes_d[3])
         for i in range(3):
             self.last_position[i] += extr_d * extr_r[i]
+        self._seg_move = None
+
+    def move_segment(
+        self,
+        print_time,
+        move,
+        accel_t,
+        cruise_t,
+        decel_t,
+        start_v,
+        cruise_v,
+        accel,
+        seg_dist,
+    ):
+        # One velocity slice of `move` queued to the extruder trapq, for the
+        # opt-in resonance-shaped path in toolhead.py's _process_moves (which
+        # emits several constant-accel slices per move instead of one hard
+        # trapezoid). Same extr_r weighting as move() above. Positions are
+        # computed from the move's OWN start (self._seg_move_start) the same
+        # way toolhead.py derives XYZ segment positions from move.start_pos
+        # -- not by summing per-slice deltas -- so there is no float drift
+        # to correct for afterwards.
+        axis_r = move.axes_r[3]
+        abs_axis_r = abs(axis_r)
+        if move is not self._seg_move:
+            self._seg_move = move
+            self._seg_move_start = list(self.last_position)
+            self._seg_pos = 0.0
+        if move.is_kinematic_move:
+            extr_r = [math.copysign(r * r, axis_r) for r in move.axes_r[:3]]
+        else:
+            extr_r = [0.0, 0.0, axis_r]
+        start = self._seg_move_start
+        extr_pos = [start[i] + self._seg_pos * extr_r[i] for i in range(3)]
+        self.trapq_append(
+            self.trapq,
+            print_time,
+            accel_t,
+            cruise_t,
+            decel_t,
+            extr_pos[0],
+            extr_pos[1],
+            extr_pos[2],
+            extr_r[0],
+            extr_r[1],
+            extr_r[2],
+            start_v * abs_axis_r,
+            cruise_v * abs_axis_r,
+            accel * abs_axis_r,
+        )
+        self._seg_pos += seg_dist
+        self.last_position = [
+            start[i] + self._seg_pos * extr_r[i] for i in range(3)
+        ]
 
     def find_past_position(self, print_time):
         if not self.extruder_steppers:

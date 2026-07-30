@@ -389,6 +389,12 @@ class ResonanceTester:
         # 1.0 require a win by that margin, and values below 1.0 actively
         # prefer multimode shapers.
         self.multimode_bias = config.getfloat("multimode_bias", 1.0, above=0.0)
+        # Last completed SHAPER_CALIBRATE's CalibrationData per axis name
+        # ("x"/"y"), so a separate module (resonance_model.py) can extract
+        # and persist a compact peak model afterwards without re-running the
+        # test. Local to this session only -- SHAPER_CALIBRATE itself never
+        # persisted this beyond its own local variables before.
+        self.last_calibration_data = {}
         # Accelerometer cross-axis leakage detection: before the first probe
         # point's sweep for an axis, run a few slow, resonance-safe
         # back-and-forth moves along that axis alone and check how much of
@@ -456,9 +462,7 @@ class ResonanceTester:
             return
         freq = self.crosstalk_test_freq
         accel = self.generator.get_accel_per_hz() * freq
-        test_seq = _gen_fixed_freq_test(
-            freq, accel, self.crosstalk_test_cycles
-        )
+        test_seq = _gen_fixed_freq_test(freq, accel, self.crosstalk_test_cycles)
         aclient = chip.start_internal_client()
         self.executor.run_test(test_seq, axis, gcmd)
         aclient.finish_measurements()
@@ -728,6 +732,7 @@ class ResonanceTester:
                 % (axis_name,)
             )
             calibration_data[axis].normalize_to_frequencies()
+            self.last_calibration_data[axis_name] = calibration_data[axis]
             systime = self.printer.get_reactor().monotonic()
             toolhead = self.printer.lookup_object("toolhead")
             toolhead_info = toolhead.get_status(systime)

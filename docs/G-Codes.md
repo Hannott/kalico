@@ -1766,6 +1766,22 @@ persisted in the config by issuing `SAVE_CONFIG` command, and if
 `[input_shaper]` was already enabled previously, these parameters
 take effect immediately.
 
+### [resonance_model]
+
+The following commands are available when the
+[resonance_model config section](Config_Reference.md#resonance_model) is
+enabled.
+
+#### SAVE_RESONANCE_MODEL
+`SAVE_RESONANCE_MODEL [AXIS=<axis>]`: extracts the significant resonance
+peaks (frequency, damping ratio, and relative weight) from the last
+completed `SHAPER_CALIBRATE` (or `TEST_RESONANCES`) run and stages them for
+`SAVE_CONFIG`, the same way a probed `[bed_mesh]` profile is saved. `AXIS`
+selects which axis or axes to update (`x`, `y`, or `xy`, the default). Used
+by the `[printer]` `resonance_shaping` option to shape acceleration against
+the machine's actually measured resonances instead of a fixed manually
+configured frequency.
+
 ### [respond]
 
 The following standard G-Code commands are available when the
