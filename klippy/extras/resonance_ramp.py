@@ -99,30 +99,41 @@ def ramp_spectrum(f, f_lo, f_hi):
     return abs(_sinc(f / f_hi) * _sinc(f / f_lo))
 
 
-def score_pair(f_lo, f_hi, peak_model, freq_grid):
-    """Weighted spectral energy this ramp shape would leave at the
-    frequencies in `freq_grid`, weighted by `peak_model`. Lower is better.
-    """
-    return math.fsum(
-        peak_model.weight(f) * ramp_spectrum(f, f_lo, f_hi) ** 2
-        for f in freq_grid
-    )
+# Narrowest band (Hz) either side of a peak that scoring will average over.
+# A very lightly damped peak's half-power band can be a fraction of a Hz,
+# which would score a knife-edge null as if the measured centre frequency
+# were exact; this keeps a little robustness against calibration error.
+MIN_PEAK_BAND_HZ = 1.0
 
 
-def candidate_freq_grid(peak_model, n=6):
-    """Sample points bracketing each peak, dense enough that a candidate
-    shape which nulls exactly ON a peak but leaves its immediate skirt
-    excited still scores accordingly. Cheap: evaluated once per search, not
-    once per candidate.
+def score_pair(f_lo, f_hi, peak_model, samples=4):
+    """Weighted residual this ramp shape leaves across the model's peaks.
+    Lower is better.
+
+    Each peak contributes its own `weight` times the MEAN squared residual
+    over its own half-power band (+/- damping*f0, the band over which a
+    lightly damped mode actually responds). Averaging PER PEAK, rather than
+    summing samples over one shared frequency grid, is what keeps the
+    comparison fair: a single tall peak has a wide, high-response skirt, so
+    a shared-grid sum lets that one peak's neighbourhood dominate and can
+    pick a shape that suppresses the skirt of the tallest mode while
+    leaving a genuinely separate, nearly-as-tall second mode excited.
+    Measured on a real 3-peak machine (45.2/76.4/137.2 Hz, weights
+    1.00/0.89/0.38) the shared-grid sum chose a double zero on 45.2 that
+    left 2.4% at 76.4 in a 44 ms ramp, over the pair that nulls both
+    exactly in 35 ms.
     """
-    grid = []
-    for f0, damping, _w in peak_model.peaks:
-        span = max(damping * f0 * 3.0, 1.0)
-        for i in range(-n, n + 1):
-            f = f0 + span * i / n
+    total = 0.0
+    for f0, damping, weight in peak_model.peaks:
+        half = max(damping * f0, MIN_PEAK_BAND_HZ)
+        band = []
+        for i in range(-samples, samples + 1):
+            f = f0 + half * i / samples
             if f > 0.5:
-                grid.append(f)
-    return grid or [55.0]
+                band.append(ramp_spectrum(f, f_lo, f_hi) ** 2)
+        if band:
+            total += weight * math.fsum(band) / len(band)
+    return total
 
 
 def best_notch_pair(peak_model, min_freq=5.0):
@@ -145,7 +156,6 @@ def best_notch_pair(peak_model, min_freq=5.0):
     peaks = peak_model.freqs(min_freq)
     if not peaks:
         return None
-    grid = candidate_freq_grid(peak_model)
     candidates = [(f, f) for f in peaks]
     for i, fa in enumerate(peaks):
         for fb in peaks[i + 1 :]:
@@ -153,7 +163,7 @@ def best_notch_pair(peak_model, min_freq=5.0):
     best = None
     best_score = None
     for f_lo, f_hi in candidates:
-        s = score_pair(f_lo, f_hi, peak_model, grid)
+        s = score_pair(f_lo, f_hi, peak_model)
         if best_score is None or s < best_score:
             best, best_score = (f_lo, f_hi), s
     return best
