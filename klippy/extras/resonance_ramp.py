@@ -38,8 +38,7 @@ def _peak_response(f, f0, damping, weight):
         return 0.0
     r = f / f0
     denom = (1.0 - r * r) ** 2 + (2.0 * damping * r) ** 2
-    if denom <= 1e-12:
-        denom = 1e-12
+    denom = max(denom, 1e-12)
     return weight / math.sqrt(denom)
 
 

@@ -7,7 +7,7 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "klippy", "extras"))
-import resonance_ramp as rr  # noqa: E402
+import resonance_ramp as rr
 
 
 def test_peak_response_peaks_at_f0():
@@ -166,7 +166,7 @@ def test_build_notch_profile_no_speed_change_is_pure_cruise():
         50.0, 50.0, 50.0, 20.0, 55.0, 75.0, 20000.0, 0.001
     )
     assert len(segs) == 1
-    at, ct, dt, sv, cv, a, dist = segs[0]
+    at, ct, dt, _sv, _cv, a, _dist = segs[0]
     assert at == 0.0 and dt == 0.0 and a == 0.0
     assert abs(ct - 20.0 / 50.0) < 1e-9
     print("  a move with no speed change emits a single cruise segment OK")
