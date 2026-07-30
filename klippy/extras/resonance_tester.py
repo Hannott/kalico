@@ -343,6 +343,12 @@ class ResonanceTester:
             desc=self.cmd_SHAPER_CALIBRATE_help,
         )
         self.printer.register_event_handler("klippy:connect", self.connect)
+        # Last completed SHAPER_CALIBRATE's CalibrationData per axis name
+        # ("x"/"y"), so a separate module (resonance_model.py) can extract
+        # and persist a compact peak model afterwards without re-running the
+        # test. Local to this session only -- SHAPER_CALIBRATE itself never
+        # persisted this beyond its own local variables before.
+        self.last_calibration_data = {}
 
     def connect(self):
         self.accel_chips = []
@@ -566,6 +572,7 @@ class ResonanceTester:
                 % (axis_name,)
             )
             calibration_data[axis].normalize_to_frequencies()
+            self.last_calibration_data[axis_name] = calibration_data[axis]
             systime = self.printer.get_reactor().monotonic()
             toolhead = self.printer.lookup_object("toolhead")
             toolhead_info = toolhead.get_status(systime)
