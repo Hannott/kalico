@@ -1037,8 +1037,21 @@ class ShaperCalibrate:
         if top <= 0.0:
             return []
         peaks = []
-        for f0, v in zip(freqs, vals):
-            damping = self._estimate_damping_ratio(freq_bins, psd, f0)
+        for i, (f0, v) in enumerate(zip(freqs, vals)):
+            # Bound the half-power search short of any neighbouring peak on
+            # that side, the same way find_best_shaper does. Without this a
+            # peak sitting on the flank of a taller one measures the
+            # NEIGHBOUR's slope as its own width: on a real capture with a
+            # 48.5 Hz shoulder beside a dominant 57.5 Hz mode, the unbounded
+            # estimate returned 0.165 -- around three times a plausible
+            # printer damping ratio, and persisted straight into the config.
+            lower = [pf for j, pf in enumerate(freqs) if j != i and pf < f0]
+            upper = [pf for j, pf in enumerate(freqs) if j != i and pf > f0]
+            span_lo = max(5.0, (f0 - max(lower)) * 0.4) if lower else None
+            span_hi = max(5.0, (min(upper) - f0) * 0.4) if upper else None
+            damping = self._estimate_damping_ratio(
+                freq_bins, psd, f0, max_span_lo=span_lo, max_span_hi=span_hi
+            )
             if damping is None:
                 damping = shaper_defs.DEFAULT_DAMPING_RATIO
             peaks.append((float(f0), float(damping), float(v) / top))
