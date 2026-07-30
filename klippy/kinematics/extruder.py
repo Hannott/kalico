@@ -664,7 +664,15 @@ class PrinterExtruder:
             cruise_v * abs_axis_r,
             accel * abs_axis_r,
         )
-        self._seg_pos += seg_dist
+        # seg_dist is TOOLHEAD path distance; last_position advances in
+        # EXTRUDER distance, which is what move() applies as
+        # extr_d = abs(move.axes_d[3]) = abs_axis_r * move_d. Accumulating
+        # seg_dist directly dropped that abs_axis_r factor and ran the
+        # tracked extruder position roughly 1/abs_axis_r too far each move
+        # (~25x at a typical extrusion ratio); that value is handed to the
+        # next slice as its trapq start position, so the first extruding
+        # move failed with an internal stepcompress error.
+        self._seg_pos += abs_axis_r * seg_dist
         self.last_position = [
             start[i] + self._seg_pos * extr_r[i] for i in range(3)
         ]

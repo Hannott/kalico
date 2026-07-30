@@ -297,4 +297,11 @@ def build_notch_profile(
     if cruise_d > 1e-9 and vc > 1e-9:
         segs.append((0.0, cruise_d / vc, 0.0, vc, vc, 0.0, cruise_d))
     segs.extend(_decel_from_accel(dec))
+    if not segs:
+        # An empty list is NOT a valid profile: the caller checks `is not
+        # None`, so returning [] would emit nothing for the move while the
+        # planner still advances to its end position -- a discontinuity in
+        # the motion queue rather than a fallback. Say "cannot shape this"
+        # so the caller uses the stock trapezoid.
+        return None
     return segs
