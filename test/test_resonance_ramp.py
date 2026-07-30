@@ -45,12 +45,37 @@ def test_single_peak_search_returns_its_own_frequency():
 
 def test_two_peak_search_beats_either_peak_alone():
     model = rr.PeakModel([(55.0, 0.03, 1.0), (90.0, 0.03, 0.8)])
-    grid = rr.candidate_freq_grid(model)
     pair = rr.best_notch_pair(model)
-    best_score = rr.score_pair(pair[0], pair[1], model, grid)
+    best_score = rr.score_pair(pair[0], pair[1], model)
     for f in (55.0, 90.0):
-        assert best_score <= rr.score_pair(f, f, model, grid) + 1e-12
+        assert best_score <= rr.score_pair(f, f, model) + 1e-12
     print("  the searched pair scores at least as well as either peak alone OK")
+
+
+def test_a_second_real_peak_is_not_outvoted_by_the_tallest_peaks_skirt():
+    # Regression: scoring used to sum |A(f)|^2 over one shared frequency
+    # grid, which let the tallest peak's wide, high-response skirt dominate.
+    # On this real 3-peak machine that picked a DOUBLE zero on 45.2 Hz,
+    # leaving 2.4% at the nearly-as-tall 76.4 Hz peak and costing a 44 ms
+    # ramp -- when nulling 45.2 AND 76.4 exactly is both quieter at every
+    # measured peak and a shorter (35 ms) ramp. Scoring now averages per
+    # peak, so each measured mode is judged on its own band.
+    model = rr.PeakModel(
+        [(45.2, 0.055, 1.00), (76.4, 0.050, 0.89), (137.2, 0.080, 0.38)]
+    )
+    f_lo, f_hi = rr.best_notch_pair(model)
+    assert (f_lo, f_hi) == (45.2, 76.4), (f_lo, f_hi)
+    # Both of the two dominant modes are actually nulled, not just the top.
+    for f in (45.2, 76.4):
+        assert rr.ramp_spectrum(f, f_lo, f_hi) < 1e-9, f
+    # ...and it is not paying for that with a longer ramp than the
+    # double-zero-on-the-tallest-peak shape it replaced.
+    assert rr.notch_duration(100.0, f_lo, f_hi) < rr.notch_duration(
+        100.0, 45.2, 45.2
+    )
+    print(
+        "  a genuine second peak is not outvoted by the tallest one's skirt OK"
+    )
 
 
 def test_search_ignores_frequencies_below_the_floor():
@@ -187,6 +212,7 @@ def main():
     test_dominant_freq_is_the_highest_weight_peak()
     test_single_peak_search_returns_its_own_frequency()
     test_two_peak_search_beats_either_peak_alone()
+    test_a_second_real_peak_is_not_outvoted_by_the_tallest_peaks_skirt()
     test_search_ignores_frequencies_below_the_floor()
     test_search_returns_none_for_an_empty_model()
     test_ramp_spectrum_null_at_configured_frequencies()
