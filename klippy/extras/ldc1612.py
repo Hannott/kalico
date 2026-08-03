@@ -49,12 +49,16 @@ class DriveCurrentCalibrate:
             self.name.split()[-1],
             self.cmd_LDC_CALIBRATE,
             desc=self.cmd_LDC_CALIBRATE_help,
+            params=self.cmd_LDC_CALIBRATE_params,
         )
 
     def get_drive_current(self):
         return self.drive_cur
 
     cmd_LDC_CALIBRATE_help = "Calibrate LDC1612 DRIVE_CURRENT register"
+    cmd_LDC_CALIBRATE_params = {
+        "CHIP": {"type": "string", "required": True},
+    }
 
     def cmd_LDC_CALIBRATE(self, gcmd):
         is_in_progress = True

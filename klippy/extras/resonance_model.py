@@ -32,6 +32,7 @@ class ResonanceModel:
             "SAVE_RESONANCE_MODEL",
             self.cmd_SAVE_RESONANCE_MODEL,
             desc=self.cmd_SAVE_RESONANCE_MODEL_help,
+            params=self.cmd_SAVE_RESONANCE_MODEL_params,
         )
 
     def get_model(self, axis):
@@ -51,6 +52,9 @@ class ResonanceModel:
         " and persist them via SAVE_CONFIG, like a bed_mesh profile."
         " AXIS=x/y/xy (default xy) selects which axes to update."
     )
+    cmd_SAVE_RESONANCE_MODEL_params = {
+        "AXIS": {"type": "string", "default": "xy"},
+    }
 
     def cmd_SAVE_RESONANCE_MODEL(self, gcmd):
         axis_arg = gcmd.get("AXIS", "xy").lower()
