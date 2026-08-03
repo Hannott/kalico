@@ -101,6 +101,15 @@ class ZAdjustStatus:
         self.reset()
 
 
+# Params read by RetryHelper.start() - merge into a command's own
+# cmd_XXX_params instead of duplicating.
+RETRY_HELPER_PARAMS = {
+    "RETRIES": {"type": "int", "required": False},
+    "RETRY_TOLERANCE": {"type": "float", "required": False},
+    "INCREASING_THRESHOLD": {"type": "float", "required": False},
+}
+
+
 class RetryHelper:
     def __init__(self, config, error_msg_extra=""):
         self.gcode = config.get_printer().lookup_object("gcode")
@@ -191,9 +200,7 @@ class ZTilt:
     cmd_Z_TILT_ADJUST_help = "Adjust the Z tilt"
     cmd_Z_TILT_ADJUST_params = {
         **probe.PROBE_POINTS_HELPER_PARAMS,
-        "RETRIES": {"type": "int", "required": False},
-        "RETRY_TOLERANCE": {"type": "float", "required": False},
-        "INCREASING_THRESHOLD": {"type": "float", "required": False},
+        **RETRY_HELPER_PARAMS,
     }
 
     def cmd_Z_TILT_ADJUST(self, gcmd):
