@@ -32,6 +32,7 @@ class IdleTimeout:
             "SET_IDLE_TIMEOUT",
             self.cmd_SET_IDLE_TIMEOUT,
             desc=self.cmd_SET_IDLE_TIMEOUT_help,
+            params=self.cmd_SET_IDLE_TIMEOUT_params,
         )
         self.state = "Idle"
         self.last_print_start_systime = 0.0
@@ -123,6 +124,9 @@ class IdleTimeout:
         )
 
     cmd_SET_IDLE_TIMEOUT_help = "Set the idle timeout in seconds"
+    cmd_SET_IDLE_TIMEOUT_params = {
+        "TIMEOUT": {"type": "float", "required": False},
+    }
 
     def cmd_SET_IDLE_TIMEOUT(self, gcmd):
         timeout = gcmd.get_float("TIMEOUT", self.idle_timeout, above=0.0)

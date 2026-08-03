@@ -409,6 +409,7 @@ class TMCCommandHelper:
             self.name,
             self.cmd_SET_TMC_FIELD,
             desc=self.cmd_SET_TMC_FIELD_help,
+            params=self.cmd_SET_TMC_FIELD_params,
         )
         gcode.register_mux_command(
             "INIT_TMC",
@@ -416,6 +417,7 @@ class TMCCommandHelper:
             self.name,
             self.cmd_INIT_TMC,
             desc=self.cmd_INIT_TMC_help,
+            params=self.cmd_INIT_TMC_params,
         )
         gcode.register_mux_command(
             "SET_TMC_CURRENT",
@@ -423,6 +425,7 @@ class TMCCommandHelper:
             self.name,
             self.cmd_SET_TMC_CURRENT,
             desc=self.cmd_SET_TMC_CURRENT_help,
+            params=self.cmd_SET_TMC_CURRENT_params,
         )
 
     def _init_registers(self, print_time=None):
@@ -432,6 +435,9 @@ class TMCCommandHelper:
             self.mcu_tmc.set_register(reg_name, val, print_time)
 
     cmd_INIT_TMC_help = "Initialize TMC stepper driver registers"
+    cmd_INIT_TMC_params = {
+        "STEPPER": {"type": "string", "required": True},
+    }
 
     def cmd_INIT_TMC(self, gcmd):
         logging.info("INIT_TMC %s", self.name)
@@ -439,6 +445,12 @@ class TMCCommandHelper:
         self._init_registers(print_time)
 
     cmd_SET_TMC_FIELD_help = "Set a register field of a TMC driver"
+    cmd_SET_TMC_FIELD_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "FIELD": {"type": "string", "required": True},
+        "VALUE": {"type": "int", "required": False},
+        "VELOCITY": {"type": "float", "required": False},
+    }
 
     def cmd_SET_TMC_FIELD(self, gcmd):
         field_name = gcmd.get("FIELD").lower()
@@ -462,6 +474,12 @@ class TMCCommandHelper:
         self.mcu_tmc.set_register(reg_name, reg_val, print_time)
 
     cmd_SET_TMC_CURRENT_help = "Set the current of a TMC driver"
+    cmd_SET_TMC_CURRENT_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "CURRENT": {"type": "float", "required": False},
+        "HOLDCURRENT": {"type": "float", "required": False},
+        "HOMECURRENT": {"type": "float", "required": False},
+    }
 
     def cmd_SET_TMC_CURRENT(self, gcmd):
         ch = self.current_helper
@@ -665,9 +683,14 @@ class TMCCommandHelper:
             self.name,
             self.cmd_DUMP_TMC,
             desc=self.cmd_DUMP_TMC_help,
+            params=self.cmd_DUMP_TMC_params,
         )
 
     cmd_DUMP_TMC_help = "Read and display TMC stepper driver registers"
+    cmd_DUMP_TMC_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "REGISTER": {"type": "string", "required": False},
+    }
 
     def cmd_DUMP_TMC(self, gcmd):
         logging.info("DUMP_TMC %s", self.name)

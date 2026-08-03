@@ -13,12 +13,131 @@ import traceback
 import typing
 
 import jinja2
+import jinja2.nodes
 
 from klippy import configfile
 
 ######################################################################
 # Template handling
 ######################################################################
+
+
+# Best-effort static extraction of the parameters a macro's script reads,
+# for exposing via the command's api-visible "params" schema (see
+# gcode.py's register_command()/register_mux_command() "params="
+# argument). This never affects template execution - a failure to
+# recognize a parameter just means it won't show up in the schema.
+def _params_access_name(node):
+    # Returns NAME if `node` is `params.NAME` or `params['NAME']`
+    if (
+        isinstance(node, jinja2.nodes.Getattr)
+        and isinstance(node.node, jinja2.nodes.Name)
+        and node.node.name == "params"
+    ):
+        return node.attr
+    if (
+        isinstance(node, jinja2.nodes.Getitem)
+        and isinstance(node.node, jinja2.nodes.Name)
+        and node.node.name == "params"
+        and isinstance(node.arg, jinja2.nodes.Const)
+        and isinstance(node.arg.value, str)
+    ):
+        return node.arg.value
+    return None
+
+
+def _params_from_jinja_script(env, script):
+    try:
+        tree = env.parse(script)
+    except jinja2.exceptions.TemplateSyntaxError:
+        return {}
+    result = {}
+
+    def record(name, type_=None, default=configfile.sentinel):
+        entry = result.setdefault(name, {})
+        if type_ is not None:
+            entry.setdefault("type", type_)
+        if default is not configfile.sentinel:
+            entry.setdefault("default", default)
+
+    def unwrap_filters(node):
+        # Descend through a chain of |filters (eg,
+        # "params.X|default(60)|float") to find the type/default and
+        # the underlying params access, if any.
+        type_ = None
+        default = configfile.sentinel
+        cur = node
+        while isinstance(cur, jinja2.nodes.Filter):
+            if cur.name == "default" and cur.args:
+                arg0 = cur.args[0]
+                if isinstance(arg0, jinja2.nodes.Const):
+                    default = arg0.value
+            elif cur.name in ("int", "float", "string") and type_ is None:
+                type_ = cur.name
+            cur = cur.node
+        name = _params_access_name(cur)
+        if name is None:
+            return None
+        return name, type_, default
+
+    def visit(node):
+        unwrapped = unwrap_filters(node)
+        if unwrapped is not None:
+            record(*unwrapped)
+            return
+        if isinstance(node, jinja2.nodes.Compare) and isinstance(
+            node.expr, jinja2.nodes.Const
+        ):
+            for op in node.ops:
+                if (
+                    op.op in ("in", "notin")
+                    and isinstance(op.expr, jinja2.nodes.Name)
+                    and op.expr.name == "params"
+                    and isinstance(node.expr.value, str)
+                ):
+                    record(node.expr.value)
+        for child in node.iter_child_nodes():
+            visit(child)
+
+    visit(tree)
+    return result
+
+
+def _params_from_python_script(script):
+    try:
+        tree = ast.parse(script)
+    except SyntaxError:
+        return {}
+    result = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "params"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            result.setdefault(node.slice.value, {})
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "params"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            entry = result.setdefault(node.args[0].value, {})
+            if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                entry.setdefault("default", node.args[1].value)
+    return result
+
+
+def extract_macro_params(script_type, env, script):
+    if script_type == "python":
+        return _params_from_python_script(script)
+    return _params_from_jinja_script(env, script)
 
 
 # Wrapper for access to printer object get_status() methods
@@ -390,6 +509,10 @@ class PrinterGCodeMacro:
                 template = obj.template
                 script_type, new_script = new_section.getscript("gcode")
                 template.reload(script_type, new_script)
+                obj.params = extract_macro_params(
+                    script_type, self.env, new_script
+                )
+                self.gcode.update_command_params(obj.alias, obj.params)
 
 
 def load_config(config):
@@ -416,6 +539,8 @@ class GCodeMacro:
         self.gcode = printer.lookup_object("gcode")
         self.rename_existing = config.get("rename_existing", None)
         self.cmd_desc = config.get("description", "G-Code macro")
+        script_type, script = config.getscript("gcode")
+        self.params = extract_macro_params(script_type, gcode_macro.env, script)
         if self.rename_existing is not None:
             if self.gcode.is_traditional_gcode(
                 self.alias
@@ -429,7 +554,7 @@ class GCodeMacro:
             )
         else:
             self.gcode.register_command(
-                self.alias, self.cmd, desc=self.cmd_desc
+                self.alias, self.cmd, desc=self.cmd_desc, params=self.params
             )
         self.gcode.register_mux_command(
             "SET_GCODE_VARIABLE",
@@ -461,7 +586,9 @@ class GCodeMacro:
             )
         pdesc = "Renamed builtin of '%s'" % (self.alias,)
         self.gcode.register_command(self.rename_existing, prev_cmd, desc=pdesc)
-        self.gcode.register_command(self.alias, self.cmd, desc=self.cmd_desc)
+        self.gcode.register_command(
+            self.alias, self.cmd, desc=self.cmd_desc, params=self.params
+        )
 
     def get_status(self, eventtime):
         return self.variables

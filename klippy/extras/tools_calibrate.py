@@ -82,21 +82,25 @@ class ToolsCalibrate:
             "TOOL_LOCATE_SENSOR",
             self.cmd_TOOL_LOCATE_SENSOR,
             desc=self.cmd_TOOL_LOCATE_SENSOR_help,
+            params=self.cmd_TOOL_LOCATE_SENSOR_params,
         )
         self.gcode.register_command(
             "TOOL_CALIBRATE_TOOL_OFFSET",
             self.cmd_TOOL_CALIBRATE_TOOL_OFFSET,
             desc=self.cmd_TOOL_CALIBRATE_TOOL_OFFSET_help,
+            params=self.cmd_TOOL_CALIBRATE_TOOL_OFFSET_params,
         )
         self.gcode.register_command(
             "TOOL_CALIBRATE_SAVE_TOOL_OFFSET",
             self.cmd_TOOL_CALIBRATE_SAVE_TOOL_OFFSET,
             desc=self.cmd_TOOL_CALIBRATE_SAVE_TOOL_OFFSET_help,
+            params=self.cmd_TOOL_CALIBRATE_SAVE_TOOL_OFFSET_params,
         )
         self.gcode.register_command(
             "TOOL_CALIBRATE_QUERY_PROBE",
             self.cmd_TOOL_CALIBRATE_QUERY_PROBE,
             desc=self.cmd_TOOL_CALIBRATE_QUERY_PROBE_help,
+            params=self.cmd_TOOL_CALIBRATE_QUERY_PROBE_params,
         )
 
     def _reset_last_results(self, eventtime=None):
@@ -187,6 +191,18 @@ class ToolsCalibrate:
     cmd_TOOL_LOCATE_SENSOR_help = (
         "Locate the tool calibration sensor, use with tool 0."
     )
+    # These are actually read in self.locate_sensor() ->
+    # PrinterProbeMultiAxis.run_probe()/get_lift_speed(), not directly in
+    # cmd_TOOL_LOCATE_SENSOR's own body.
+    cmd_TOOL_LOCATE_SENSOR_params = {
+        "PROBE_SPEED": {"type": "float", "required": False},
+        "LIFT_SPEED": {"type": "float", "required": False},
+        "SAMPLES": {"type": "int", "required": False},
+        "SAMPLE_RETRACT_DIST": {"type": "float", "required": False},
+        "SAMPLES_TOLERANCE": {"type": "float", "required": False},
+        "SAMPLES_TOLERANCE_RETRIES": {"type": "int", "required": False},
+        "SAMPLES_RESULT": {"type": "string", "required": False},
+    }
 
     def cmd_TOOL_LOCATE_SENSOR(self, gcmd):
         self.last_result = self.locate_sensor(gcmd)
@@ -199,6 +215,17 @@ class ToolsCalibrate:
     cmd_TOOL_CALIBRATE_TOOL_OFFSET_help = (
         "Calibrate current tool offset relative to tool 0"
     )
+    # Same params as TOOL_LOCATE_SENSOR; also delegated to
+    # self.locate_sensor().
+    cmd_TOOL_CALIBRATE_TOOL_OFFSET_params = {
+        "PROBE_SPEED": {"type": "float", "required": False},
+        "LIFT_SPEED": {"type": "float", "required": False},
+        "SAMPLES": {"type": "int", "required": False},
+        "SAMPLE_RETRACT_DIST": {"type": "float", "required": False},
+        "SAMPLES_TOLERANCE": {"type": "float", "required": False},
+        "SAMPLES_TOLERANCE_RETRIES": {"type": "int", "required": False},
+        "SAMPLES_RESULT": {"type": "string", "required": False},
+    }
 
     def cmd_TOOL_CALIBRATE_TOOL_OFFSET(self, gcmd):
         if not self.sensor_location:
@@ -217,6 +244,13 @@ class ToolsCalibrate:
     cmd_TOOL_CALIBRATE_SAVE_TOOL_OFFSET_help = (
         "Save tool offset calibration to config"
     )
+    cmd_TOOL_CALIBRATE_SAVE_TOOL_OFFSET_params = {
+        "SECTION": {"type": "string", "required": False},
+        "ATTRIBUTE": {"type": "string", "required": False},
+        "VALUE": {"type": "string", "required": False},
+        "MACRO": {"type": "string", "required": False},
+        "VARIABLE": {"type": "string", "required": False},
+    }
 
     def cmd_TOOL_CALIBRATE_SAVE_TOOL_OFFSET(self, gcmd):
         if not self.last_result:
@@ -251,6 +285,7 @@ class ToolsCalibrate:
     cmd_TOOL_CALIBRATE_QUERY_PROBE_help = (
         "Return the state of calibration probe"
     )
+    cmd_TOOL_CALIBRATE_QUERY_PROBE_params = {}
 
     def cmd_TOOL_CALIBRATE_QUERY_PROBE(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
