@@ -185,6 +185,7 @@ class Calibrater:
             "AXIS_TWIST_COMPENSATION_CALIBRATE",
             self.cmd_AXIS_TWIST_COMPENSATION_CALIBRATE,
             desc=self.cmd_AXIS_TWIST_COMPENSATION_CALIBRATE_help,
+            params=self.cmd_AXIS_TWIST_COMPENSATION_CALIBRATE_params,
         )
 
     cmd_AXIS_TWIST_COMPENSATION_CALIBRATE_help = """
@@ -192,6 +193,10 @@ class Calibrater:
     Measure z probe offset at n points along the x axis,
     and calculate x twist compensation
     """
+    cmd_AXIS_TWIST_COMPENSATION_CALIBRATE_params = {
+        "SAMPLE_COUNT": {"type": "int", "default": 3},
+        "AXIS": {"type": "string", "default": "X"},
+    }
 
     def cmd_AXIS_TWIST_COMPENSATION_CALIBRATE(self, gcmd):
         self.gcmd = gcmd
