@@ -85,10 +85,20 @@ class LimitedCartKinematics(cartesian.CartKinematics):
             "SET_KINEMATICS_LIMIT",
             self.cmd_SET_KINEMATICS_LIMIT,
             desc=self.cmd_SET_KINEMATICS_LIMIT_help,
+            params=self.cmd_SET_KINEMATICS_LIMIT_params,
         )
         self.supports_dual_carriage = True
 
     cmd_SET_KINEMATICS_LIMIT_help = "Set/get cartesian per axis velocity limits"
+    cmd_SET_KINEMATICS_LIMIT_params = {
+        "X_VELOCITY": {"type": "float", "required": False},
+        "Y_VELOCITY": {"type": "float", "required": False},
+        "Z_VELOCITY": {"type": "float", "required": False},
+        "X_ACCEL": {"type": "float", "required": False},
+        "Y_ACCEL": {"type": "float", "required": False},
+        "Z_ACCEL": {"type": "float", "required": False},
+        "SCALE": {"type": "int", "required": False},
+    }
 
     def cmd_SET_KINEMATICS_LIMIT(self, gcmd):
         self.max_velocities = [
