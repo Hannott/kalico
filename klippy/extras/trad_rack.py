@@ -299,26 +299,31 @@ class TradRack:
             "TR_GO_TO_LANE",
             self.cmd_TR_GO_TO_LANE,
             desc=self.cmd_TR_GO_TO_LANE_help,
+            params=self.cmd_TR_GO_TO_LANE_params,
         )
         self.gcode.register_command(
             "TR_LOAD_LANE",
             self.cmd_TR_LOAD_LANE,
             desc=self.cmd_TR_LOAD_LANE_help,
+            params=self.cmd_TR_LOAD_LANE_params,
         )
         self.gcode.register_command(
             "TR_LOAD_TOOLHEAD",
             self.cmd_TR_LOAD_TOOLHEAD,
             desc=self.cmd_TR_LOAD_TOOLHEAD_help,
+            params=self.cmd_TR_LOAD_TOOLHEAD_params,
         )
         self.gcode.register_command(
             "TR_UNLOAD_TOOLHEAD",
             self.cmd_TR_UNLOAD_TOOLHEAD,
             desc=self.cmd_TR_UNLOAD_TOOLHEAD_help,
+            params=self.cmd_TR_UNLOAD_TOOLHEAD_params,
         )
         self.gcode.register_command(
             "TR_SERVO_DOWN",
             self.cmd_TR_SERVO_DOWN,
             desc=self.cmd_TR_SERVO_DOWN_help,
+            params=self.cmd_TR_SERVO_DOWN_params,
         )
         self.gcode.register_command(
             "TR_SERVO_UP", self.cmd_TR_SERVO_UP, desc=self.cmd_TR_SERVO_UP_help
@@ -327,11 +332,13 @@ class TradRack:
             "TR_SERVO_TEST",
             self.cmd_TR_SERVO_TEST,
             desc=self.cmd_TR_SERVO_TEST_help,
+            params=self.cmd_TR_SERVO_TEST_params,
         )
         self.gcode.register_command(
             "TR_SET_ACTIVE_LANE",
             self.cmd_TR_SET_ACTIVE_LANE,
             desc=self.cmd_TR_SET_ACTIVE_LANE_help,
+            params=self.cmd_TR_SET_ACTIVE_LANE_params,
         )
         self.gcode.register_command(
             "TR_RESET_ACTIVE_LANE",
@@ -358,11 +365,13 @@ class TradRack:
             "TR_SET_HOTEND_LOAD_LENGTH",
             self.cmd_TR_SET_HOTEND_LOAD_LENGTH,
             desc=self.cmd_TR_SET_HOTEND_LOAD_LENGTH_help,
+            params=self.cmd_TR_SET_HOTEND_LOAD_LENGTH_params,
         )
         self.gcode.register_command(
             "TR_DISCARD_BOWDEN_LENGTHS",
             self.cmd_TR_DISCARD_BOWDEN_LENGTHS,
             desc=self.cmd_TR_DISCARD_BOWDEN_LENGTHS_help,
+            params=self.cmd_TR_DISCARD_BOWDEN_LENGTHS_params,
         )
         self.gcode.register_command(
             "TR_SYNC_TO_EXTRUDER",
@@ -378,11 +387,13 @@ class TradRack:
             "TR_ASSIGN_LANE",
             self.cmd_TR_ASSIGN_LANE,
             desc=self.cmd_TR_ASSIGN_LANE_help,
+            params=self.cmd_TR_ASSIGN_LANE_params,
         )
         self.gcode.register_command(
             "TR_SET_DEFAULT_LANE",
             self.cmd_TR_SET_DEFAULT_LANE,
             desc=self.cmd_TR_SET_DEFAULT_LANE_help,
+            params=self.cmd_TR_SET_DEFAULT_LANE_params,
         )
         self.gcode.register_command(
             "TR_RESET_TOOL_MAP",
@@ -524,6 +535,9 @@ class TradRack:
         self.selector_pos_uncertain = False
 
     cmd_TR_GO_TO_LANE_help = "Move Trad Rack's selector to a filament lane"
+    cmd_TR_GO_TO_LANE_params = {
+        "LANE": {"type": "int", "required": False},
+    }
 
     def cmd_TR_GO_TO_LANE(self, gcmd):
         self._go_to_lane(gcmd.get_int("LANE", None))
@@ -531,6 +545,10 @@ class TradRack:
     cmd_TR_LOAD_LANE_help = (
         "Load filament from the spool into Trad Rack in the specified lane"
     )
+    cmd_TR_LOAD_LANE_params = {
+        "LANE": {"type": "int", "required": False},
+        "RESET_SPEED": {"type": "int", "default": 1},
+    }
 
     def cmd_TR_LOAD_LANE(self, gcmd):
         lane = gcmd.get_int("LANE", None)
@@ -538,6 +556,15 @@ class TradRack:
         self.lanes_dead[lane] = False
 
     cmd_TR_LOAD_TOOLHEAD_help = "Load filament from Trad Rack into the toolhead"
+    cmd_TR_LOAD_TOOLHEAD_params = {
+        "LANE": {"type": "int", "required": False},
+        "TOOL": {"type": "int", "required": False},
+        "MIN_TEMP": {"type": "float", "default": 0.0},
+        "EXACT_TEMP": {"type": "float", "default": 0.0},
+        "BOWDEN_LENGTH": {"type": "float", "required": False},
+        "EXTRUDER_LOAD_LENGTH": {"type": "float", "required": False},
+        "HOTEND_LOAD_LENGTH": {"type": "float", "required": False},
+    }
 
     def cmd_TR_LOAD_TOOLHEAD(self, gcmd):
         start_lane = self.active_lane
@@ -615,6 +642,10 @@ class TradRack:
             self._set_up_resume_and_pause("check condition", resume_kwargs)
 
     cmd_TR_UNLOAD_TOOLHEAD_help = "Unload filament from the toolhead"
+    cmd_TR_UNLOAD_TOOLHEAD_params = {
+        "MIN_TEMP": {"type": "float", "default": 0.0},
+        "EXACT_TEMP": {"type": "float", "default": 0.0},
+    }
 
     def cmd_TR_UNLOAD_TOOLHEAD(self, gcmd):
         self._unload_toolhead(
@@ -623,6 +654,9 @@ class TradRack:
         )
 
     cmd_TR_SERVO_DOWN_help = "Lower the servo"
+    cmd_TR_SERVO_DOWN_params = {
+        "FORCE": {"type": "int", "default": 0},
+    }
 
     def cmd_TR_SERVO_DOWN(self, gcmd):
         if not gcmd.get_int("FORCE", 0):
@@ -644,6 +678,9 @@ class TradRack:
     cmd_TR_SERVO_TEST_help = (
         "Test an angle for Trad Rack's servo relative to servo_down_angle"
     )
+    cmd_TR_SERVO_TEST_params = {
+        "ANGLE": {"type": "float", "required": False},
+    }
 
     def cmd_TR_SERVO_TEST(self, gcmd):
         # get commanded and raw angles
@@ -691,6 +728,9 @@ class TradRack:
     cmd_TR_SET_ACTIVE_LANE_help = (
         "Set lane number that is currently loaded in the toolhead"
     )
+    cmd_TR_SET_ACTIVE_LANE_params = {
+        "LANE": {"type": "int", "required": False},
+    }
 
     def cmd_TR_SET_ACTIVE_LANE(self, gcmd):
         # get lane
@@ -903,6 +943,10 @@ class TradRack:
     cmd_TR_SET_HOTEND_LOAD_LENGTH_help = (
         "Sets hotend_load_length. Does not persist across restarts."
     )
+    cmd_TR_SET_HOTEND_LOAD_LENGTH_params = {
+        "VALUE": {"type": "float", "required": False},
+        "ADJUST": {"type": "float", "required": False},
+    }
 
     def cmd_TR_SET_HOTEND_LOAD_LENGTH(self, gcmd):
         value = gcmd.get_float("VALUE", None, minval=0.0)
@@ -920,6 +964,9 @@ class TradRack:
         "Discards saved bowden lengths and reverts them to the bowden_length"
         " config value"
     )
+    cmd_TR_DISCARD_BOWDEN_LENGTHS_params = {
+        "MODE": {"type": "string", "default": "ALL"},
+    }
 
     def cmd_TR_DISCARD_BOWDEN_LENGTHS(self, gcmd):
         mode = gcmd.get("MODE", "ALL").upper()
@@ -963,6 +1010,11 @@ class TradRack:
         self._restore_extruder_sync()
 
     cmd_TR_ASSIGN_LANE_help = "Assign a lane to a tool"
+    cmd_TR_ASSIGN_LANE_params = {
+        "LANE": {"type": "int", "required": False},
+        "TOOL": {"type": "int", "required": False},
+        "SET_DEFAULT": {"type": "int", "default": 0},
+    }
 
     def cmd_TR_ASSIGN_LANE(self, gcmd):
         lane = gcmd.get_int("LANE", None)
@@ -983,6 +1035,10 @@ class TradRack:
             self.default_lanes[tool] = lane
 
     cmd_TR_SET_DEFAULT_LANE_help = "Set the default lane for a tool"
+    cmd_TR_SET_DEFAULT_LANE_params = {
+        "LANE": {"type": "int", "required": False},
+        "TOOL": {"type": "int", "required": False},
+    }
 
     def cmd_TR_SET_DEFAULT_LANE(self, gcmd):
         lane = gcmd.get_int("LANE", None)
