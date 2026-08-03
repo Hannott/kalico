@@ -9,7 +9,7 @@ import numpy as np
 
 from klippy import mathutil
 
-from . import probe
+from . import probe, z_tilt
 
 
 def params_to_normal_form(params, offsets):
@@ -255,9 +255,7 @@ class ZTilt:
     cmd_Z_TILT_ADJUST_help = "Adjust the Z tilt"
     cmd_Z_TILT_ADJUST_params = {
         **probe.PROBE_POINTS_HELPER_PARAMS,
-        "RETRIES": {"type": "int", "required": False},
-        "RETRY_TOLERANCE": {"type": "float", "required": False},
-        "INCREASING_THRESHOLD": {"type": "float", "required": False},
+        **z_tilt.RETRY_HELPER_PARAMS,
     }
     cmd_Z_TILT_CALIBRATE_help = (
         "Calibrate Z tilt with additional probing points"
