@@ -54,6 +54,7 @@ class PrinterServo:
             servo_name,
             self.cmd_SET_SERVO,
             desc=self.cmd_SET_SERVO_help,
+            params=self.cmd_SET_SERVO_params,
         )
 
     def get_status(self, eventtime):
@@ -76,6 +77,11 @@ class PrinterServo:
         return width * self.width_to_value
 
     cmd_SET_SERVO_help = "Set servo angle"
+    cmd_SET_SERVO_params = {
+        "SERVO": {"type": "string", "required": True},
+        "WIDTH": {"type": "float", "required": False},
+        "ANGLE": {"type": "float", "required": True},
+    }
 
     def cmd_SET_SERVO(self, gcmd):
         width = gcmd.get_float("WIDTH", None)

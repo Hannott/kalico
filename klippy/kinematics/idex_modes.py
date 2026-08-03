@@ -38,16 +38,19 @@ class DualCarriages:
             "SET_DUAL_CARRIAGE",
             self.cmd_SET_DUAL_CARRIAGE,
             desc=self.cmd_SET_DUAL_CARRIAGE_help,
+            params=self.cmd_SET_DUAL_CARRIAGE_params,
         )
         gcode.register_command(
             "SAVE_DUAL_CARRIAGE_STATE",
             self.cmd_SAVE_DUAL_CARRIAGE_STATE,
             desc=self.cmd_SAVE_DUAL_CARRIAGE_STATE_help,
+            params=self.cmd_SAVE_DUAL_CARRIAGE_STATE_params,
         )
         gcode.register_command(
             "RESTORE_DUAL_CARRIAGE_STATE",
             self.cmd_RESTORE_DUAL_CARRIAGE_STATE,
             desc=self.cmd_RESTORE_DUAL_CARRIAGE_STATE_help,
+            params=self.cmd_RESTORE_DUAL_CARRIAGE_STATE_params,
         )
 
     def get_rails(self):
@@ -192,6 +195,10 @@ class DualCarriages:
             dc.apply_transform()
 
     cmd_SET_DUAL_CARRIAGE_help = "Configure the dual carriages mode"
+    cmd_SET_DUAL_CARRIAGE_params = {
+        "CARRIAGE": {"type": "int", "required": True},
+        "MODE": {"type": "string", "required": False},
+    }
 
     def cmd_SET_DUAL_CARRIAGE(self, gcmd):
         index = gcmd.get_int("CARRIAGE", minval=0, maxval=1)
@@ -216,6 +223,9 @@ class DualCarriages:
     cmd_SAVE_DUAL_CARRIAGE_STATE_help = (
         "Save dual carriages modes and positions"
     )
+    cmd_SAVE_DUAL_CARRIAGE_STATE_params = {
+        "NAME": {"type": "string", "default": "default"},
+    }
 
     def cmd_SAVE_DUAL_CARRIAGE_STATE(self, gcmd):
         state_name = gcmd.get("NAME", "default")
@@ -228,6 +238,11 @@ class DualCarriages:
     cmd_RESTORE_DUAL_CARRIAGE_STATE_help = (
         "Restore dual carriages modes and positions"
     )
+    cmd_RESTORE_DUAL_CARRIAGE_STATE_params = {
+        "NAME": {"type": "string", "default": "default"},
+        "MOVE_SPEED": {"type": "float", "default": 0.0},
+        "MOVE": {"type": "int", "default": 1},
+    }
 
     def cmd_RESTORE_DUAL_CARRIAGE_STATE(self, gcmd):
         state_name = gcmd.get("NAME", "default")
