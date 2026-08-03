@@ -50,17 +50,22 @@ class ForceMove:
             "STEPPER_BUZZ",
             self.cmd_STEPPER_BUZZ,
             desc=self.cmd_STEPPER_BUZZ_help,
+            params=self.cmd_STEPPER_BUZZ_params,
         )
         if not config.getboolean("enable_force_move", True):
             return
 
         gcode.register_command(
-            "FORCE_MOVE", self.cmd_FORCE_MOVE, desc=self.cmd_FORCE_MOVE_help
+            "FORCE_MOVE",
+            self.cmd_FORCE_MOVE,
+            desc=self.cmd_FORCE_MOVE_help,
+            params=self.cmd_FORCE_MOVE_params,
         )
         gcode.register_command(
             "SET_KINEMATIC_POSITION",
             self.cmd_SET_KINEMATIC_POSITION,
             desc=self.cmd_SET_KINEMATIC_POSITION_help,
+            params=self.cmd_SET_KINEMATIC_POSITION_params,
         )
 
     def register_stepper(self, config, mcu_stepper):
@@ -134,6 +139,9 @@ class ForceMove:
         return self.steppers[name]
 
     cmd_STEPPER_BUZZ_help = "Oscillate a given stepper to help id it"
+    cmd_STEPPER_BUZZ_params = {
+        "STEPPER": {"type": "string", "required": True},
+    }
 
     def cmd_STEPPER_BUZZ(self, gcmd):
         stepper = self._lookup_stepper(gcmd)
@@ -151,6 +159,12 @@ class ForceMove:
         self._restore_enable(stepper, was_enable)
 
     cmd_FORCE_MOVE_help = "Manually move a stepper; invalidates kinematics"
+    cmd_FORCE_MOVE_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "DISTANCE": {"type": "float", "required": True},
+        "VELOCITY": {"type": "float", "required": True},
+        "ACCEL": {"type": "float", "default": 0.0},
+    }
 
     def cmd_FORCE_MOVE(self, gcmd):
         stepper = self._lookup_stepper(gcmd)
@@ -168,6 +182,14 @@ class ForceMove:
         self.manual_move(stepper, distance, speed, accel)
 
     cmd_SET_KINEMATIC_POSITION_help = "Force a low-level kinematic position"
+    cmd_SET_KINEMATIC_POSITION_params = {
+        "X": {"type": "float", "required": False},
+        "Y": {"type": "float", "required": False},
+        "Z": {"type": "float", "required": False},
+        "SET_HOMED": {"type": "string", "default": "xyz"},
+        "CLEAR_HOMED": {"type": "string", "default": ""},
+        "CLEAR": {"type": "string", "default": ""},
+    }
 
     def cmd_SET_KINEMATIC_POSITION(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
