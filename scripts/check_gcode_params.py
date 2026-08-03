@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 # Check that declared cmd_XXX_params schemas stay in sync with the
 # gcmd.get()/get_int()/get_float()/get_boolean() calls in the matching
-# cmd_XXX handler.
-#
-# This is a static check for an opt-in convention: a class may declare
-# "cmd_FOO_params = {...}" next to "def cmd_FOO(self, gcmd)" to describe
-# FOO's parameters (see klippy/gcode.py's register_command()/
-# register_mux_command() "params=" argument, and klippy/extras/heaters.py
-# for example declarations). Modules that don't use the convention are
-# skipped entirely - this only checks commands that have opted in.
+# cmd_XXX handler. Only checks classes that opt in by declaring
+# cmd_FOO_params (see gcode.py's register_command() "params=" arg).
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import ast
@@ -27,10 +21,9 @@ def literal_first_arg(call):
 
 
 def gcmd_param_name(func_node):
-    # By convention handlers are "def cmd_XXX(self, gcmd)" - find the
-    # actual parameter name so calls on unrelated objects that merely
-    # happen to also have a get()/get_int()/etc method (eg, a plain
-    # dict from get_start_args()) aren't mistaken for gcmd calls.
+    # Handlers are "def cmd_XXX(self, gcmd)" - get the actual param name
+    # so unrelated objects with a get()/get_int()/etc method aren't
+    # mistaken for gcmd calls.
     args = func_node.args.args
     if len(args) < 2:
         return None
@@ -54,9 +47,7 @@ def find_used_params(func_node):
             continue
         name = literal_first_arg(node)
         if name is None:
-            # Non-literal first argument (eg, a loop over axes) - the
-            # schema can't be verified for this call, so don't report
-            # false positives for it.
+            # Non-literal arg (eg a loop over axes) - can't verify it
             dynamic = True
             continue
         used.add(name)
@@ -64,17 +55,10 @@ def find_used_params(func_node):
 
 
 def extract_declared_params(value_node):
-    # A cmd_XXX_params declaration only needs its KEYS verified (the
-    # "type"/"default"/"required" values are never read by this checker),
-    # so unlike find_used_params this doesn't need a full literal_eval -
-    # that also lets it tolerate a dict that merges in a shared constant
-    # (eg "{**probe.PROBE_POINTS_HELPER_PARAMS, 'OWN': {...}}" or
-    # "dict(probe.PROBE_POINTS_HELPER_PARAMS)"), which can't be
-    # literal_eval'd but is still a legitimate static declaration.
-    # Returns (declared_keys, unresolved) - unresolved is True if some
-    # part of the declaration (eg a "**expr" merge) couldn't be resolved
-    # to a literal key, meaning the true declared set may be larger than
-    # what's returned.
+    # Only the dict's KEYS need verifying, so a "{**shared, 'OWN': {}}"
+    # merge is fine even though it isn't literal_eval-able. Returns
+    # (declared_keys, unresolved); unresolved means the merged-in part
+    # couldn't be read, so the true declared set may be larger.
     if isinstance(value_node, ast.Dict):
         declared = set()
         unresolved = False
@@ -126,11 +110,6 @@ def check_class(filename, class_node):
         used, dynamic = find_used_params(func_node)
         undeclared = used - declared
         if undeclared and not decl_unresolved:
-            # If the declaration merges in an unresolved shared constant
-            # (eg "**probe.PROBE_POINTS_HELPER_PARAMS"), the true declared
-            # set may be larger than what's visible here, so a param that
-            # looks "undeclared" may actually be covered by that constant -
-            # skip the check rather than risk a false positive.
             errors.append(
                 "%s:%d: cmd_%s reads undeclared param(s): %s"
                 % (
