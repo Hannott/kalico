@@ -236,24 +236,42 @@ class ZTilt:
             "Z_TILT_ADJUST",
             self.cmd_Z_TILT_ADJUST,
             desc=self.cmd_Z_TILT_ADJUST_help,
+            params=self.cmd_Z_TILT_ADJUST_params,
         )
         if self.cal_helper is not None:
             gcode.register_command(
                 "Z_TILT_CALIBRATE",
                 self.cmd_Z_TILT_CALIBRATE,
                 desc=self.cmd_Z_TILT_CALIBRATE_help,
+                params=self.cmd_Z_TILT_CALIBRATE_params,
             )
         gcode.register_command(
             "Z_TILT_AUTODETECT",
             self.cmd_Z_TILT_AUTODETECT,
             desc=self.cmd_Z_TILT_AUTODETECT_help,
+            params=self.cmd_Z_TILT_AUTODETECT_params,
         )
 
     cmd_Z_TILT_ADJUST_help = "Adjust the Z tilt"
+    cmd_Z_TILT_ADJUST_params = {
+        **probe.PROBE_POINTS_HELPER_PARAMS,
+        "RETRIES": {"type": "int", "required": False},
+        "RETRY_TOLERANCE": {"type": "float", "required": False},
+        "INCREASING_THRESHOLD": {"type": "float", "required": False},
+    }
     cmd_Z_TILT_CALIBRATE_help = (
         "Calibrate Z tilt with additional probing points"
     )
+    cmd_Z_TILT_CALIBRATE_params = {
+        **probe.PROBE_POINTS_HELPER_PARAMS,
+        "AVGLEN": {"type": "int", "required": False},
+    }
     cmd_Z_TILT_AUTODETECT_help = "Autodetect pivot point of Z motors"
+    cmd_Z_TILT_AUTODETECT_params = {
+        **probe.PROBE_POINTS_HELPER_PARAMS,
+        "AVGLEN": {"type": "int", "required": False},
+        "DELTA": {"type": "float", "required": False},
+    }
 
     def cmd_Z_TILT_ADJUST(self, gcmd):
         if self.z_positions is None:

@@ -72,6 +72,7 @@ class ZThermalAdjuster:
             component,
             self.cmd_SET_Z_THERMAL_ADJUST,
             desc=self.cmd_SET_Z_THERMAL_ADJUST_help,
+            params=self.cmd_SET_Z_THERMAL_ADJUST_params,
         )
 
     def handle_connect(self):
@@ -213,6 +214,12 @@ class ZThermalAdjuster:
         gcmd.respond_info(msg)
 
     cmd_SET_Z_THERMAL_ADJUST_help = "Set/query Z Thermal Adjust parameters."
+    cmd_SET_Z_THERMAL_ADJUST_params = {
+        "COMPONENT": {"type": "string", "required": True},
+        "ENABLE": {"type": "int", "required": False},
+        "TEMP_COEFF": {"type": "float", "required": False},
+        "REF_TEMP": {"type": "float", "required": False},
+    }
 
 
 def load_config_prefix(config):

@@ -8,3 +8,10 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  - repo: local
+    hooks:
+      - id: check-gcode-params
+        name: Check gcode command param declarations
+        entry: python3 scripts/check_gcode_params.py
+        language: system
+        files: ^klippy/.*\.py$

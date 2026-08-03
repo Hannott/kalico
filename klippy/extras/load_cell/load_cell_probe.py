@@ -841,9 +841,14 @@ class LoadCellProbeCommands:
             "LOAD_CELL_TEST_TAP",
             self.cmd_LOAD_CELL_TEST_TAP,
             desc=self.cmd_LOAD_CELL_TEST_TAP_help,
+            params=self.cmd_LOAD_CELL_TEST_TAP_params,
         )
 
     cmd_LOAD_CELL_TEST_TAP_help = "Tap the load cell probe to verify operation"
+    cmd_LOAD_CELL_TEST_TAP_params = {
+        "TAPS": {"type": "int", "default": 3},
+        "TIMEOUT": {"type": "float", "default": 30.0},
+    }
 
     def cmd_LOAD_CELL_TEST_TAP(self, gcmd: GCodeCommand):
         taps = gcmd.get_int("TAPS", 3, minval=1, maxval=10)

@@ -10,6 +10,11 @@ from . import fan, output_pin
 
 class PrinterFanGeneric:
     cmd_SET_FAN_SPEED_help = "Sets the speed of a fan"
+    cmd_SET_FAN_SPEED_params = {
+        "FAN": {"type": "string", "required": True},
+        "SPEED": {"type": "float", "required": False},
+        "TEMPLATE": {"type": "string", "required": False},
+    }
 
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -26,6 +31,7 @@ class PrinterFanGeneric:
             self.fan_name,
             self.cmd_SET_FAN_SPEED,
             desc=self.cmd_SET_FAN_SPEED_help,
+            params=self.cmd_SET_FAN_SPEED_params,
         )
 
     def get_status(self, eventtime):

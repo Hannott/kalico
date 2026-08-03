@@ -134,6 +134,7 @@ class Heater:
             short_name,
             self.cmd_SET_HEATER_TEMPERATURE,
             desc=self.cmd_SET_HEATER_TEMPERATURE_help,
+            params=self.cmd_SET_HEATER_TEMPERATURE_params,
         )
         self.gcode.register_mux_command(
             "COLD_EXTRUDE",
@@ -141,6 +142,7 @@ class Heater:
             self.name,
             self.cmd_COLD_EXTRUDE,
             desc=self.cmd_COLD_EXTRUDE_help,
+            params=self.cmd_COLD_EXTRUDE_params,
         )
         self.gcode.register_mux_command(
             "SET_SMOOTH_TIME",
@@ -148,6 +150,7 @@ class Heater:
             short_name,
             self.cmd_SET_SMOOTH_TIME,
             desc=self.cmd_SET_SMOOTH_TIME_help,
+            params=self.cmd_SET_SMOOTH_TIME_params,
         )
         self.gcode.register_mux_command(
             "PID_PROFILE",
@@ -155,6 +158,7 @@ class Heater:
             short_name,
             self.pmgr.cmd_PID_PROFILE,
             desc=self.pmgr.cmd_PID_PROFILE_help,
+            params=self.pmgr.cmd_PID_PROFILE_params,
         )
         self.gcode.register_mux_command(
             "SET_HEATER_PID",
@@ -162,6 +166,7 @@ class Heater:
             short_name,
             self.cmd_SET_HEATER_PID,
             desc=self.cmd_SET_HEATER_PID_help,
+            params=self.cmd_SET_HEATER_PID_params,
         )
 
         self.printer.register_event_handler(
@@ -346,6 +351,10 @@ class Heater:
         )
 
     cmd_SET_HEATER_TEMPERATURE_help = "Sets a heater temperature"
+    cmd_SET_HEATER_TEMPERATURE_params = {
+        "HEATER": {"type": "string", "required": True},
+        "TARGET": {"type": "float", "default": 0.0},
+    }
 
     def cmd_SET_HEATER_TEMPERATURE(self, gcmd):
         temp = gcmd.get_float("TARGET", 0.0)
@@ -353,6 +362,11 @@ class Heater:
         pheaters.set_temperature(self, temp)
 
     cmd_COLD_EXTRUDE_help = "Control cold extrusions"
+    cmd_COLD_EXTRUDE_params = {
+        "HEATER": {"type": "string", "required": True},
+        "ENABLE": {"type": "int", "required": False},
+        "MIN_EXTRUDE_TEMP": {"type": "float", "required": False},
+    }
 
     def cmd_COLD_EXTRUDE(self, gcmd):
         cold_extrude = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
@@ -362,6 +376,11 @@ class Heater:
         self.set_cold_extrude(cold_extrude, min_extrude_temp)
 
     cmd_SET_SMOOTH_TIME_help = "Set the smooth time for the given heater"
+    cmd_SET_SMOOTH_TIME_params = {
+        "HEATER": {"type": "string", "required": True},
+        "SAVE_TO_PROFILE": {"type": "int", "default": 0},
+        "SMOOTH_TIME": {"type": "float", "required": False},
+    }
 
     def cmd_SET_SMOOTH_TIME(self, gcmd):
         save_to_profile = gcmd.get_int("SAVE_TO_PROFILE", 0, minval=0, maxval=1)
@@ -375,6 +394,12 @@ class Heater:
             self.pmgr.save_profile()
 
     cmd_SET_HEATER_PID_help = "Sets a heater PID parameter"
+    cmd_SET_HEATER_PID_params = {
+        "HEATER": {"type": "string", "required": True},
+        "KP": {"type": "float", "required": False},
+        "KI": {"type": "float", "required": False},
+        "KD": {"type": "float", "required": False},
+    }
 
     def cmd_SET_HEATER_PID(self, gcmd):
         if not isinstance(self.control, (ControlPID, ControlVelocityPID)):
@@ -930,6 +955,14 @@ class Heater:
                 )
 
         cmd_PID_PROFILE_help = "PID Profile Persistent Storage management"
+        cmd_PID_PROFILE_params = {
+            "HEATER": {"type": "string", "required": True},
+            "LOAD": {"type": "string", "required": False},
+            "SAVE": {"type": "string", "required": False},
+            "GET_VALUES": {"type": "string", "required": False},
+            "SET_VALUES": {"type": "string", "required": False},
+            "REMOVE": {"type": "string", "required": False},
+        }
 
         def cmd_PID_PROFILE(self, gcmd):
             options = collections.OrderedDict(
@@ -1333,6 +1366,7 @@ class PrinterHeaters:
             "TEMPERATURE_WAIT",
             self.cmd_TEMPERATURE_WAIT,
             desc=self.cmd_TEMPERATURE_WAIT_help,
+            params=self.cmd_TEMPERATURE_WAIT_params,
         )
 
     def load_config(self, config):
@@ -1478,6 +1512,12 @@ class PrinterHeaters:
             self._wait_for_temperature(heater)
 
     cmd_TEMPERATURE_WAIT_help = "Wait for a temperature on a sensor"
+    cmd_TEMPERATURE_WAIT_params = {
+        "SENSOR": {"type": "string", "required": True},
+        "MINIMUM": {"type": "float", "required": False},
+        "MAXIMUM": {"type": "float", "required": False},
+        "ALLOW_CANCEL": {"type": "string", "required": False},
+    }
 
     def cmd_TEMPERATURE_WAIT(self, gcmd):
         sensor_name = gcmd.get("SENSOR")

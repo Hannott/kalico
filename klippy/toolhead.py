@@ -372,6 +372,7 @@ class ToolHead:
             "SET_VELOCITY_LIMIT",
             self.cmd_SET_VELOCITY_LIMIT,
             desc=self.cmd_SET_VELOCITY_LIMIT_help,
+            params=self.cmd_SET_VELOCITY_LIMIT_params,
         )
         gcode.register_command(
             "RESET_VELOCITY_LIMIT",
@@ -897,6 +898,18 @@ class ToolHead:
         self.wait_moves()
 
     cmd_SET_VELOCITY_LIMIT_help = "Set printer velocity limits"
+    cmd_SET_VELOCITY_LIMIT_params = {
+        "VELOCITY": {"type": "float", "required": False},
+        "ACCEL": {"type": "float", "required": False},
+        "SQUARE_CORNER_VELOCITY": {"type": "float", "required": False},
+        "MINIMUM_CRUISE_RATIO": {"type": "float", "required": False},
+        "X_VELOCITY": {"type": "float", "required": False},
+        "X_ACCEL": {"type": "float", "required": False},
+        "Y_VELOCITY": {"type": "float", "required": False},
+        "Y_ACCEL": {"type": "float", "required": False},
+        "Z_VELOCITY": {"type": "float", "required": False},
+        "Z_ACCEL": {"type": "float", "required": False},
+    }
 
     def cmd_SET_VELOCITY_LIMIT(self, gcmd):
         max_velocity = gcmd.get_float("VELOCITY", None, above=0.0)

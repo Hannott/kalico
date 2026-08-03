@@ -103,8 +103,9 @@ class Palette2:
         for cmd in omega_handlers:
             func = getattr(self, "cmd_" + cmd, None)
             desc = getattr(self, "cmd_" + cmd + "_help", None)
+            params = getattr(self, "cmd_" + cmd + "_params", None)
             if func:
-                self.gcode.register_command(cmd, func, desc=desc)
+                self.gcode.register_command(cmd, func, desc=desc, params=params)
             else:
                 self.gcode.register_command(cmd, self.cmd_OmegaDefault)
 

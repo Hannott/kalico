@@ -169,6 +169,7 @@ class EndstopPhases:
             "ENDSTOP_PHASE_CALIBRATE",
             self.cmd_ENDSTOP_PHASE_CALIBRATE,
             desc=self.cmd_ENDSTOP_PHASE_CALIBRATE_help,
+            params=self.cmd_ENDSTOP_PHASE_CALIBRATE_params,
         )
 
     def update_stepper(self, stepper, trig_mcu_pos, is_primary):
@@ -203,6 +204,9 @@ class EndstopPhases:
                 is_primary = False
 
     cmd_ENDSTOP_PHASE_CALIBRATE_help = "Calibrate stepper phase"
+    cmd_ENDSTOP_PHASE_CALIBRATE_params = {
+        "STEPPER": {"type": "string", "required": False},
+    }
 
     def cmd_ENDSTOP_PHASE_CALIBRATE(self, gcmd):
         stepper_name = gcmd.get("STEPPER", None)

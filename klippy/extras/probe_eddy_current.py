@@ -37,6 +37,7 @@ class EddyCalibration:
             cname,
             self.cmd_EDDY_CALIBRATE,
             desc=self.cmd_EDDY_CALIBRATE_help,
+            params=self.cmd_EDDY_CALIBRATE_params,
         )
 
     def is_calibrated(self):
@@ -203,6 +204,10 @@ class EddyCalibration:
         configfile.set(self.name, "calibrate", "".join(cal_contents))
 
     cmd_EDDY_CALIBRATE_help = "Calibrate eddy current probe"
+    cmd_EDDY_CALIBRATE_params = {
+        "CHIP": {"type": "string", "required": True},
+        "PROBE_SPEED": {"type": "float", "default": 5.0},
+    }
 
     def cmd_EDDY_CALIBRATE(self, gcmd):
         self.probe_speed = gcmd.get_float("PROBE_SPEED", 5.0, above=0.0)

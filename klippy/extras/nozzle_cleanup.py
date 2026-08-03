@@ -104,6 +104,7 @@ class NozzleCleanup:
             "NOZZLE_CLEANUP",
             self.cmd_NOZZLE_CLEANUP,
             desc=self.cmd_NOZZLE_CLEANUP_help,
+            params=self.cmd_NOZZLE_CLEANUP_params,
         )
         self.options = NozzleCleanupOptions(config)
         self.retry_policy: RetryPolicy = RetryPolicy(config)
@@ -133,6 +134,16 @@ class NozzleCleanup:
         )
 
     cmd_NOZZLE_CLEANUP_help = "Run nozzle cleanup"
+    cmd_NOZZLE_CLEANUP_params = {
+        "SPEED": {"type": "float", "required": False},
+        "LIFT_SPEED": {"type": "float", "required": False},
+        "HORIZONTAL_SPEED": {"type": "float", "required": False},
+        "SAMPLE_RETRACT_DIST": {"type": "float", "required": False},
+        "SAMPLES": {"type": "int", "required": False},
+        "PATTERN_STEPOVER": {"type": "float", "required": False},
+        "PATTERN_X": {"type": "int", "required": False},
+        "PATTERN_Y": {"type": "int", "required": False},
+    }
 
     def cmd_NOZZLE_CLEANUP(self, gcmd: GCodeCommand):
         self.options.customize(gcmd)

@@ -175,7 +175,10 @@ class ManualProbeHelper:
             "ABORT", self.cmd_ABORT, desc=self.cmd_ABORT_help
         )
         self.gcode.register_command(
-            "TESTZ", self.cmd_TESTZ, desc=self.cmd_TESTZ_help
+            "TESTZ",
+            self.cmd_TESTZ,
+            desc=self.cmd_TESTZ_help,
+            params=self.cmd_TESTZ_params,
         )
         self.gcode.respond_info(
             "Starting manual Z probe. Use TESTZ to adjust position.\n"
@@ -262,6 +265,9 @@ class ManualProbeHelper:
         self.finalize(False)
 
     cmd_TESTZ_help = "Move to new Z height"
+    cmd_TESTZ_params = {
+        "Z": {"type": "string", "required": True},
+    }
 
     def cmd_TESTZ(self, gcmd):
         # Store current position for later reference

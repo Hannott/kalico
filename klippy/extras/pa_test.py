@@ -64,6 +64,7 @@ class PATest:
             "PRINT_PA_TOWER",
             self.cmd_PRINT_PA_TOWER,
             desc=self.cmd_PRINT_PA_TOWER_help,
+            params=self.cmd_PRINT_PA_TOWER_params,
         )
         self.progress = 0.0
 
@@ -95,6 +96,29 @@ class PATest:
             )
 
     cmd_PRINT_PA_TOWER_help = "Start Pressure Advance Tower print"
+    # These are actually read in get_gcode() (invoked later, as this print's
+    # gcode provider callback, from the same stored self.gcmd), not directly
+    # in cmd_PRINT_PA_TOWER's own body.
+    cmd_PRINT_PA_TOWER_params = {
+        "NOZZLE": {"type": "float", "required": True},
+        "TARGET_TEMP": {"type": "float", "required": True},
+        "ORIGIN_X": {"type": "float", "required": False},
+        "ORIGIN_Y": {"type": "float", "required": False},
+        "SIZE_X": {"type": "float", "required": False},
+        "SIZE_Y": {"type": "float", "required": False},
+        "PERIMETERS": {"type": "int", "required": False},
+        "SLOW_VELOCITY": {"type": "float", "required": False},
+        "MEDIUM_VELOCITY": {"type": "float", "required": False},
+        "FAST_VELOCITY": {"type": "float", "required": False},
+        "SCV_VELOCITY": {"type": "float", "required": False},
+        "FILAMENT_DIAMETER": {"type": "float", "required": False},
+        "LAYER_HEIGHT": {"type": "float", "required": False},
+        "FIRST_LAYER_HEIGHT": {"type": "float", "required": False},
+        "HEIGHT": {"type": "float", "required": False},
+        "STEP_HEIGHT": {"type": "float", "default": 0.0},
+        "BRIM_WIDTH": {"type": "float", "required": False},
+        "FINAL_GCODE_ID": {"type": "string", "required": False},
+    }
 
     def cmd_PRINT_PA_TOWER(self, gcmd):
         if self.is_active():

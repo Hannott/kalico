@@ -17,6 +17,7 @@ class SDCardLoop:
             "SDCARD_LOOP_BEGIN",
             self.cmd_SDCARD_LOOP_BEGIN,
             desc=self.cmd_SDCARD_LOOP_BEGIN_help,
+            params=self.cmd_SDCARD_LOOP_BEGIN_params,
         )
         self.gcode.register_command(
             "SDCARD_LOOP_END",
@@ -31,6 +32,9 @@ class SDCardLoop:
         self.loop_stack = []
 
     cmd_SDCARD_LOOP_BEGIN_help = "Begins a looped section in the SD file."
+    cmd_SDCARD_LOOP_BEGIN_params = {
+        "COUNT": {"type": "int", "required": True},
+    }
 
     def cmd_SDCARD_LOOP_BEGIN(self, gcmd):
         count = gcmd.get_int("COUNT", minval=0)

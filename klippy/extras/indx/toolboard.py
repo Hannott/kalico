@@ -147,11 +147,15 @@ class IndxDockMeasurement:
             "INDX_DOCK_MEASURE",
             self.cmd_INDX_DOCK_MEASURE,
             desc=self.cmd_INDX_DOCK_MEASURE_help,
+            params=self.cmd_INDX_DOCK_MEASURE_params,
         )
 
     cmd_INDX_DOCK_MEASURE_help = (
         "Measure INDX dock X/Y position by energizing XY motors and homing."
     )
+    cmd_INDX_DOCK_MEASURE_params = {
+        "X_FIRST": {"type": "int", "default": 0},
+    }
 
     def cmd_INDX_DOCK_MEASURE(self, gcmd):
         x_first = gcmd.get_int("X_FIRST", 0, minval=0, maxval=1)

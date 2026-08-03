@@ -254,6 +254,7 @@ class PrinterLCD:
             name,
             self.cmd_SET_DISPLAY_GROUP,
             desc=self.cmd_SET_DISPLAY_GROUP_help,
+            params=self.cmd_SET_DISPLAY_GROUP_params,
         )
         if name == "display":
             gcode.register_mux_command(
@@ -320,6 +321,10 @@ class PrinterLCD:
         return ""
 
     cmd_SET_DISPLAY_GROUP_help = "Set the active display group"
+    cmd_SET_DISPLAY_GROUP_params = {
+        "DISPLAY": {"type": "string", "required": True},
+        "GROUP": {"type": "string", "required": True},
+    }
 
     def cmd_SET_DISPLAY_GROUP(self, gcmd):
         group = gcmd.get("GROUP")

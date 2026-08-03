@@ -28,6 +28,7 @@ class ShellCommand:
             self.name,
             self.cmd_RUN_SHELL_COMMAND,
             desc=self.cmd_RUN_SHELL_COMMAND_help,
+            params=self.cmd_RUN_SHELL_COMMAND_params,
         )
 
     def _process_output(self, eventime):
@@ -50,6 +51,10 @@ class ShellCommand:
         self.gcode.respond_info(data)
 
     cmd_RUN_SHELL_COMMAND_help = "Run a linux shell command"
+    cmd_RUN_SHELL_COMMAND_params = {
+        "CMD": {"type": "string", "required": True},
+        "PARAMS": {"type": "string", "default": ""},
+    }
 
     def cmd_RUN_SHELL_COMMAND(self, params):
         gcode_params = params.get("PARAMS", "")

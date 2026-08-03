@@ -89,6 +89,7 @@ class MixingExtruder:
             "SET_MIXING_EXTRUDER",
             self.cmd_SET_MIXING_EXTRUDER,
             desc=self.cmd_SET_MIXING_EXTRUDER_help,
+            params=self.cmd_SET_MIXING_EXTRUDER_params,
         )
 
     def _handle_connect(self):
@@ -177,6 +178,11 @@ class MixingExtruder:
                 extruder_stepper.sync_to_extruder(None)
 
     cmd_SET_MIXING_EXTRUDER_help = "Set scale on stepper"
+    cmd_SET_MIXING_EXTRUDER_params = {
+        "FACTORS": {"type": "string", "required": False},
+        "PRESET": {"type": "int", "default": 0},
+        "ENABLE": {"type": "int", "default": 1},
+    }
 
     def cmd_SET_MIXING_EXTRUDER(self, gcmd):
         if (
@@ -265,6 +271,7 @@ class GradientMixingExtruder(MixingExtruder):
             "SET_MIXING_EXTRUDER_GRADIENT",
             self.cmd_SET_MIXING_EXTRUDER_GRADIENT,
             desc=self.cmd_SET_MIXING_EXTRUDER_GRADIENT_help,
+            params=self.cmd_SET_MIXING_EXTRUDER_GRADIENT_params,
         )
 
     def _enable_gradient(self):
@@ -348,6 +355,15 @@ class GradientMixingExtruder(MixingExtruder):
             )
 
     cmd_SET_MIXING_EXTRUDER_GRADIENT_help = "Configure gradient mixing"
+    cmd_SET_MIXING_EXTRUDER_GRADIENT_params = {
+        "START_FACTORS": {"type": "string", "default": ""},
+        "END_FACTORS": {"type": "string", "required": True},
+        "START_HEIGHT": {"type": "float", "required": True},
+        "END_HEIGHT": {"type": "float", "required": True},
+        "ENABLE": {"type": "string", "default": ""},
+        "METHOD": {"type": "string", "default": ""},
+        "VECTOR": {"type": "string", "default": "0,0,1"},
+    }
 
     def cmd_SET_MIXING_EXTRUDER_GRADIENT(self, gcmd):
         if gcmd.get("START_FACTORS", ""):

@@ -832,16 +832,19 @@ class InputShaper:
             "SET_INPUT_SHAPER",
             self.cmd_SET_INPUT_SHAPER,
             desc=self.cmd_SET_INPUT_SHAPER_help,
+            params=self.cmd_SET_INPUT_SHAPER_params,
         )
         gcode.register_command(
             "ENABLE_INPUT_SHAPER",
             self.cmd_ENABLE_INPUT_SHAPER,
             desc=self.cmd_ENABLE_INPUT_SHAPER_help,
+            params=self.cmd_ENABLE_INPUT_SHAPER_params,
         )
         gcode.register_command(
             "DISABLE_INPUT_SHAPER",
             self.cmd_DISABLE_INPUT_SHAPER,
             desc=self.cmd_DISABLE_INPUT_SHAPER_help,
+            params=self.cmd_DISABLE_INPUT_SHAPER_params,
         )
 
     def get_shapers(self):
@@ -923,6 +926,17 @@ class InputShaper:
         self._update_input_shaping()
 
     cmd_SET_INPUT_SHAPER_help = "Set cartesian parameters for input shaper"
+    cmd_SET_INPUT_SHAPER_params = {
+        # Dispatched to ShaperFactory.update_shaper() / the per-axis
+        # *Params.update() methods rather than read directly here; the
+        # exact set of accepted axis params (DAMPING_RATIO_X, SHAPER_FREQ_X,
+        # SHAPER_BASE_X, SHAPER_A_X/SHAPER_T_X, SMOOTH_TIME_X, COEFFS_X,
+        # SMOOTHER_FREQ_X, ...) depends on the shaper/smoother type currently
+        # active for that axis.
+        "SHAPER_TYPE": {"type": "string", "required": False},
+        "SHAPER_TYPE_X": {"type": "string", "required": False},
+        "SHAPER_TYPE_Y": {"type": "string", "required": False},
+    }
 
     def cmd_SET_INPUT_SHAPER(self, gcmd):
         if gcmd.get_command_parameters():
@@ -935,6 +949,11 @@ class InputShaper:
             shaper.report(gcmd)
 
     cmd_ENABLE_INPUT_SHAPER_help = "Enable input shaper for given objects"
+    cmd_ENABLE_INPUT_SHAPER_params = {
+        "AXIS": {"type": "string", "default": ""},
+        "EXTRUDER": {"type": "string", "default": ""},
+        "EXACT": {"type": "int", "required": False},
+    }
 
     def cmd_ENABLE_INPUT_SHAPER(self, gcmd):
         self.toolhead.flush_step_generation()
@@ -973,6 +992,10 @@ class InputShaper:
         gcmd.respond_info(msg)
 
     cmd_DISABLE_INPUT_SHAPER_help = "Disable input shaper for given objects"
+    cmd_DISABLE_INPUT_SHAPER_params = {
+        "AXIS": {"type": "string", "default": ""},
+        "EXTRUDER": {"type": "string", "default": ""},
+    }
 
     def cmd_DISABLE_INPUT_SHAPER(self, gcmd):
         self.toolhead.flush_step_generation()

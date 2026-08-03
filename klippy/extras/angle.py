@@ -60,6 +60,7 @@ class AngleCalibration:
             cname,
             self.cmd_ANGLE_CALIBRATE,
             desc=self.cmd_ANGLE_CALIBRATE_help,
+            params=self.cmd_ANGLE_CALIBRATE_params,
         )
 
     def handle_sync_mcu_pos(self, mcu_stepper):
@@ -256,6 +257,9 @@ class AngleCalibration:
         return angles, math.sqrt(total_variance / total_count), total_count
 
     cmd_ANGLE_CALIBRATE_help = "Calibrate angle sensor to stepper motor"
+    cmd_ANGLE_CALIBRATE_params = {
+        "CHIP": {"type": "string", "required": True},
+    }
 
     def cmd_ANGLE_CALIBRATE(self, gcmd):
         # Perform calibration movement and capture
@@ -361,6 +365,7 @@ class HelperTLE5012B:
             name,
             self.cmd_ANGLE_DEBUG_READ,
             desc=self.cmd_ANGLE_DEBUG_READ_help,
+            params=self.cmd_ANGLE_DEBUG_READ_params,
         )
         gcode.register_mux_command(
             "ANGLE_DEBUG_WRITE",
@@ -368,6 +373,7 @@ class HelperTLE5012B:
             name,
             self.cmd_ANGLE_DEBUG_WRITE,
             desc=self.cmd_ANGLE_DEBUG_WRITE_help,
+            params=self.cmd_ANGLE_DEBUG_WRITE_params,
         )
 
     def _build_config(self):
@@ -470,6 +476,10 @@ class HelperTLE5012B:
         self.update_clock()
 
     cmd_ANGLE_DEBUG_READ_help = "Query low-level angle sensor register"
+    cmd_ANGLE_DEBUG_READ_params = {
+        "CHIP": {"type": "string", "required": True},
+        "REG": {"type": "int", "required": True},
+    }
 
     def cmd_ANGLE_DEBUG_READ(self, gcmd):
         reg = gcmd.get("REG", minval=0, maxval=0x30, parser=lambda x: int(x, 0))
@@ -477,6 +487,11 @@ class HelperTLE5012B:
         gcmd.respond_info("ANGLE REG[0x%02x] = 0x%04x" % (reg, val))
 
     cmd_ANGLE_DEBUG_WRITE_help = "Set low-level angle sensor register"
+    cmd_ANGLE_DEBUG_WRITE_params = {
+        "CHIP": {"type": "string", "required": True},
+        "REG": {"type": "int", "required": True},
+        "VAL": {"type": "int", "required": True},
+    }
 
     def cmd_ANGLE_DEBUG_WRITE(self, gcmd):
         reg = gcmd.get("REG", minval=0, maxval=0x30, parser=lambda x: int(x, 0))
@@ -507,6 +522,7 @@ class HelperMT6816:
             name,
             self.cmd_ANGLE_DEBUG_READ,
             desc=self.cmd_ANGLE_DEBUG_READ_help,
+            params=self.cmd_ANGLE_DEBUG_READ_params,
         )
 
     def _build_config(self):
@@ -535,6 +551,9 @@ class HelperMT6816:
         pass
 
     cmd_ANGLE_DEBUG_READ_help = "Query low-level angle sensor register"
+    cmd_ANGLE_DEBUG_READ_params = {
+        "CHIP": {"type": "string", "required": True},
+    }
 
     def cmd_ANGLE_DEBUG_READ(self, gcmd):
         reg = 0x83
@@ -569,6 +588,7 @@ class HelperMT6826S:
             name,
             self.cmd_ANGLE_DEBUG_READ,
             desc=self.cmd_ANGLE_DEBUG_READ_help,
+            params=self.cmd_ANGLE_DEBUG_READ_params,
         )
         gcode.register_mux_command(
             "ANGLE_CHIP_CALIBRATE",
@@ -576,6 +596,7 @@ class HelperMT6826S:
             name,
             self.cmd_ANGLE_CHIP_CALIBRATE,
             desc=self.cmd_ANGLE_CHIP_CALIBRATE_help,
+            params=self.cmd_ANGLE_CHIP_CALIBRATE_params,
         )
         self.status_map = {
             0: "No Calibration",
@@ -650,6 +671,9 @@ class HelperMT6826S:
         return microsteps, full_steps
 
     cmd_ANGLE_CHIP_CALIBRATE_help = "Run MT6826s calibration sequence"
+    cmd_ANGLE_CHIP_CALIBRATE_params = {
+        "CHIP": {"type": "string", "required": True},
+    }
 
     def cmd_ANGLE_CHIP_CALIBRATE(self, gcmd):
         fmove = self.printer.lookup_object("force_move")
@@ -689,6 +713,10 @@ class HelperMT6826S:
             gcmd.respond_info("Calibration success, please poweroff sensor")
 
     cmd_ANGLE_DEBUG_READ_help = "Query low-level angle sensor register"
+    cmd_ANGLE_DEBUG_READ_params = {
+        "CHIP": {"type": "string", "required": True},
+        "REG": {"type": "int", "required": True},
+    }
 
     def cmd_ANGLE_DEBUG_READ(self, gcmd):
         reg = gcmd.get(

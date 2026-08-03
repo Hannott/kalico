@@ -43,6 +43,7 @@ class FirmwareRetraction:
             "SET_RETRACTION",
             self.cmd_SET_RETRACTION,
             desc=self.cmd_SET_RETRACTION_help,
+            params=self.cmd_SET_RETRACTION_params,
         )
         self.gcode.register_command(
             "GET_RETRACTION",
@@ -131,6 +132,13 @@ class FirmwareRetraction:
 
     # Command to set the firmware retraction parameters
     cmd_SET_RETRACTION_help = "Set firmware retraction parameters"
+    cmd_SET_RETRACTION_params = {
+        "RETRACT_LENGTH": {"type": "float", "required": False},
+        "RETRACT_SPEED": {"type": "float", "required": False},
+        "UNRETRACT_EXTRA_LENGTH": {"type": "float", "required": False},
+        "UNRETRACT_SPEED": {"type": "float", "required": False},
+        "Z_HOP_HEIGHT": {"type": "float", "required": False},
+    }
 
     def cmd_SET_RETRACTION(self, gcmd):
         self.retract_length = gcmd.get_float(

@@ -72,6 +72,7 @@ class LoadCellCommandHelper:
             name,
             self.cmd_LOAD_CELL_TARE,
             desc=self.cmd_LOAD_CELL_TARE_help,
+            params=self.cmd_LOAD_CELL_TARE_params,
         )
         gcode.register_mux_command(
             "LOAD_CELL_CALIBRATE",
@@ -79,6 +80,7 @@ class LoadCellCommandHelper:
             name,
             self.cmd_LOAD_CELL_CALIBRATE,
             desc=self.cmd_CALIBRATE_LOAD_CELL_help,
+            params=self.cmd_LOAD_CELL_CALIBRATE_params,
         )
         gcode.register_mux_command(
             "LOAD_CELL_READ",
@@ -86,6 +88,7 @@ class LoadCellCommandHelper:
             name,
             self.cmd_LOAD_CELL_READ,
             desc=self.cmd_LOAD_CELL_READ_help,
+            params=self.cmd_LOAD_CELL_READ_params,
         )
         gcode.register_mux_command(
             "LOAD_CELL_DIAGNOSTIC",
@@ -93,9 +96,13 @@ class LoadCellCommandHelper:
             name,
             self.cmd_LOAD_CELL_DIAGNOSTIC,
             desc=self.cmd_LOAD_CELL_DIAGNOSTIC_help,
+            params=self.cmd_LOAD_CELL_DIAGNOSTIC_params,
         )
 
     cmd_LOAD_CELL_TARE_help = "Set the Zero point of the load cell"
+    cmd_LOAD_CELL_TARE_params = {
+        "LOAD_CELL": {"type": "string", "required": True},
+    }
 
     def cmd_LOAD_CELL_TARE(self, gcmd):
         tare_counts = self.load_cell.avg_counts()
@@ -114,11 +121,17 @@ class LoadCellCommandHelper:
             )
 
     cmd_CALIBRATE_LOAD_CELL_help = "Start interactive calibration tool"
+    cmd_LOAD_CELL_CALIBRATE_params = {
+        "LOAD_CELL": {"type": "string", "required": True},
+    }
 
     def cmd_LOAD_CELL_CALIBRATE(self, gcmd):
         LoadCellGuidedCalibrationHelper(self.printer, self.load_cell)
 
     cmd_LOAD_CELL_READ_help = "Take a reading from the load cell"
+    cmd_LOAD_CELL_READ_params = {
+        "LOAD_CELL": {"type": "string", "required": True},
+    }
 
     def cmd_LOAD_CELL_READ(self, gcmd):
         counts = self.load_cell.avg_counts()
@@ -132,6 +145,9 @@ class LoadCellCommandHelper:
             gcmd.respond_info("%.1fg (%.2f%%)" % (force, percent))
 
     cmd_LOAD_CELL_DIAGNOSTIC_help = "Check the health of the load cell"
+    cmd_LOAD_CELL_DIAGNOSTIC_params = {
+        "LOAD_CELL": {"type": "string", "required": True},
+    }
 
     def cmd_LOAD_CELL_DIAGNOSTIC(self, gcmd):
         gcmd.respond_info("Collecting load cell data for 10 seconds...")
@@ -216,7 +232,10 @@ class LoadCellGuidedCalibrationHelper:
         register_command("ACCEPT", self.cmd_ACCEPT, desc=self.cmd_ACCEPT_help)
         register_command("TARE", self.cmd_TARE, desc=self.cmd_TARE_help)
         register_command(
-            "CALIBRATE", self.cmd_CALIBRATE, desc=self.cmd_CALIBRATE_help
+            "CALIBRATE",
+            self.cmd_CALIBRATE,
+            desc=self.cmd_CALIBRATE_help,
+            params=self.cmd_CALIBRATE_params,
         )
 
     # convert the delta of counts to a counts/gram metric
@@ -284,6 +303,9 @@ class LoadCellGuidedCalibrationHelper:
         )
 
     cmd_CALIBRATE_help = "Enter the load cell value in grams"
+    cmd_CALIBRATE_params = {
+        "GRAMS": {"type": "float", "required": True},
+    }
 
     def cmd_CALIBRATE(self, gcmd):
         if self._tare_counts is None:

@@ -98,6 +98,7 @@ class PrinterStepperEnable:
             "SET_STEPPER_ENABLE",
             self.cmd_SET_STEPPER_ENABLE,
             desc=self.cmd_SET_STEPPER_ENABLE_help,
+            params=self.cmd_SET_STEPPER_ENABLE_params,
         )
 
     def register_stepper(self, config, mcu_stepper):
@@ -143,6 +144,10 @@ class PrinterStepperEnable:
         self.motor_off()
 
     cmd_SET_STEPPER_ENABLE_help = "Enable/disable individual stepper by name"
+    cmd_SET_STEPPER_ENABLE_params = {
+        "STEPPER": {"type": "string", "required": False},
+        "ENABLE": {"type": "int", "default": 1},
+    }
 
     def cmd_SET_STEPPER_ENABLE(self, gcmd):
         stepper_name = gcmd.get("STEPPER", None)

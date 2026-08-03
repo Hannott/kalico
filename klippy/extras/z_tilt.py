@@ -185,9 +185,16 @@ class ZTilt:
             "Z_TILT_ADJUST",
             self.cmd_Z_TILT_ADJUST,
             desc=self.cmd_Z_TILT_ADJUST_help,
+            params=self.cmd_Z_TILT_ADJUST_params,
         )
 
     cmd_Z_TILT_ADJUST_help = "Adjust the Z tilt"
+    cmd_Z_TILT_ADJUST_params = {
+        **probe.PROBE_POINTS_HELPER_PARAMS,
+        "RETRIES": {"type": "int", "required": False},
+        "RETRY_TOLERANCE": {"type": "float", "required": False},
+        "INCREASING_THRESHOLD": {"type": "float", "required": False},
+    }
 
     def cmd_Z_TILT_ADJUST(self, gcmd):
         self.z_status.reset()

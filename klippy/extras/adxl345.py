@@ -151,6 +151,7 @@ class AccelCommandHelper:
             name,
             self.cmd_ACCELEROMETER_MEASURE,
             desc=self.cmd_ACCELEROMETER_MEASURE_help,
+            params=self.cmd_ACCELEROMETER_MEASURE_params,
         )
         gcode.register_mux_command(
             "ACCELEROMETER_QUERY",
@@ -158,6 +159,7 @@ class AccelCommandHelper:
             name,
             self.cmd_ACCELEROMETER_QUERY,
             desc=self.cmd_ACCELEROMETER_QUERY_help,
+            params=self.cmd_ACCELEROMETER_QUERY_params,
         )
         gcode.register_mux_command(
             "ACCELEROMETER_DEBUG_READ",
@@ -165,6 +167,7 @@ class AccelCommandHelper:
             name,
             self.cmd_ACCELEROMETER_DEBUG_READ,
             desc=self.cmd_ACCELEROMETER_DEBUG_READ_help,
+            params=self.cmd_ACCELEROMETER_DEBUG_READ_params,
         )
         gcode.register_mux_command(
             "ACCELEROMETER_DEBUG_WRITE",
@@ -172,9 +175,14 @@ class AccelCommandHelper:
             name,
             self.cmd_ACCELEROMETER_DEBUG_WRITE,
             desc=self.cmd_ACCELEROMETER_DEBUG_WRITE_help,
+            params=self.cmd_ACCELEROMETER_DEBUG_WRITE_params,
         )
 
     cmd_ACCELEROMETER_MEASURE_help = "Start/stop accelerometer"
+    cmd_ACCELEROMETER_MEASURE_params = {
+        "CHIP": {"type": "string", "required": True},
+        "NAME": {"type": "string", "required": False},
+    }
 
     def cmd_ACCELEROMETER_MEASURE(self, gcmd):
         if self.bg_client is None:
@@ -205,6 +213,11 @@ class AccelCommandHelper:
         )
 
     cmd_ACCELEROMETER_QUERY_help = "Query accelerometer for the current values"
+    cmd_ACCELEROMETER_QUERY_params = {
+        "CHIP": {"type": "string", "required": True},
+        "SAMPLES": {"type": "int", "default": 1},
+        "RETURN": {"type": "string", "default": "vector"},
+    }
 
     def cmd_ACCELEROMETER_QUERY(self, gcmd):
         num_samples = gcmd.get_int("SAMPLES", 1)
@@ -241,6 +254,10 @@ class AccelCommandHelper:
             raise gcmd.error("Unknown 'return' type '%s'" % (return_type,))
 
     cmd_ACCELEROMETER_DEBUG_READ_help = "Query register (for debugging)"
+    cmd_ACCELEROMETER_DEBUG_READ_params = {
+        "CHIP": {"type": "string", "required": True},
+        "REG": {"type": "int", "required": True},
+    }
 
     def cmd_ACCELEROMETER_DEBUG_READ(self, gcmd):
         reg = gcmd.get("REG", minval=0, maxval=127, parser=lambda x: int(x, 0))
@@ -248,6 +265,11 @@ class AccelCommandHelper:
         gcmd.respond_info("Accelerometer REG[0x%x] = 0x%x" % (reg, val))
 
     cmd_ACCELEROMETER_DEBUG_WRITE_help = "Set register (for debugging)"
+    cmd_ACCELEROMETER_DEBUG_WRITE_params = {
+        "CHIP": {"type": "string", "required": True},
+        "REG": {"type": "int", "required": True},
+        "VAL": {"type": "int", "required": True},
+    }
 
     def cmd_ACCELEROMETER_DEBUG_WRITE(self, gcmd):
         reg = gcmd.get("REG", minval=0, maxval=127, parser=lambda x: int(x, 0))

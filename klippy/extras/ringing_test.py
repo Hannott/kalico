@@ -53,6 +53,7 @@ class RingingTest:
             "PRINT_RINGING_TOWER",
             self.cmd_PRINT_RINGING_TOWER,
             desc=self.cmd_PRINT_RINGING_TOWER_help,
+            params=self.cmd_PRINT_RINGING_TOWER_params,
         )
         self.progress = 0.0
 
@@ -92,6 +93,31 @@ class RingingTest:
                 )
 
     cmd_PRINT_RINGING_TOWER_help = "Start Ringing Tower print"
+    # These are actually read in get_gcode() (invoked later, as this print's
+    # gcode provider callback, from the same stored self.gcmd), not directly
+    # in cmd_PRINT_RINGING_TOWER's own body.
+    cmd_PRINT_RINGING_TOWER_params = {
+        "NOZZLE": {"type": "float", "required": True},
+        "CENTER_X": {"type": "float", "required": False},
+        "CENTER_Y": {"type": "float", "required": False},
+        "SIZE": {"type": "float", "required": False},
+        "PERIMETERS": {"type": "int", "required": False},
+        "BRIM_VELOCITY": {"type": "float", "required": False},
+        "FILAMENT_DIAMETER": {"type": "float", "required": False},
+        "LAYER_HEIGHT": {"type": "float", "required": False},
+        "FIRST_LAYER_HEIGHT": {"type": "float", "required": False},
+        "HEIGHT": {"type": "float", "required": False},
+        "BAND": {"type": "float", "required": False},
+        "NOTCH": {"type": "float", "required": False},
+        "NOTCH_OFFSET": {"type": "float", "required": False},
+        "VELOCITY": {"type": "float", "required": False},
+        "VELOCITY_STEP": {"type": "float", "required": False},
+        "ACCEL_START": {"type": "float", "required": False},
+        "ACCEL_STEP": {"type": "float", "required": False},
+        "BRIM_WIDTH": {"type": "float", "required": False},
+        "FINAL_GCODE_ID": {"type": "string", "required": False},
+        "DECELERATION_POINTS": {"type": "int", "required": False},
+    }
 
     def cmd_PRINT_RINGING_TOWER(self, gcmd):
         if self.is_active():
