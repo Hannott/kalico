@@ -322,6 +322,7 @@ class DockableProbe:
             "SET_DOCKABLE_PROBE",
             self.cmd_SET_DOCKABLE_PROBE,
             desc=self.cmd_SET_DOCKABLE_PROBE_help,
+            params=self.cmd_SET_DOCKABLE_PROBE_params,
         )
         self.gcode.register_command(
             "ATTACH_PROBE",
@@ -337,6 +338,7 @@ class DockableProbe:
             "MOVE_AVOIDING_DOCK",
             self.cmd_MOVE_AVOIDING_DOCK,
             desc=self.cmd_MOVE_AVOIDING_DOCK_help,
+            params=self.cmd_MOVE_AVOIDING_DOCK_params,
         )
 
         # Event Handlers
@@ -487,6 +489,9 @@ class DockableProbe:
         )
 
     cmd_SET_DOCKABLE_PROBE_help = "Set probe parameters"
+    cmd_SET_DOCKABLE_PROBE_params = {
+        "AUTO_ATTACH_DETACH": {"type": "string", "required": False},
+    }
 
     def cmd_SET_DOCKABLE_PROBE(self, gcmd):
         auto = gcmd.get("AUTO_ATTACH_DETACH", None)
@@ -515,6 +520,11 @@ class DockableProbe:
         self.detach_probe(return_pos)
 
     cmd_MOVE_AVOIDING_DOCK_help = "Move to X Y avoiding dock safe area"
+    cmd_MOVE_AVOIDING_DOCK_params = {
+        "X": {"type": "float", "required": False},
+        "Y": {"type": "float", "required": False},
+        "SPEED": {"type": "float", "required": False},
+    }
 
     def cmd_MOVE_AVOIDING_DOCK(self, gcmd):
         pos = self.toolhead.get_position()
