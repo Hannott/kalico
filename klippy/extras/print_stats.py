@@ -17,6 +17,7 @@ class PrintStats:
             "SET_PRINT_STATS_INFO",
             self.cmd_SET_PRINT_STATS_INFO,
             desc=self.cmd_SET_PRINT_STATS_INFO_help,
+            params=self.cmd_SET_PRINT_STATS_INFO_params,
         )
 
     def _update_filament_usage(self, eventtime):
@@ -84,6 +85,10 @@ class PrintStats:
     cmd_SET_PRINT_STATS_INFO_help = (
         "Pass slicer info like layer act and total to klipper"
     )
+    cmd_SET_PRINT_STATS_INFO_params = {
+        "TOTAL_LAYER": {"type": "int", "required": False},
+        "CURRENT_LAYER": {"type": "int", "required": False},
+    }
 
     def cmd_SET_PRINT_STATS_INFO(self, gcmd):
         total_layer = gcmd.get_int(
