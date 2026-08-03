@@ -32,7 +32,12 @@ class LEDHelper:
         name = config.get_name().split()[-1]
         gcode = self.printer.lookup_object("gcode")
         gcode.register_mux_command(
-            "SET_LED", "LED", name, self.cmd_SET_LED, desc=self.cmd_SET_LED_help
+            "SET_LED",
+            "LED",
+            name,
+            self.cmd_SET_LED,
+            desc=self.cmd_SET_LED_help,
+            params=self.cmd_SET_LED_params,
         )
         gcode.register_mux_command(
             "SET_LED_TEMPLATE",
@@ -40,6 +45,7 @@ class LEDHelper:
             name,
             self.cmd_SET_LED_TEMPLATE,
             desc=self.cmd_SET_LED_TEMPLATE_help,
+            params=self.cmd_SET_LED_TEMPLATE_params,
         )
 
     def get_status(self, eventtime=None):
@@ -85,6 +91,16 @@ class LEDHelper:
         self.printer.get_reactor().register_callback(reactor_cb)
 
     cmd_SET_LED_help = "Set the color of an LED"
+    cmd_SET_LED_params = {
+        "LED": {"type": "string", "required": True},
+        "RED": {"type": "float", "default": 0.0},
+        "GREEN": {"type": "float", "default": 0.0},
+        "BLUE": {"type": "float", "default": 0.0},
+        "WHITE": {"type": "float", "default": 0.0},
+        "INDEX": {"type": "int", "required": False},
+        "TRANSMIT": {"type": "int", "default": 1},
+        "SYNC": {"type": "int", "default": 1},
+    }
 
     def cmd_SET_LED(self, gcmd):
         # Parse parameters
@@ -112,6 +128,10 @@ class LEDHelper:
             lookahead_bgfunc(None)
 
     cmd_SET_LED_TEMPLATE_help = "Assign a display_template to an LED"
+    cmd_SET_LED_TEMPLATE_params = {
+        "LED": {"type": "string", "required": True},
+        "INDEX": {"type": "int", "required": False},
+    }
 
     def cmd_SET_LED_TEMPLATE(self, gcmd):
         index = gcmd.get_int("INDEX", None, minval=1, maxval=self.led_count)
