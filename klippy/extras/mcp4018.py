@@ -26,6 +26,7 @@ class mcp4018:
             self.name,
             self.cmd_SET_DIGIPOT,
             desc=self.cmd_SET_DIGIPOT_help,
+            params=self.cmd_SET_DIGIPOT_params,
         )
 
     def handle_connect(self):
@@ -36,6 +37,10 @@ class mcp4018:
         self.i2c.i2c_write([val])
 
     cmd_SET_DIGIPOT_help = "Set digipot value"
+    cmd_SET_DIGIPOT_params = {
+        "DIGIPOT": {"type": "string", "required": True},
+        "WIPER": {"type": "float", "required": True},
+    }
 
     def cmd_SET_DIGIPOT(self, gcmd):
         wiper = gcmd.get_float("WIPER", minval=0.0, maxval=self.scale)

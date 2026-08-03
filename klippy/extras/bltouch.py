@@ -87,11 +87,13 @@ class BLTouchEndstopWrapper:
             "BLTOUCH_DEBUG",
             self.cmd_BLTOUCH_DEBUG,
             desc=self.cmd_BLTOUCH_DEBUG_help,
+            params=self.cmd_BLTOUCH_DEBUG_params,
         )
         self.gcode.register_command(
             "BLTOUCH_STORE",
             self.cmd_BLTOUCH_STORE,
             desc=self.cmd_BLTOUCH_STORE_help,
+            params=self.cmd_BLTOUCH_STORE_params,
         )
         # multi probes state
         self.multi = "OFF"
@@ -307,6 +309,9 @@ class BLTouchEndstopWrapper:
         self.send_cmd("pin_up")
 
     cmd_BLTOUCH_DEBUG_help = "Send a command to the bltouch for debugging"
+    cmd_BLTOUCH_DEBUG_params = {
+        "COMMAND": {"type": "string", "required": False},
+    }
 
     def cmd_BLTOUCH_DEBUG(self, gcmd):
         cmd = gcmd.get("COMMAND", None)
@@ -322,6 +327,9 @@ class BLTouchEndstopWrapper:
         self.sync_print_time()
 
     cmd_BLTOUCH_STORE_help = "Store an output mode in the BLTouch EEPROM"
+    cmd_BLTOUCH_STORE_params = {
+        "MODE": {"type": "string", "required": False},
+    }
 
     def cmd_BLTOUCH_STORE(self, gcmd):
         cmd = gcmd.get("MODE", None)

@@ -21,6 +21,7 @@ class DisplayStatus:
             "SET_DISPLAY_TEXT",
             self.cmd_SET_DISPLAY_TEXT,
             desc=self.cmd_SET_DISPLAY_TEXT_help,
+            params=self.cmd_SET_DISPLAY_TEXT_params,
         )
 
     def get_status(self, eventtime):
@@ -50,6 +51,9 @@ class DisplayStatus:
         self.message = msg
 
     cmd_SET_DISPLAY_TEXT_help = "Set or clear the display message"
+    cmd_SET_DISPLAY_TEXT_params = {
+        "MSG": {"type": "string", "required": False},
+    }
 
     def cmd_SET_DISPLAY_TEXT(self, gcmd):
         self.message = gcmd.get("MSG", None)

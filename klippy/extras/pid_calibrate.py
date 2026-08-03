@@ -19,6 +19,7 @@ class PIDCalibrate:
             "PID_CALIBRATE",
             self.cmd_PID_CALIBRATE,
             desc=self.cmd_PID_CALIBRATE_help,
+            params=self.cmd_PID_CALIBRATE_params,
         )
 
     def _calibrate(
@@ -103,6 +104,13 @@ class PIDCalibrate:
         return kp, ki, kd, old_control
 
     cmd_PID_CALIBRATE_help = "Run PID calibration test"
+    cmd_PID_CALIBRATE_params = {
+        "HEATER": {"type": "string", "required": True},
+        "TARGET": {"type": "float", "required": True},
+        "WRITE_FILE": {"type": "int", "default": 0},
+        "TOLERANCE": {"type": "float", "required": False},
+        "PROFILE": {"type": "string", "default": "default"},
+    }
 
     def cmd_PID_CALIBRATE(self, gcmd):
         heater_name = gcmd.get("HEATER")

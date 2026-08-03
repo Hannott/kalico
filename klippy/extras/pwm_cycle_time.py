@@ -129,6 +129,7 @@ class PrinterOutputPWMCycle:
             pin_name,
             self.cmd_SET_PIN,
             desc=self.cmd_SET_PIN_help,
+            params=self.cmd_SET_PIN_params,
         )
 
     def get_status(self, eventtime):
@@ -145,6 +146,11 @@ class PrinterOutputPWMCycle:
         self.last_print_time = print_time
 
     cmd_SET_PIN_help = "Set the value of an output pin"
+    cmd_SET_PIN_params = {
+        "PIN": {"type": "string", "required": True},
+        "VALUE": {"type": "float", "required": True},
+        "CYCLE_TIME": {"type": "float", "required": False},
+    }
 
     def cmd_SET_PIN(self, gcmd):
         # Read requested value

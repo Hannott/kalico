@@ -23,6 +23,10 @@ class DelayedGcode:
             "description",
             "Update the duration of a delayed_gcode",
         )
+        self.cmd_UPDATE_DELAYED_GCODE_params = {
+            "ID": {"type": "string", "required": True},
+            "DURATION": {"type": "float", "required": True},
+        }
         self.timer_gcode = gcode_macro.load_template(config, "gcode")
         self.duration = config.getfloat("initial_duration", 0.0, minval=0.0)
         self.timer_handler = None
@@ -35,6 +39,7 @@ class DelayedGcode:
             self.name,
             self.cmd_UPDATE_DELAYED_GCODE,
             desc=self.cmd_desc,
+            params=self.cmd_UPDATE_DELAYED_GCODE_params,
         )
 
     def _handle_ready(self):

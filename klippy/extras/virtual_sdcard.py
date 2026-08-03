@@ -264,6 +264,7 @@ class VirtualSD:
             "SDCARD_PRINT_FILE",
             self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help,
+            params=self.cmd_SDCARD_PRINT_FILE_params,
         )
         self.printer.register_event_handler(
             "klippy:analyze_shutdown", self._handle_analyze_shutdown
@@ -351,6 +352,9 @@ class VirtualSD:
         "Loads a SD file and starts the print.  May "
         "include files in subdirectories."
     )
+    cmd_SDCARD_PRINT_FILE_params = {
+        "FILENAME": {"type": "string", "required": True},
+    }
 
     def cmd_SDCARD_PRINT_FILE(self, gcmd):
         if self.work_timer is not None:

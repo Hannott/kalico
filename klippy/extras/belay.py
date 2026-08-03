@@ -74,6 +74,7 @@ class Belay:
             self.name,
             self.cmd_BELAY_ENABLE,
             desc=self.cmd_BELAY_ENABLE_help,
+            params=self.cmd_BELAY_ENABLE_params,
         )
         self.gcode.register_mux_command(
             "BELAY_DISABLE",
@@ -81,6 +82,7 @@ class Belay:
             self.name,
             self.cmd_BELAY_DISABLE,
             desc=self.cmd_BELAY_DISABLE_help,
+            params=self.cmd_BELAY_DISABLE_params,
         )
 
         self.gcode.register_mux_command(
@@ -89,6 +91,7 @@ class Belay:
             self.name,
             self.cmd_QUERY_BELAY,
             desc=self.cmd_QUERY_BELAY_help,
+            params=self.cmd_QUERY_BELAY_params,
         )
         self.gcode.register_mux_command(
             "BELAY_SET_MULTIPLIER",
@@ -96,6 +99,7 @@ class Belay:
             self.name,
             self.cmd_BELAY_SET_MULTIPLIER,
             desc=self.cmd_BELAY_SET_MULTIPLIER_help,
+            params=self.cmd_BELAY_SET_MULTIPLIER_params,
         )
 
         # register extruder_stepper-only commands
@@ -106,6 +110,7 @@ class Belay:
                 self.name,
                 self.cmd_BELAY_SET_STEPPER,
                 desc=self.cmd_BELAY_SET_STEPPER_help,
+                params=self.cmd_BELAY_SET_STEPPER_params,
             )
 
     def handle_connect(self):
@@ -194,6 +199,9 @@ class Belay:
         return eventtime + DIRECTION_UPDATE_INTERVAL
 
     cmd_QUERY_BELAY_help = "Report Belay sensor state"
+    cmd_QUERY_BELAY_params = {
+        "BELAY": {"type": "string", "required": True},
+    }
 
     def cmd_QUERY_BELAY(self, gcmd):
         if self.last_state:
@@ -206,6 +214,11 @@ class Belay:
         "Sets multiplier_high and/or multiplier_low. Does not persist across"
         " restarts."
     )
+    cmd_BELAY_SET_MULTIPLIER_params = {
+        "BELAY": {"type": "string", "required": True},
+        "HIGH": {"type": "float", "required": False},
+        "LOW": {"type": "float", "required": False},
+    }
 
     def cmd_BELAY_SET_MULTIPLIER(self, gcmd):
         self.multiplier_high = gcmd.get_float(
@@ -218,6 +231,10 @@ class Belay:
     cmd_BELAY_SET_STEPPER_help = (
         "Select the extruder_stepper object to be controlled by the Belay"
     )
+    cmd_BELAY_SET_STEPPER_params = {
+        "BELAY": {"type": "string", "required": True},
+        "STEPPER": {"type": "string", "required": True},
+    }
 
     def cmd_BELAY_SET_STEPPER(self, gcmd):
         self.handle_disable()
@@ -225,7 +242,13 @@ class Belay:
         self.handle_enable()
 
     cmd_BELAY_ENABLE_help = "Manually enable Belay"
+    cmd_BELAY_ENABLE_params = {
+        "BELAY": {"type": "string", "required": True},
+    }
     cmd_BELAY_DISABLE_help = "Manually disable Belay"
+    cmd_BELAY_DISABLE_params = {
+        "BELAY": {"type": "string", "required": True},
+    }
 
     def cmd_BELAY_ENABLE(self, gcmd):
         self.handle_enable()

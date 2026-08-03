@@ -26,6 +26,7 @@ class SaveVariables:
             "SAVE_VARIABLE",
             self.cmd_SAVE_VARIABLE,
             desc=self.cmd_SAVE_VARIABLE_help,
+            params=self.cmd_SAVE_VARIABLE_params,
         )
 
     def loadVariables(self):
@@ -43,6 +44,10 @@ class SaveVariables:
         self.allVariables = allvars
 
     cmd_SAVE_VARIABLE_help = "Save arbitrary variables to disk"
+    cmd_SAVE_VARIABLE_params = {
+        "VARIABLE": {"type": "string", "required": True},
+        "VALUE": {"type": "string", "required": True},
+    }
 
     def cmd_SAVE_VARIABLE(self, gcmd):
         varname = gcmd.get("VARIABLE")

@@ -42,6 +42,7 @@ class ControlMPC:
             heater.get_name(),
             self.cmd_MPC_CALIBRATE,
             desc=self.cmd_MPC_CALIBRATE_help,
+            params=self.cmd_MPC_CALIBRATE_params,
         )
         gcode.register_mux_command(
             "MPC_SET",
@@ -49,9 +50,21 @@ class ControlMPC:
             heater.get_name(),
             self.cmd_MPC_SET,
             desc=self.cmd_MPC_SET_help,
+            params=self.cmd_MPC_SET_params,
         )
 
     cmd_MPC_SET_help = "Set MPC parameter"
+    cmd_MPC_SET_params = {
+        "HEATER": {"type": "string", "required": True},
+        "FILAMENT_DIAMETER": {"type": "float", "required": False},
+        "FILAMENT_DENSITY": {"type": "float", "required": False},
+        "FILAMENT_HEAT_CAPACITY": {"type": "float", "required": False},
+        "BLOCK_HEAT_CAPACITY": {"type": "float", "required": False},
+        "SENSOR_RESPONSIVENESS": {"type": "float", "required": False},
+        "AMBIENT_TRANSFER": {"type": "float", "required": False},
+        "FAN_AMBIENT_TRANSFER": {"type": "string", "required": False},
+        "FILAMENT_TEMP": {"type": "string", "required": False},
+    }
 
     def cmd_MPC_SET(self, gcmd):
         self.const_filament_diameter = gcmd.get_float(
@@ -106,6 +119,15 @@ class ControlMPC:
         self._update_filament_const()
 
     cmd_MPC_CALIBRATE_help = "Run MPC calibration"
+    cmd_MPC_CALIBRATE_params = {
+        "HEATER": {"type": "string", "required": True},
+        "USE_DELTA": {"type": "string", "required": False},
+        "AMBIENT_MAX_MEASURE_TIME": {"type": "float", "default": 20.0},
+        "AMBIENT_MEASURE_SAMPLE_TIME": {"type": "float", "default": 5.0},
+        "FAN_BREAKPOINTS": {"type": "int", "default": 3},
+        "TARGET": {"type": "float", "required": False},
+        "THRESHOLD": {"type": "float", "required": False},
+    }
 
     def cmd_MPC_CALIBRATE(self, gcmd):
         cal = MpcCalibrate(self.printer, self.heater, self)
