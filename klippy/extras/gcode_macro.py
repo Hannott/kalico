@@ -520,7 +520,7 @@ class PrinterGCodeMacro:
                 obj.params = extract_macro_params(
                     script_type, self.env, new_script
                 )
-                self.gcode.update_command_params(obj.alias, obj.params)
+                self.gcode.update_command_params(obj.alias, obj.params or None)
 
 
 def load_config(config):
@@ -562,7 +562,10 @@ class GCodeMacro:
             )
         else:
             self.gcode.register_command(
-                self.alias, self.cmd, desc=self.cmd_desc, params=self.params
+                self.alias,
+                self.cmd,
+                desc=self.cmd_desc,
+                params=self.params or None,
             )
         self.gcode.register_mux_command(
             "SET_GCODE_VARIABLE",
@@ -595,7 +598,7 @@ class GCodeMacro:
         pdesc = "Renamed builtin of '%s'" % (self.alias,)
         self.gcode.register_command(self.rename_existing, prev_cmd, desc=pdesc)
         self.gcode.register_command(
-            self.alias, self.cmd, desc=self.cmd_desc, params=self.params
+            self.alias, self.cmd, desc=self.cmd_desc, params=self.params or None
         )
 
     def get_status(self, eventtime):
