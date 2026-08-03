@@ -533,7 +533,12 @@ class PrinterProbe:
 
     def register_commands(self, key):
         self.gcode.register_mux_command(
-            "PROBE", "PROBE", key, self.cmd_PROBE, desc=self.cmd_PROBE_help
+            "PROBE",
+            "PROBE",
+            key,
+            self.cmd_PROBE,
+            desc=self.cmd_PROBE_help,
+            params=self.cmd_PROBE_params,
         )
         self.gcode.register_mux_command(
             "QUERY_PROBE",
@@ -555,6 +560,7 @@ class PrinterProbe:
             key,
             self.cmd_PROBE_ACCURACY,
             desc=self.cmd_PROBE_ACCURACY_help,
+            params=self.cmd_PROBE_ACCURACY_params,
         )
         self.gcode.register_mux_command(
             "Z_OFFSET_APPLY_PROBE",
@@ -792,6 +798,9 @@ class PrinterProbe:
         return self._calc_mean(positions)
 
     cmd_PROBE_help = "Probe Z-height at current XY position"
+    cmd_PROBE_params = {
+        "HOME": {"type": "string", "default": ""},
+    }
 
     def cmd_PROBE(self, gcmd: GCodeCommand):
         pos = self.run_probe(gcmd)
@@ -822,6 +831,11 @@ class PrinterProbe:
         }
 
     cmd_PROBE_ACCURACY_help = "Probe Z-height accuracy at current XY position"
+    cmd_PROBE_ACCURACY_params = {
+        "PROBE_SPEED": {"type": "float", "required": False},
+        "SAMPLES": {"type": "int", "default": 10},
+        "SAMPLE_RETRACT_DIST": {"type": "float", "required": False},
+    }
 
     def cmd_PROBE_ACCURACY(self, gcmd: GCodeCommand):
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
@@ -1028,6 +1042,25 @@ class ProbeEndstopWrapper:
 
     def get_position_endstop(self):
         return self.position_endstop
+
+
+# Params accepted by ProbePointsHelper.start_probe(gcmd), read either
+# directly there or one hop away via its RetrySession/RetryPolicy - shared
+# by every command that calls probe_helper.start_probe(gcmd) (eg,
+# Z_TILT_ADJUST, DELTA_CALIBRATE, QUAD_GANTRY_LEVEL,
+# SCREWS_TILT_CALCULATE, BED_TILT_CALIBRATE, BED_MESH_CALIBRATE). Merge
+# this into a command's own cmd_XXX_params rather than duplicating it.
+PROBE_POINTS_HELPER_PARAMS = {
+    "METHOD": {"type": "string", "default": "automatic"},
+    "HORIZONTAL_MOVE_Z": {"type": "float", "required": False},
+    "HORIZONTAL_Z_CLEARANCE": {"type": "float", "required": False},
+    "ENFORCE_LIFT_SPEED": {"type": "int", "required": False},
+    "LIFT_SPEED": {"type": "float", "required": False},
+    "RETRY_SPEED": {"type": "float", "required": False},
+    "BAD_PROBE_STRATEGY": {"type": "string", "required": False},
+    "BAD_PROBE_RETRIES": {"type": "int", "required": False},
+    "PATTERN_SPACING": {"type": "float", "required": False},
+}
 
 
 # Helper code that can probe a series of points and report the

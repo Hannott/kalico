@@ -48,6 +48,7 @@ class ManualStepper:
             stepper_name,
             self.cmd_MANUAL_STEPPER,
             desc=self.cmd_MANUAL_STEPPER_help,
+            params=self.cmd_MANUAL_STEPPER_params,
         )
 
     def sync_print_time(self):
@@ -119,6 +120,16 @@ class ManualStepper:
         )
 
     cmd_MANUAL_STEPPER_help = "Command a manually configured stepper"
+    cmd_MANUAL_STEPPER_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "ENABLE": {"type": "int", "required": False},
+        "SET_POSITION": {"type": "float", "required": False},
+        "SPEED": {"type": "float", "required": False},
+        "ACCEL": {"type": "float", "required": False},
+        "STOP_ON_ENDSTOP": {"type": "int", "default": 0},
+        "MOVE": {"type": "float", "required": False},
+        "SYNC": {"type": "int", "default": 1},
+    }
 
     def cmd_MANUAL_STEPPER(self, gcmd):
         if gcmd.get("GCODE_AXIS", None) is not None:

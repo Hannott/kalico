@@ -21,7 +21,10 @@ class PauseResume:
             "PAUSE", self.cmd_PAUSE, desc=self.cmd_PAUSE_help
         )
         self.gcode.register_command(
-            "RESUME", self.cmd_RESUME, desc=self.cmd_RESUME_help
+            "RESUME",
+            self.cmd_RESUME,
+            desc=self.cmd_RESUME_help,
+            params=self.cmd_RESUME_params,
         )
         self.gcode.register_command(
             "CLEAR_PAUSE", self.cmd_CLEAR_PAUSE, desc=self.cmd_CLEAR_PAUSE_help
@@ -94,6 +97,9 @@ class PauseResume:
         self.pause_command_sent = False
 
     cmd_RESUME_help = "Resumes the print from a pause"
+    cmd_RESUME_params = {
+        "VELOCITY": {"type": "float", "required": False},
+    }
 
     def cmd_RESUME(self, gcmd):
         if not self.is_paused:

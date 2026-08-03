@@ -357,6 +357,7 @@ class GCodeDispatch:
         self.gcode_lockfree = {}
         self.mux_commands = {}
         self.gcode_help = {}
+        self.gcode_params = {}
         self.status_commands = {}
         self._interrupt_counter = 0
         # Register commands needed before config file is loaded
@@ -399,7 +400,13 @@ class GCodeDispatch:
             return False
 
     def register_command(
-        self, cmd, func, when_not_ready=False, desc=None, lockfree=False
+        self,
+        cmd,
+        func,
+        when_not_ready=False,
+        desc=None,
+        params=None,
+        lockfree=False,
     ):
         if func is None:
             old_cmd = self.ready_gcode_handlers.get(cmd)
@@ -438,16 +445,20 @@ class GCodeDispatch:
             self.base_gcode_handlers[cmd] = func
         if desc is not None:
             self.gcode_help[cmd] = desc
+        if params is not None:
+            self.gcode_params[cmd] = params
         self._build_status_commands()
 
-    def register_mux_command(self, cmd, key, value, func, desc=None):
+    def register_mux_command(
+        self, cmd, key, value, func, desc=None, params=None
+    ):
         prev = self.mux_commands.get(cmd)
         if prev is None:
 
             def handler(gcmd):
                 return self._cmd_mux(cmd, gcmd)
 
-            self.register_command(cmd, handler, desc=desc)
+            self.register_command(cmd, handler, desc=desc, params=params)
             self.mux_commands[cmd] = prev = (key, {})
         prev_key, prev_values = prev
         if prev_key != key:
@@ -465,6 +476,16 @@ class GCodeDispatch:
     def get_command_help(self):
         return dict(self.gcode_help)
 
+    def update_command_params(self, cmd, params):
+        # Update the declared "params" schema of an already-registered
+        # command (eg, after a gcode_macro is hot-reloaded via
+        # RELOAD_GCODE_MACROS) without re-registering the command itself.
+        if params is None:
+            self.gcode_params.pop(cmd, None)
+        else:
+            self.gcode_params[cmd] = params
+        self._build_status_commands()
+
     def get_status(self, eventtime):
         return {"commands": self.status_commands}
 
@@ -473,6 +494,9 @@ class GCodeDispatch:
         for cmd in self.gcode_help:
             if cmd in commands:
                 commands[cmd]["help"] = self.gcode_help[cmd]
+        for cmd in self.gcode_params:
+            if cmd in commands:
+                commands[cmd]["params"] = self.gcode_params[cmd]
         self.status_commands = commands
 
     def register_output_handler(self, cb):
