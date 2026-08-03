@@ -840,12 +840,8 @@ class ProbeEndstopWrapper:
         return self.position_endstop
 
 
-# Params accepted by ProbePointsHelper.start_probe(gcmd), read either
-# directly there or one hop away via its RetrySession/RetryPolicy - shared
-# by every command that calls probe_helper.start_probe(gcmd) (eg,
-# Z_TILT_ADJUST, DELTA_CALIBRATE, QUAD_GANTRY_LEVEL,
-# SCREWS_TILT_CALCULATE, BED_TILT_CALIBRATE, BED_MESH_CALIBRATE). Merge
-# this into a command's own cmd_XXX_params rather than duplicating it.
+# Params read by ProbePointsHelper.start_probe() - merge into a command's
+# own cmd_XXX_params instead of duplicating.
 PROBE_POINTS_HELPER_PARAMS = {
     "METHOD": {"type": "string", "default": "automatic"},
     "HORIZONTAL_MOVE_Z": {"type": "float", "required": False},

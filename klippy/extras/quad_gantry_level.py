@@ -60,9 +60,7 @@ class QuadGantryLevel:
     )
     cmd_QUAD_GANTRY_LEVEL_params = {
         **probe.PROBE_POINTS_HELPER_PARAMS,
-        "RETRIES": {"type": "int", "required": False},
-        "RETRY_TOLERANCE": {"type": "float", "required": False},
-        "INCREASING_THRESHOLD": {"type": "float", "required": False},
+        **z_tilt.RETRY_HELPER_PARAMS,
     }
 
     def cmd_QUAD_GANTRY_LEVEL(self, gcmd):
