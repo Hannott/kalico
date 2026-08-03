@@ -57,6 +57,7 @@ class ScrewsTiltAdjust:
             "SCREWS_TILT_CALCULATE",
             self.cmd_SCREWS_TILT_CALCULATE,
             desc=self.cmd_SCREWS_TILT_CALCULATE_help,
+            params=self.cmd_SCREWS_TILT_CALCULATE_params,
         )
 
     cmd_SCREWS_TILT_CALCULATE_help = (
@@ -64,6 +65,11 @@ class ScrewsTiltAdjust:
         "screws by calculating the number "
         "of turns to level it."
     )
+    cmd_SCREWS_TILT_CALCULATE_params = {
+        **probe.PROBE_POINTS_HELPER_PARAMS,
+        "MAX_DEVIATION": {"type": "float", "required": False},
+        "DIRECTION": {"type": "string", "required": False},
+    }
 
     def cmd_SCREWS_TILT_CALCULATE(self, gcmd):
         self.max_diff = gcmd.get_float("MAX_DEVIATION", None)
