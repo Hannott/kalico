@@ -60,6 +60,7 @@ class TemperatureFan:
             self.name,
             self.cmd_SET_TEMPERATURE_FAN_TARGET,
             desc=self.cmd_SET_TEMPERATURE_FAN_TARGET_help,
+            params=self.cmd_SET_TEMPERATURE_FAN_TARGET_params,
         )
 
     def set_tf_speed(self, read_time, value):
@@ -107,6 +108,12 @@ class TemperatureFan:
     cmd_SET_TEMPERATURE_FAN_TARGET_help = (
         "Sets a temperature fan target and fan speed limits"
     )
+    cmd_SET_TEMPERATURE_FAN_TARGET_params = {
+        "TEMPERATURE_FAN": {"type": "string", "required": True},
+        "TARGET": {"type": "float", "required": False},
+        "MIN_SPEED": {"type": "float", "required": False},
+        "MAX_SPEED": {"type": "float", "required": False},
+    }
 
     def cmd_SET_TEMPERATURE_FAN_TARGET(self, gcmd):
         temp = gcmd.get_float("TARGET", None)

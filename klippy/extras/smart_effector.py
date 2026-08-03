@@ -86,6 +86,7 @@ class SmartEffectorEndstopWrapper:
             "SET_SMART_EFFECTOR",
             self.cmd_SET_SMART_EFFECTOR,
             desc=self.cmd_SET_SMART_EFFECTOR_help,
+            params=self.cmd_SET_SMART_EFFECTOR_params,
         )
 
     def probing_move(self, pos, speed, gcmd):
@@ -135,6 +136,11 @@ class SmartEffectorEndstopWrapper:
         toolhead.wait_moves()
 
     cmd_SET_SMART_EFFECTOR_help = "Set SmartEffector parameters"
+    cmd_SET_SMART_EFFECTOR_params = {
+        "SENSITIVITY": {"type": "int", "required": False},
+        "ACCEL": {"type": "float", "required": False},
+        "RECOVERY_TIME": {"type": "float", "required": False},
+    }
 
     def cmd_SET_SMART_EFFECTOR(self, gcmd):
         sensitivity = gcmd.get_int("SENSITIVITY", None, minval=0, maxval=255)
