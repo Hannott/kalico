@@ -246,6 +246,7 @@ class PrinterOutputPin:
             pin_name,
             self.cmd_SET_PIN,
             desc=self.cmd_SET_PIN_help,
+            params=self.cmd_SET_PIN_params,
         )
 
     def get_status(self, eventtime):
@@ -269,6 +270,11 @@ class PrinterOutputPin:
         self.gcrq.send_async_request(value)
 
     cmd_SET_PIN_help = "Set the value of an output pin"
+    cmd_SET_PIN_params = {
+        "PIN": {"type": "string", "required": True},
+        "VALUE": {"type": "float", "required": False},
+        "TEMPLATE": {"type": "string", "required": False},
+    }
 
     def cmd_SET_PIN(self, gcmd):
         value = gcmd.get_float("VALUE", None, minval=0.0, maxval=self.scale)
