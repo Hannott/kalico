@@ -68,12 +68,16 @@ class ZCalibrationHelper:
         )
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
-            "CALIBRATE_Z", self.cmd_CALIBRATE_Z, desc=self.cmd_CALIBRATE_Z_help
+            "CALIBRATE_Z",
+            self.cmd_CALIBRATE_Z,
+            desc=self.cmd_CALIBRATE_Z_help,
+            params=self.cmd_CALIBRATE_Z_params,
         )
         self.gcode.register_command(
             "PROBE_Z_ACCURACY",
             self.cmd_PROBE_Z_ACCURACY,
             desc=self.cmd_PROBE_Z_ACCURACY_help,
+            params=self.cmd_PROBE_Z_ACCURACY_params,
         )
         self.gcode.register_command(
             "CALCULATE_SWITCH_OFFSET",
@@ -167,6 +171,9 @@ class ZCalibrationHelper:
     cmd_CALIBRATE_Z_help = (
         "Automatically calibrates the nozzle offset to the print surface"
     )
+    cmd_CALIBRATE_Z_params = {
+        "BED_POSITION": {"type": "string", "required": False},
+    }
 
     def cmd_CALIBRATE_Z(self, gcmd):
         probe = ProbeList.get_list(self.printer).get_command_probe(gcmd)
@@ -211,6 +218,12 @@ class ZCalibrationHelper:
     cmd_PROBE_Z_ACCURACY_help = (
         "Probe Z-Endstop accuracy at Nozzle-Endstop position"
     )
+    cmd_PROBE_Z_ACCURACY_params = {
+        "PROBE_SPEED": {"type": "float", "required": False},
+        "LIFT_SPEED": {"type": "float", "required": False},
+        "SAMPLES": {"type": "int", "required": False},
+        "SAMPLE_RETRACT_DIST": {"type": "float", "required": False},
+    }
 
     def cmd_PROBE_Z_ACCURACY(self, gcmd):
         probe = ProbeList.get_list(self.printer).get_command_probe(gcmd)
