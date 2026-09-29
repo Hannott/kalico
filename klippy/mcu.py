@@ -1569,6 +1569,7 @@ class MCU:
         self._printer.invoke_shutdown(
             "Lost communication with MCU '%s'" % (self._name,)
         )
+        self._serial.abort_wait_acks()
 
     # Misc external commands
     def is_fileoutput(self):
