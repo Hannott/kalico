@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261002: Homing with a physical endstop no longer backs off by
+`homing_retract_dist` after the final touch; the axis stays on the
+endstop, as in Klipper. The final back-off now only applies to
+sensorless homing.
+
 20260121: Kalico now uses automatic monthly release tags in the format
 `vYYYY.MM.NN` (e.g., `v2026.01.00`). Users can configure Moonraker to track
 stable monthly releases instead of the latest commits. See
