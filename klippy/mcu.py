@@ -862,6 +862,7 @@ class MCU:
                 self.non_critical_recon_event
             )
         self.non_critical_disconnected = False
+        self._reconnecting = False
         self._non_critical_reconnect_event_name = (
             f"danger:non_critical_mcu_{self.get_name()}:reconnected"
         )
@@ -1006,6 +1007,10 @@ class MCU:
             self.estimated_print_time = dummy_estimated_print_time
 
     def handle_non_critical_disconnect(self):
+        if self.non_critical_disconnected or self._reconnecting:
+            # check_active() keeps running while the mcu is disconnected
+            # or still reconnecting; only handle the first disconnect
+            return
         self.non_critical_disconnected = True
         self._clocksync.disconnect()
         self._disconnect()
@@ -1120,6 +1125,7 @@ class MCU:
         return "\n".join(log_info)
 
     def recon_mcu(self):
+        self._reconnecting = True
         try:
             if not self._mcu_identify():
                 return False
@@ -1135,6 +1141,8 @@ class MCU:
             )
             self._abort_recon_attempt()
             return False
+        finally:
+            self._reconnecting = False
         self._printer.send_event(self._non_critical_reconnect_event_name)
         return True
 

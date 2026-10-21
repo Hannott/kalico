@@ -58,6 +58,7 @@ def _make_mcu(is_shutdown_response=0):
     mcu._is_shutdown = False
     mcu._shutdown_msg = ""
     mcu.non_critical_disconnected = True
+    mcu._reconnecting = False
     mcu._get_status_info = {}
     mcu._steppersync = None
     mcu._cached_init_state = False
@@ -127,3 +128,19 @@ def test_successful_recon_clears_stale_shutdown_flag():
     assert mcu._is_shutdown is False
     assert mcu.non_critical_disconnected is False
     assert mcu._printer.events == [RECON_EVENT]
+
+
+def test_timeout_during_reconnect_is_not_a_new_disconnect():
+    # check_active() fires while the serial link is still being set up
+    mcu = _make_mcu()
+    mcu.non_critical_disconnected = False
+    mcu._reconnecting = True
+    mcu.handle_non_critical_disconnect()
+    assert mcu.non_critical_disconnected is False
+    assert mcu._serial.disconnected is False
+
+
+def test_reconnect_clears_reconnecting_flag():
+    mcu = _make_mcu()
+    assert mcu.recon_mcu() is True
+    assert mcu._reconnecting is False
