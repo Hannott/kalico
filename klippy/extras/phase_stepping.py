@@ -385,7 +385,7 @@ class PhaseStepping:
 
     def cmd_PHASE_STEPPING_TEST(self, gcmd):
         distance = gcmd.get_float("DISTANCE", 10.0, above=0.0, maxval=100.0)
-        velocity = gcmd.get_float("VELOCITY", 20.0, above=0.0, maxval=500.0)
+        velocity = gcmd.get_float("VELOCITY", 20.0, above=0.0, maxval=1000.0)
         accel = gcmd.get_float("ACCEL", 500.0, above=0.0)
         amplitude = gcmd.get_int(
             "AMPLITUDE", self.amplitude, minval=16, maxval=255
