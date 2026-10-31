@@ -1144,6 +1144,16 @@ control:
 #   not recommended to set this unless there is an electrical
 #   requirement to switch the heater faster than 10 times a second.
 #   The default is 0.100 seconds.
+#hardware_pwm: False
+#   Enable this to use hardware PWM instead of software PWM for the heater.
+#   Generally speaking, the 10Hz is duty cycle acceptable for most scenarios,
+#   but there are cases where a higher frequency is desired. For example,
+#   a low PWM frequency can interfere with the load_cell_probe sensor
+#   readings when the load cell is close to the heater. In the case that
+#   a higher PWM frequency is required, it is recommended to use hardware PWM.
+#   When using hardware PWM the actual cycle time is constrained by the
+#   implementation and may be significantly different than the requested
+#   cycle_time. The default is False.
 #lost_update_tolerance: 2
 #   Maximum number of consecutive sensor lost samples that can be
 #   recovered from.
@@ -2447,6 +2457,36 @@ main printer config file. Wildcards may also be used (eg,
 [include my_other_config.cfg]
 ```
 
+Variables may be passed to an include by listing them below the include
+line. The included file is then rendered as a Jinja2 template, using
+`{! !}` for expressions and `{!% %!}` for statements (so they don't clash
+with the `{ }` / `{% %}` templates used by gcode macros). The variables
+are also available to any file it includes. A file included without
+variables is read as-is. Referencing a variable that was not passed is
+an error.
+
+```
+[include toolhead_board.cfg]
+mcu_name: toolhead0
+mcu_serial: /dev/serial/by-id/usb-Klipper_rp2040_toolhead0
+
+[include toolhead_board.cfg]
+mcu_name: toolhead1
+mcu_serial: /dev/serial/by-id/usb-Klipper_rp2040_toolhead1
+```
+
+Where `toolhead_board.cfg` contains:
+
+```
+[mcu {! mcu_name !}]
+serial: {! mcu_serial !}
+
+{!% if mcu_name == "toolhead0" %!}
+[fan_generic {! mcu_name !}_fan]
+pin: {! mcu_name !}:gpio13
+{!% endif %!}
+```
+
 ### [duplicate_pin_override]
 
 This tool allows a single micro-controller pin to be defined multiple
@@ -3350,6 +3390,7 @@ target temperature.
 #pid_Ki:
 #pid_Kd:
 #pwm_cycle_time:
+#hardware_pwm:
 #lost_update_tolerance:
 #min_temp:
 #max_temp:
@@ -3869,11 +3910,11 @@ a shutdown_speed equal to max_power.
 ### [controller_fan]
 
 Controller cooling fan (one may define any number of sections with a
-"controller_fan" prefix). A "controller fan" is a fan that will be
-enabled whenever its associated heater or its associated stepper
-driver is active. The fan will stop whenever an idle_timeout is
-reached to ensure no overheating will occur after deactivating a
-watched component.
+"controller_fan" prefix). A "controller fan" changes speed based on
+its associated heater or stepper driver. The fan runs at fan_speed
+while a watched component is active, then at idle_speed for
+idle_timeout seconds. After that timeout, and before the first watched
+activity after startup, the fan runs at standby_speed.
 
 ```
 [controller_fan my_controller_fan]
@@ -3894,13 +3935,17 @@ watched component.
 #   will be set to when a heater or stepper driver is active.
 #   The default is 1.0
 #idle_timeout:
-#   The amount of time (in seconds) after a stepper driver or heater
-#   was active and the fan should be kept running. The default
-#   is 30 seconds.
+#   The amount of time (in seconds) to use idle_speed after a stepper
+#   driver or heater becomes inactive. A value of 0 transitions
+#   directly to standby_speed. The default is 30 seconds.
 #idle_speed:
 #   The fan speed (expressed as a value from 0.0 to 1.0) that the fan
-#   will be set to when a heater or stepper driver was active and
-#   before the idle_timeout is reached. The default is fan_speed.
+#   will be set to after a heater or stepper driver becomes inactive
+#   and before the idle_timeout is reached. The default is fan_speed.
+#standby_speed: 0.0
+#   The fan speed (expressed as a value from 0.0 to 1.0) that the fan
+#   will be set to before the first heater or stepper driver activity
+#   and after idle_timeout is reached. The default is 0.0.
 #heater:
 #stepper:
 #   Name of the config section defining the heater/stepper that this fan
