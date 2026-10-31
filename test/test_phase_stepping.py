@@ -72,3 +72,52 @@ def test_trapezoid_rejects_impossible_moves():
         ps.plan_trapezoid(10.0, 2.7e6, 1677.0)
     with pytest.raises(ValueError):
         ps.plan_trapezoid(1e15, 3e9, 1e6)
+
+
+def test_decode_coils_inverts_coil_value():
+    for mscnt in (0, 100, 256, 517, 900):
+        phase = mscnt << ps.MSCNT_SHIFT
+        for swap in (False, True):
+            sin_val, cos_val = ps.decode_coils(
+                ps.coil_value(phase, 248, swap), swap
+            )
+            assert ps.coil_angle(sin_val, cos_val) == pytest.approx(
+                mscnt, abs=1
+            )
+            assert math.hypot(sin_val, cos_val) == pytest.approx(248, abs=2)
+
+
+class _Fields:
+    def __init__(self, values):
+        self.values = values
+
+    def get_field(self, name, reg_value):
+        return self.values.get(name, lambda v: 0)(reg_value)
+
+    def lookup_register(self, name):
+        return name in ("ot",)
+
+
+def test_summarize_samples_reports_coils_and_driver_state():
+    fields = _Fields(
+        {
+            "direct_mode": lambda v: v,
+            "cs_actual": lambda v: 31,
+            "ot": lambda v: 0,
+        }
+    )
+    samples = [
+        {
+            "direct": ps.coil_value(m << ps.MSCNT_SHIFT, 248, True),
+            "GCONF": 1 if m < 400 else 0,
+            "DRV_STATUS": 0,
+            "MSCURACT": 0,
+        }
+        for m in (0, 128, 256, 512)
+    ]
+    lines, warnings = ps.summarize_samples(samples, fields, True)
+    assert "4 different values in 4 reads" in lines[0]
+    assert "angles 0 128 256 512" in lines[0]
+    assert "direct_mode on in 3/4 samples" in lines[1]
+    assert warnings == ["the driver was not in direct mode for the whole test"]
+    assert ps.summarize_samples([], fields, True) == ([], [])

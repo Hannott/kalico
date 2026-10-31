@@ -98,6 +98,99 @@ def reverse_moves(moves):
     return [(count, -vel, -half) for count, vel, half in moves]
 
 
+def sign9(value):
+    value &= 0x1FF
+    return value - 0x200 if value & 0x100 else value
+
+
+def decode_coils(value, swap_coils):
+    """Return (sine, cosine) coil currents from a direct mode register."""
+    low, high = sign9(value), sign9(value >> 16)
+    return (high, low) if swap_coils else (low, high)
+
+
+def coil_angle(sin_val, cos_val):
+    """Electrical angle in microstep counter units (0-1023)."""
+    angle = math.atan2(sin_val, cos_val) * 1024.0 / (2.0 * math.pi)
+    return int(round(angle)) % 1024
+
+
+def summarize_samples(samples, fields, swap_coils):
+    """Describe driver register samples taken during a test move.
+
+    samples are dicts of raw register values with keys "direct", "GCONF",
+    "DRV_STATUS" and "MSCURACT". Returns (lines, warnings).
+    """
+    lines, warnings = [], []
+    count = len(samples)
+    if not count:
+        return lines, warnings
+    coils = [decode_coils(smp["direct"], swap_coils) for smp in samples]
+    amps = [math.hypot(a, b) for a, b in coils]
+    angles = []
+    for a, b in coils:
+        angle = coil_angle(a, b)
+        if not angles or angles[-1] != angle:
+            angles.append(angle)
+    lines.append(
+        "Coil register read back: %d different values in %d reads,"
+        " amplitude %.0f-%.0f, angles %s"
+        % (
+            len(set(smp["direct"] for smp in samples)),
+            count,
+            min(amps),
+            max(amps),
+            " ".join(str(a) for a in angles[:12]),
+        )
+    )
+    direct_on = sum(
+        1 for smp in samples if fields.get_field("direct_mode", smp["GCONF"])
+    )
+
+    def drv(field):
+        return [fields.get_field(field, smp["DRV_STATUS"]) for smp in samples]
+
+    cs_actual = drv("cs_actual")
+    lines.append(
+        "Driver: direct_mode on in %d/%d samples, cs_actual %d-%d,"
+        " standstill %d/%d, open load A/B %d/%d"
+        % (
+            direct_on,
+            count,
+            min(cs_actual),
+            max(cs_actual),
+            sum(drv("stst")),
+            count,
+            sum(drv("ola")),
+            sum(drv("olb")),
+        )
+    )
+    act = [
+        (
+            fields.get_field("cur_a", smp["MSCURACT"]),
+            fields.get_field("cur_b", smp["MSCURACT"]),
+        )
+        for smp in samples
+    ]
+    lines.append(
+        "MSCURACT: %d different values, angles %s"
+        % (
+            len(set(act)),
+            " ".join(str(coil_angle(a, b)) for a, b in sorted(set(act))[:6]),
+        )
+    )
+    if direct_on < count:
+        warnings.append("the driver was not in direct mode for the whole test")
+    errors = [
+        f
+        for f in ("s2ga", "s2gb", "s2vsa", "s2vsb", "ot", "otpw")
+        if fields.lookup_register(f) and sum(drv(f))
+    ]
+    if errors:
+        warnings.append("driver reported %s" % (", ".join(errors),))
+    return lines, warnings
+
+
 def find_tmc_section(config, stepper_name):
     for section in config.get_prefix_sections("tmc"):
         name = section.get_name()
@@ -237,34 +330,42 @@ class PhaseStepping:
         fields = self.mcu_tmc.get_fields()
         return fields.get_field(field, self.mcu_tmc.get_register(reg_name))
 
-    def _wait_done(self, end_time, bus_load):
+    def _sample_driver(self):
+        get = self.mcu_tmc.get_register
+        return {
+            "direct": get(self.direct_reg_name),
+            "GCONF": get("GCONF"),
+            "DRV_STATUS": get("DRV_STATUS"),
+            "MSCURACT": get("MSCURACT"),
+        }
+
+    def _wait_done(self, start_time, end_time, bus_load):
         """Wait for the MCU to finish its moves.
 
-        Meanwhile the driver's coil current register is read back, which
-        both shows whether the MCU's writes arrive and makes the MCU share
-        the SPI bus. Returns the final MCU state, the number of reads and
-        the number of different coil values seen.
+        Meanwhile driver registers are sampled, which shows whether the
+        MCU's coil writes arrive and take effect, and makes the MCU share
+        the SPI bus. Returns the final MCU state and the samples taken
+        while the motor was moving.
         """
         reactor = self.printer.get_reactor()
-        reads = 0
-        values = set()
+        samples = []
         while True:
             eventtime = reactor.monotonic()
             est = self.mcu.estimated_print_time(eventtime)
             if est > end_time:
                 state = self.query_cmd.send([self.oid])
                 if not state["pending"]:
-                    return state, reads, len(values)
+                    return state, samples
                 if est > end_time + 2.0:
                     raise self.printer.command_error(
                         "Phase stepper did not finish its moves"
                     )
-            values.add(self.mcu_tmc.get_register(self.direct_reg_name))
-            reads += 1
-            if bus_load:
-                self.mcu_tmc.get_register("DRV_STATUS")
-            else:
-                reactor.pause(eventtime + QUERY_INTERVAL)
+            elif est > start_time:
+                samples.append(self._sample_driver())
+                if bus_load:
+                    # The register reads themselves wait on the MCU
+                    continue
+            reactor.pause(eventtime + QUERY_INTERVAL)
 
     cmd_PHASE_STEPPING_TEST_help = (
         "Move a stepper forward and back by setting its coil currents directly"
@@ -359,8 +460,8 @@ class PhaseStepping:
                     amplitude,
                 ]
             )
-            state, reads, seen = self._wait_done(
-                start_time + float(ticks) / self.tick_freq, bus_load
+            state, samples = self._wait_done(
+                start_time, start_time + float(ticks) / self.tick_freq, bus_load
             )
             completed = True
         finally:
@@ -386,14 +487,18 @@ class PhaseStepping:
             ),
             "Ticks: %d, lost %d, skipped for other SPI traffic %d"
             % (state["ticks"], state["lost_ticks"], state["locked_ticks"]),
-            "Coil writes: %d; driver read back %d different values in %d"
-            " reads" % (state["xfers"], seen, reads),
+            "Coil writes: %d, amplitude %d" % (state["xfers"], amplitude),
         ]
-        if state["xfers"] < 2 or seen < 2:
-            msg.append(
-                "WARNING: the driver did not receive changing coil currents,"
-                " so the motor did not move"
+        lines, warnings = summarize_samples(
+            samples, mcu_tmc.get_fields(), self.swap_coils
+        )
+        msg.extend(lines)
+        if state["xfers"] < 2 or len(set(s["direct"] for s in samples)) < 2:
+            warnings.append(
+                "the driver did not receive changing coil currents, so the"
+                " motor did not move"
             )
+        msg.extend("WARNING: %s" % (w,) for w in warnings)
         if state["phase"] != start_phase & 0xFFFFFFFF or end_mscnt != mscnt:
             msg.append(
                 "WARNING: did not return to the start phase (MCU %d, MSCNT"
