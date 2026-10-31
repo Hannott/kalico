@@ -14,63 +14,16 @@ import math
 
 import numpy as np
 
-FULL_STEPS_PER_ELECTRICAL_PERIOD = 4
 # Only trust harmonics well below Nyquist: accelerometers low-pass filter
 # their output, which attenuates the band close to half the sample rate.
 MAX_FREQ_RATIO = 0.4
 MIN_WINDOW_CYCLES = 5
 MIN_WINDOW_SAMPLES = 64
 MIN_PEAK_SNR = 3.0
-# Relative tolerance when deciding whether two motor axes are parallel or a
-# solved direction moves another motor.
-DIRECTION_TOL = 1e-6
 
 HarmonicResult = collections.namedtuple(
     "HarmonicResult", ("harmonic", "freq", "accel", "disp", "noise_disp")
 )
-
-
-def electrical_period(rotation_distance, full_steps):
-    """Motor travel (mm) of one electrical period.
-
-    full_steps is the number of motor full steps per rotation_distance,
-    including any gear ratio.
-    """
-    return FULL_STEPS_PER_ELECTRICAL_PERIOD * rotation_distance / full_steps
-
-
-def single_motor_direction(target, others):
-    """Return the toolhead XY move per 1 mm of target motor travel that
-    keeps every other XY motor still, or None if there is no such move.
-
-    target and others are (d_motor/dx, d_motor/dy) pairs. Motors parallel to
-    the target (for example a second motor on the same axis) necessarily
-    move with it and are ignored, as are motors that do not move in XY.
-    """
-    tx, ty = target
-    t_norm = math.hypot(tx, ty)
-    if t_norm == 0.0:
-        return None
-    constraints = []
-    for ox, oy in others:
-        o_norm = math.hypot(ox, oy)
-        if o_norm == 0.0:
-            continue
-        if abs(tx * oy - ty * ox) <= DIRECTION_TOL * t_norm * o_norm:
-            continue
-        constraints.append((ox, oy, o_norm))
-    if not constraints:
-        return (tx / t_norm**2, ty / t_norm**2)
-    cx, cy, _ = constraints[0]
-    det = tx * cy - ty * cx
-    direction = (cy / det, -cx / det)
-    d_norm = math.hypot(*direction)
-    for ox, oy, o_norm in constraints[1:]:
-        if abs(ox * direction[0] + oy * direction[1]) > (
-            DIRECTION_TOL * o_norm * d_norm
-        ):
-            return None
-    return direction
 
 
 def plan_speeds(speed_min, speed_max, speed_step):

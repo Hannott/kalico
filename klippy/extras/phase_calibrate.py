@@ -8,11 +8,8 @@ import os
 import tempfile
 import time
 
-from . import resonance_tester
+from . import motor_kinematics, resonance_tester
 
-# Toolhead offset (mm) used to probe how a motor's position depends on X/Y.
-JACOBIAN_PROBE = 1.0
-LINEARITY_TOL = 1e-6
 REPOSITION_DWELL = 0.3
 HARMONIC_NAMES = {
     1: "1 per electrical period",
@@ -96,38 +93,6 @@ class PhaseCalibrate:
         if not harmonics or min(harmonics) < 1:
             raise gcmd.error("HARMONICS must list positive integers")
         return harmonics
-
-    def _motor_jacobian(self, gcmd, stepper, point):
-        def pos(dx, dy):
-            return stepper.calc_position_from_coord(
-                (point[0] + dx, point[1] + dy, point[2])
-            )
-
-        p0 = pos(0.0, 0.0)
-        jx = pos(JACOBIAN_PROBE, 0.0) - p0
-        jy = pos(0.0, JACOBIAN_PROBE) - p0
-        if abs(pos(2.0 * JACOBIAN_PROBE, 0.0) - p0 - 2.0 * jx) > (
-            LINEARITY_TOL
-        ) or abs(pos(0.0, 2.0 * JACOBIAN_PROBE) - p0 - 2.0 * jy) > (
-            LINEARITY_TOL
-        ):
-            raise gcmd.error(
-                "MEASURE_MOTOR_HARMONICS needs kinematics where the motor"
-                " position is linear in X and Y"
-            )
-        return jx / JACOBIAN_PROBE, jy / JACOBIAN_PROBE
-
-    def _electrical_period(self, gcmd, motor_harmonics, stepper):
-        rotation_dist, steps_per_rotation = stepper.get_rotation_distance()
-        configfile = self.printer.lookup_object("configfile")
-        settings = configfile.get_status(None)["settings"]
-        microsteps = settings.get(stepper.get_name(), {}).get("microsteps")
-        if not microsteps:
-            raise gcmd.error(
-                "Cannot find microsteps for '%s'" % (stepper.get_name(),)
-            )
-        full_steps = steps_per_rotation / microsteps
-        return motor_harmonics.electrical_period(rotation_dist, full_steps)
 
     def _check_travel(self, gcmd, toolhead, ends):
         status = toolhead.get_status(self.printer.get_reactor().monotonic())
@@ -240,20 +205,20 @@ class PhaseCalibrate:
             raise gcmd.error("Invalid NAME parameter")
         point = self._get_point(gcmd, toolhead)
 
-        target = self._motor_jacobian(gcmd, stepper, point)
-        others = [
-            self._motor_jacobian(gcmd, s, point)
-            for s in kin.get_steppers()
-            if s is not stepper
-        ]
-        direction = motor_harmonics.single_motor_direction(target, others)
-        if direction is None:
-            raise gcmd.error(
-                "Cannot move '%s' without moving another motor"
-                % (stepper.get_name(),)
+        try:
+            direction = motor_kinematics.stepper_move_direction(
+                kin, stepper, point
             )
+        except ValueError as e:
+            raise gcmd.error("MEASURE_MOTOR_HARMONICS: %s" % (e,))
         scale = math.hypot(*direction)
-        period = self._electrical_period(gcmd, motor_harmonics, stepper)
+        period = motor_kinematics.stepper_electrical_period(
+            self.printer, stepper
+        )
+        if period is None:
+            raise gcmd.error(
+                "Cannot find microsteps for '%s'" % (stepper.get_name(),)
+            )
         speeds = motor_harmonics.plan_speeds(speed_min, speed_max, speed_step)
         cruise_time = self.settle_time + self.measure_time
         travel = motor_harmonics.motor_travel(speeds[-1], accel, cruise_time)
