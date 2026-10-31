@@ -51,6 +51,10 @@ started from. The command reports:
   and how much of each update period that is.
 - Lost updates (the timer was delayed by more than one period) and
   updates skipped while other devices used the SPI bus.
+- How many coil current writes the micro-controller made, and how many
+  different values the driver's coil register held when read back during
+  the move. If the read back value does not change, the writes are not
+  reaching the driver and the motor does not move.
 - Whether the motor returned to its start phase.
 
 Use `BUS_LOAD=1` to read driver registers during the move. This checks

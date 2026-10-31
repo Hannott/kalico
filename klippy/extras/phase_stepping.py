@@ -143,7 +143,8 @@ class PhaseStepping:
                 "The driver in [%s] does not support direct coil current"
                 " control" % (tmc_section,)
             )
-        self.direct_reg = self.mcu_tmc.name_to_reg[direct_regs[0]]
+        self.direct_reg_name = direct_regs[0]
+        self.direct_reg = self.mcu_tmc.name_to_reg[self.direct_reg_name]
         self.tmc_section = tmc_section
         self.mcu = self.mcu_tmc.get_mcu()
         self.oid = self.mcu.create_oid()
@@ -193,8 +194,8 @@ class PhaseStepping:
         self.query_cmd = self.mcu.lookup_query_command(
             "phase_stepper_query oid=%c",
             "phase_stepper_state oid=%c phase=%u flags=%c pending=%c"
-            " ticks=%u lost_ticks=%u locked_ticks=%u max_cycles=%u"
-            " avg_cycles=%u",
+            " ticks=%u lost_ticks=%u locked_ticks=%u xfers=%u"
+            " max_cycles=%u avg_cycles=%u",
             oid=self.oid,
             cq=cq,
         )
@@ -236,26 +237,34 @@ class PhaseStepping:
         fields = self.mcu_tmc.get_fields()
         return fields.get_field(field, self.mcu_tmc.get_register(reg_name))
 
-    def _wait_done(self, end_time, bus_reads):
-        """Wait for the MCU to finish its moves, optionally reading driver
-        registers meanwhile so the MCU has to share the SPI bus."""
+    def _wait_done(self, end_time, bus_load):
+        """Wait for the MCU to finish its moves.
+
+        Meanwhile the driver's coil current register is read back, which
+        both shows whether the MCU's writes arrive and makes the MCU share
+        the SPI bus. Returns the final MCU state, the number of reads and
+        the number of different coil values seen.
+        """
         reactor = self.printer.get_reactor()
         reads = 0
+        values = set()
         while True:
             eventtime = reactor.monotonic()
             est = self.mcu.estimated_print_time(eventtime)
             if est > end_time:
                 state = self.query_cmd.send([self.oid])
                 if not state["pending"]:
-                    return state, reads
+                    return state, reads, len(values)
                 if est > end_time + 2.0:
                     raise self.printer.command_error(
                         "Phase stepper did not finish its moves"
                     )
-            if bus_reads:
+            values.add(self.mcu_tmc.get_register(self.direct_reg_name))
+            reads += 1
+            if bus_load:
                 self.mcu_tmc.get_register("DRV_STATUS")
-                reads += 1
-            reactor.pause(eventtime + QUERY_INTERVAL)
+            else:
+                reactor.pause(eventtime + QUERY_INTERVAL)
 
     cmd_PHASE_STEPPING_TEST_help = (
         "Move a stepper forward and back by setting its coil currents directly"
@@ -268,7 +277,7 @@ class PhaseStepping:
         amplitude = gcmd.get_int(
             "AMPLITUDE", self.amplitude, minval=16, maxval=255
         )
-        bus_reads = gcmd.get_int("BUS_LOAD", 0, minval=0, maxval=1)
+        bus_load = gcmd.get_int("BUS_LOAD", 0, minval=0, maxval=1)
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.wait_moves()
         kin, stepper = self._lookup_stepper(gcmd)
@@ -350,8 +359,8 @@ class PhaseStepping:
                     amplitude,
                 ]
             )
-            state, reads = self._wait_done(
-                start_time + float(ticks) / self.tick_freq, bus_reads
+            state, reads, seen = self._wait_done(
+                start_time + float(ticks) / self.tick_freq, bus_load
             )
             completed = True
         finally:
@@ -375,14 +384,16 @@ class PhaseStepping:
                 100.0 * state["avg_cycles"] * cycle_us / tick_us,
                 tick_us,
             ),
-            "Ticks: %d, lost %d, skipped for other SPI traffic %d%s"
-            % (
-                state["ticks"],
-                state["lost_ticks"],
-                state["locked_ticks"],
-                ", driver reads during test %d" % (reads,) if bus_reads else "",
-            ),
+            "Ticks: %d, lost %d, skipped for other SPI traffic %d"
+            % (state["ticks"], state["lost_ticks"], state["locked_ticks"]),
+            "Coil writes: %d; driver read back %d different values in %d"
+            " reads" % (state["xfers"], seen, reads),
         ]
+        if state["xfers"] < 2 or seen < 2:
+            msg.append(
+                "WARNING: the driver did not receive changing coil currents,"
+                " so the motor did not move"
+            )
         if state["phase"] != start_phase & 0xFFFFFFFF or end_mscnt != mscnt:
             msg.append(
                 "WARNING: did not return to the start phase (MCU %d, MSCNT"
