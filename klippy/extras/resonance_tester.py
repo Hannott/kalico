@@ -265,20 +265,28 @@ class ResonanceTestExecutor:
         last_v = last_t = last_freq = 0.0
         for next_t, accel, freq in test_seq:
             t_seg = next_t - last_t
-            toolhead.cmd_M204(
-                self.gcode.create_gcode_command(
-                    "M204", "M204", {"S": abs(accel)}
-                )
-            )
-            v = last_v + accel * t_seg
-            abs_v = abs(v)
-            if abs_v < 0.000001:
-                v = abs_v = 0.0
             abs_last_v = abs(last_v)
-            v2 = v * v
             last_v2 = last_v * last_v
-            half_inv_accel = 0.5 / accel
-            d = (v2 - last_v2) * half_inv_accel
+            if abs(accel) < 0.000001:
+                v, abs_v = last_v, abs_last_v
+                if abs_v < 0.000001:
+                    toolhead.dwell(t_seg)
+                    last_t, last_freq = next_t, freq
+                    continue
+                half_inv_accel = 0.0
+                d = v * t_seg
+            else:
+                toolhead.cmd_M204(
+                    self.gcode.create_gcode_command(
+                        "M204", "M204", {"S": abs(accel)}
+                    )
+                )
+                v = last_v + accel * t_seg
+                abs_v = abs(v)
+                if abs_v < 0.000001:
+                    v = abs_v = 0.0
+                half_inv_accel = 0.5 / accel
+                d = (v * v - last_v2) * half_inv_accel
             dX, dY = axis.get_point(d)
             nX = X + dX
             nY = Y + dY
