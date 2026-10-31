@@ -374,6 +374,10 @@ class ResonanceTester:
         for chip_axis, chip_name in self.accel_chip_names:
             try:
                 chip = self.printer.lookup_object(chip_name)
+                if not hasattr(chip, "start_internal_client"):
+                    raise self.printer.config_error(
+                        "'%s' is not an accelerometer" % (chip_name,)
+                    )
                 self.accel_chips.append((chip_axis, chip))
             except self.printer.config_error as e:
                 logging.exception(
@@ -461,7 +465,16 @@ class ResonanceTester:
             return None
         parsed_chips = []
         for chip_name in accel_chips.split(","):
-            chip = self.printer.lookup_object(chip_name.strip())
+            chip_name = chip_name.strip()
+            chip = self.printer.lookup_object(chip_name, None)
+            if chip is None:
+                raise self.printer.command_error(
+                    "Name '%s' is not valid for CHIPS parameter" % (chip_name,)
+                )
+            if not hasattr(chip, "start_internal_client"):
+                raise self.printer.command_error(
+                    "'%s' is not an accelerometer" % (chip_name,)
+                )
             parsed_chips.append(chip)
         return parsed_chips
 
