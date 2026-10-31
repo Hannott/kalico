@@ -2485,6 +2485,67 @@ not intended to be hand-written.
 #   the same number of entries. The default is empty (no saved model).
 ```
 
+### [phase_calibrate]
+
+Measures how much a stepper motor vibrates at harmonics of its
+electrical frequency, the source of vertical fine artifacts (VFA). See
+the [motor harmonics guide](Motor_Harmonics.md) for details. Requires
+an accelerometer and numpy.
+
+```
+[phase_calibrate]
+accel_chip:
+#   The name of the accelerometer chip to measure with, for example
+#   "lis2dw" or "adxl345". The accelerometer must sit on the part the
+#   motor moves (the toolhead for X/Y on most printers). This parameter
+#   must be provided.
+#point:
+#   An X, Y, Z position to run the test around. The default is the
+#   current toolhead position.
+#speed_min: 10
+#speed_max: 160
+#speed_step: 5
+#   The range and step of motor speeds to test, in mm/s of motor travel.
+#   On a CoreXY printer, a motor speed of v moves the toolhead at
+#   v*0.707 mm/s. The defaults are 10, 160 and 5.
+#accel: 2000
+#   The acceleration used to reach each test speed, in mm/s^2 of motor
+#   travel. The default is 2000.
+#settle_time: 0.1
+#   Time (in seconds) after reaching a test speed before measuring
+#   starts, to let the acceleration ring down. The default is 0.1.
+#measure_time: 0.5
+#   Time (in seconds) measured at each test speed and direction. The
+#   default is 0.5.
+#max_distance: 150
+#   The longest test move allowed, in mm of motor travel. The default
+#   is 150.
+#move_speed: 50
+#   The speed (in mm/s) of moves between tests. The default is 50.
+#harmonics: 1, 2, 3, 4
+#   The harmonics of the electrical frequency to measure. The default
+#   is 1, 2, 3, 4.
+```
+
+### [phase_stepping]
+
+Experimental: drive a stepper's coil currents directly over SPI instead
+of with step pulses. Requires micro-controller firmware built with
+phase stepping support and a TMC driver on hardware SPI that supports
+direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
+[phase stepping guide](Phase_Stepping.md) for details.
+
+```
+[phase_stepping stepper_x]
+#amplitude: 248
+#   The peak coil current as a value from 16 to 255, where 255 is the
+#   driver's full scale. The default is 248, which matches the
+#   drivers' own sine table.
+#swap_coils: True
+#   Swap the two coil currents when writing them in direct mode, as
+#   Trinamic drivers expect. The default is True.
+```
+
 ## Config file helpers
 
 ### [board_pins]

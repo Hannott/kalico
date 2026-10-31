@@ -8,6 +8,9 @@ struct spi_software;
 void spidev_set_software_bus(struct spidev_s *spi, struct spi_software *ss);
 int spidev_have_cs_pin(struct spidev_s *spi);
 struct gpio_out spidev_get_cs_pin(struct spidev_s *spi);
+struct spi_config;
+int spidev_get_hardware_config(struct spidev_s *spi, struct spi_config *config
+                               , uint8_t *cs_active_high);
 void spidev_transfer(struct spidev_s *spi, uint8_t receive_data
                      , uint8_t data_len, uint8_t *data);
 
