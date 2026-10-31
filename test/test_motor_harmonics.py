@@ -10,6 +10,7 @@ import pytest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "klippy", "extras"))
 import motor_harmonics as mh  # noqa: E402
+import motor_kinematics as mk  # noqa: E402
 
 SAMPLE_RATE = 1600.0
 PERIOD = 0.8
@@ -28,8 +29,8 @@ def _synthetic_window(speed, disp_by_harmonic, duration=0.5, noise=0.0):
 
 
 def test_electrical_period_is_four_full_steps():
-    assert mh.electrical_period(40.0, 200) == pytest.approx(0.8)
-    assert mh.electrical_period(40.0, 400) == pytest.approx(0.4)
+    assert mk.electrical_period(40.0, 200) == pytest.approx(0.8)
+    assert mk.electrical_period(40.0, 400) == pytest.approx(0.4)
 
 
 def test_plan_speeds_includes_both_ends():
@@ -40,27 +41,27 @@ def test_plan_speeds_includes_both_ends():
 
 
 def test_cartesian_direction_moves_one_axis():
-    assert mh.single_motor_direction((1.0, 0.0), [(0.0, 1.0)]) == (1.0, 0.0)
+    assert mk.single_motor_direction((1.0, 0.0), [(0.0, 1.0)]) == (1.0, 0.0)
 
 
 def test_corexy_direction_keeps_the_other_motor_still():
     a, b = (1.0, 1.0), (1.0, -1.0)
-    d = mh.single_motor_direction(a, [b, (0.0, 0.0)])
+    d = mk.single_motor_direction(a, [b, (0.0, 0.0)])
     assert d == pytest.approx((0.5, 0.5))
     assert a[0] * d[0] + a[1] * d[1] == pytest.approx(1.0)
     assert b[0] * d[0] + b[1] * d[1] == pytest.approx(0.0)
 
 
 def test_parallel_motor_on_same_axis_is_ignored():
-    d = mh.single_motor_direction((1.0, 0.0), [(1.0, 0.0), (0.0, 1.0)])
+    d = mk.single_motor_direction((1.0, 0.0), [(1.0, 0.0), (0.0, 1.0)])
     assert d == (1.0, 0.0)
 
 
 def test_conflicting_motors_have_no_direction():
     assert (
-        mh.single_motor_direction((1.0, 0.0), [(0.0, 1.0), (1.0, 1.0)]) is None
+        mk.single_motor_direction((1.0, 0.0), [(0.0, 1.0), (1.0, 1.0)]) is None
     )
-    assert mh.single_motor_direction((0.0, 0.0), [(0.0, 1.0)]) is None
+    assert mk.single_motor_direction((0.0, 0.0), [(0.0, 1.0)]) is None
 
 
 def test_harmonic_amplitude_recovers_a_sinusoid():

@@ -96,6 +96,7 @@ src-$(CONFIG_CANSERIAL) += $(canbus-src-y) generic/canbus.c stm32/chipid.c
 src-$(CONFIG_USBCANBUS) += $(usb-src-y) $(canbus-src-y)
 src-$(CONFIG_USBCANBUS) += stm32/chipid.c generic/usb_canbus.c
 src-$(CONFIG_WANT_HARD_PWM) += stm32/hard_pwm.c
+src-$(CONFIG_PHASE_STEPPING_DMA) += stm32/phase_stepper_dma.c
 
 sdio-src-y := stm32/sdio.c
 src-$(CONFIG_HAVE_GPIO_SDIO) += $(sdio-src-y)

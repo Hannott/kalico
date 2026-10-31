@@ -9,6 +9,7 @@
 #include "board/gpio.h" // gpio_out_write
 #include "basecmd.h" // oid_alloc
 #include "command.h" // DECL_COMMAND
+#include "phase_stepper.h" // phase_stepper_spi_acquire
 #include "sched.h" // DECL_SHUTDOWN
 #include "spi_software.h" // spi_software_setup
 #include "spicmds.h" // spidev_transfer
@@ -101,6 +102,18 @@ spidev_get_cs_pin(struct spidev_s *spi)
     return spi->pin;
 }
 
+// Return the bus config of a hardware SPI device with a chip select pin
+int
+spidev_get_hardware_config(struct spidev_s *spi, struct spi_config *config
+                           , uint8_t *cs_active_high)
+{
+    if ((spi->flags & (SF_HARDWARE|SF_HAVE_PIN)) != (SF_HARDWARE|SF_HAVE_PIN))
+        return 0;
+    *config = spi->spi_config;
+    *cs_active_high = !!(spi->flags & SF_CS_ACTIVE_HIGH);
+    return 1;
+}
+
 void
 spidev_transfer(struct spidev_s *spi, uint8_t receive_data
                 , uint8_t data_len, uint8_t *data)
@@ -109,6 +122,9 @@ spidev_transfer(struct spidev_s *spi, uint8_t receive_data
     if (!(flags & (SF_SOFTWARE|SF_HARDWARE)))
         // Not yet initialized
         return;
+
+    if (CONFIG_WANT_PHASE_STEPPING && flags & SF_HARDWARE)
+        phase_stepper_spi_acquire();
 
     if (CONFIG_WANT_SOFTWARE_SPI && flags & SF_SOFTWARE)
         spi_software_prepare(spi->spi_software);
@@ -125,6 +141,9 @@ spidev_transfer(struct spidev_s *spi, uint8_t receive_data
 
     if (flags & SF_HAVE_PIN)
         gpio_out_write(spi->pin, !(flags & SF_CS_ACTIVE_HIGH));
+
+    if (CONFIG_WANT_PHASE_STEPPING && flags & SF_HARDWARE)
+        phase_stepper_spi_release();
 }
 
 void
