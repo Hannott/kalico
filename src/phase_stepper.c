@@ -20,6 +20,7 @@
 #define MAX_PHASE_STEPPERS 4
 #define MOVE_QUEUE_SIZE 32
 #define SPI_WRITE 0x80
+#define PAIR_TIMEOUT_US 2000
 
 DECL_CONSTANT("PHASE_STEPPER_TICK_FREQ", CONFIG_PHASE_STEPPING_FREQ);
 
@@ -72,6 +73,7 @@ enum { PF_ARMED = 1, PF_RUNNING = 2 };
 enum { PC_SWAP_COILS = 1 };
 
 struct phase_stepper {
+    struct spidev_s *spi;
     struct spi_config config;
     struct gpio_out cs;
     uint8_t spi_oid, reg, coil_flags, cs_active_high, flags;
@@ -87,7 +89,10 @@ struct phase_stepper {
 static struct phase_stepper *steppers[MAX_PHASE_STEPPERS];
 static uint8_t stepper_count, next_stepper, timer_running;
 static struct phase_stepper *xfer_owner;
-static volatile uint8_t task_spi_locked;
+static volatile uint8_t task_spi_active;
+// A driver whose message pair from the host is half done (see release)
+static struct spidev_s *volatile pair_spi;
+static uint32_t pair_start;
 static uint8_t xfer_buf[5];
 static uint32_t next_tick_clock;
 
@@ -166,16 +171,39 @@ phase_stepper_spi_acquire(void)
         return;
     // May run from shutdown handlers, which run with irqs disabled
     irqstatus_t flag = irq_save();
-    task_spi_locked = 1;
+    task_spi_active = 1;
     if (xfer_owner)
         xfer_finish();
     irq_restore(flag);
 }
 
-void
-phase_stepper_spi_release(void)
+static int
+is_phase_spi(struct spidev_s *spi)
 {
-    task_spi_locked = 0;
+    uint32_t i;
+    for (i = 0; i < stepper_count; i++)
+        if (steppers[i]->spi == spi && steppers[i]->flags)
+            return 1;
+    return 0;
+}
+
+// Trinamic drivers answer a read in the following message, so the host
+// always sends them messages in pairs (read and read again, or write and
+// a verifying read). A coil write between the two would make the second
+// answer return the coil register, so the bus stays locked until the
+// second message of a pair to a phase stepped driver.
+void
+phase_stepper_spi_release(struct spidev_s *spi)
+{
+    irqstatus_t flag = irq_save();
+    if (spi == pair_spi) {
+        pair_spi = NULL;
+    } else if (!pair_spi && timer_running && is_phase_spi(spi)) {
+        pair_spi = spi;
+        pair_start = timer_read_time();
+    }
+    task_spi_active = 0;
+    irq_restore(flag);
 }
 
 
@@ -226,7 +254,10 @@ phase_stepper_update(void)
             stepper_tick(ps);
     }
 
-    if (task_spi_locked) {
+    if (pair_spi && !task_spi_active && timer_is_before(
+            pair_start + timer_from_us(PAIR_TIMEOUT_US), start))
+        pair_spi = NULL;
+    if (task_spi_active || pair_spi) {
         stats.locked_ticks++;
     } else {
         // The previous transfer's chip select is released here, so new
@@ -271,6 +302,7 @@ timer_stop(void)
     irq_disable();
     if (xfer_owner)
         xfer_finish();
+    pair_spi = NULL;
     timer_running = 0;
     irq_enable();
 }
@@ -332,6 +364,7 @@ command_phase_stepper_start(uint32_t *args)
         shutdown("Phase stepping requires hardware SPI with a CS pin");
     phase_board_xfer_setup(&config);
     irq_disable();
+    ps->spi = spi;
     ps->config = config;
     ps->cs = spidev_get_cs_pin(spi);
     ps->cs_active_high = cs_active_high;
@@ -403,7 +436,8 @@ phase_stepper_shutdown(void)
     uint32_t i;
     for (i = 0; i < stepper_count; i++)
         steppers[i]->flags = 0;
-    task_spi_locked = 0;
+    task_spi_active = 0;
+    pair_spi = NULL;
     timer_running = 0;
 }
 DECL_SHUTDOWN(phase_stepper_shutdown);
