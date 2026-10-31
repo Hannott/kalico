@@ -16,10 +16,12 @@ position errors, which cause vertical fine artifacts (VFA). See
   supported. Only the TMC5160 has been tested so far.
 - The driver must use a hardware SPI bus (`spi_bus`, not
   `spi_software_*_pin`) and must not be in a daisy chain.
-- spreadCycle: set `stealthchop_threshold: 0` in the driver section.
 - Micro-controller firmware built with phase stepping support. In
   `make menuconfig`, enable "Enable extra low-level configuration
   options" and then "Phase stepping support (experimental)".
+
+While the coils are driven directly, the driver runs in spreadCycle even
+if `stealthchop_threshold` is set; its own setting returns afterwards.
 
 The micro-controller updates the coil currents 40000 times a second on
 STM32F405, F407, F427, F429 and F446, using a dedicated timer and DMA.

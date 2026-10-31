@@ -289,11 +289,6 @@ class PhaseStepping:
         mcu_tmc = self.mcu_tmc
         fields = mcu_tmc.get_fields()
         gconf = mcu_tmc.get_register("GCONF")
-        if fields.get_field("en_pwm_mode", gconf):
-            raise gcmd.error(
-                "Phase stepping needs spreadCycle; set stealthchop_threshold"
-                " to 0 in [%s]" % (self.tmc_section,)
-            )
         if fields.get_field("direct_mode", gconf):
             raise gcmd.error("Driver is already in direct mode")
         mscnt = self._read_field("MSCNT", "mscnt")
@@ -336,9 +331,11 @@ class PhaseStepping:
                 coil_value(start_phase, amplitude, self.swap_coils),
                 mcu_tmc.chain_pos,
             )
-            mcu_tmc.set_register(
-                "GCONF", fields.set_field("direct_mode", 1, gconf)
-            )
+            # Without step pulses the driver sees standstill, where an
+            # enabled stealthChop would take over from the coil currents.
+            direct_gconf = fields.set_field("en_pwm_mode", 0, gconf)
+            direct_gconf = fields.set_field("direct_mode", 1, direct_gconf)
+            mcu_tmc.set_register("GCONF", direct_gconf)
             for count, vel, half in moves:
                 self.queue_move_cmd.send([self.oid, count, vel, half])
             est = self.mcu.estimated_print_time(
