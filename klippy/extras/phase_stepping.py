@@ -299,7 +299,7 @@ class PhaseStepping:
         self.query_cmd = self.mcu.lookup_query_command(
             "phase_stepper_query oid=%c",
             "phase_stepper_state oid=%c phase=%u flags=%c pending=%c"
-            " ticks=%u lost_ticks=%u locked_ticks=%u xfers=%u"
+            " ticks=%u lost_ticks=%u locked_ticks=%u pair_timeouts=%u xfers=%u"
             " max_cycles=%u avg_cycles=%u",
             oid=self.oid,
             cq=cq,
@@ -503,8 +503,14 @@ class PhaseStepping:
                 100.0 * state["avg_cycles"] * cycle_us / tick_us,
                 tick_us,
             ),
-            "Ticks: %d, lost %d, skipped for other SPI traffic %d"
-            % (state["ticks"], state["lost_ticks"], state["locked_ticks"]),
+            "Ticks: %d, lost %d, skipped for other SPI traffic %d,"
+            " interrupted driver reads %d"
+            % (
+                state["ticks"],
+                state["lost_ticks"],
+                state["locked_ticks"],
+                state["pair_timeouts"],
+            ),
             "Coil writes: %d, amplitude %d" % (state["xfers"], amplitude),
         ]
         lines, warnings = summarize_samples(
@@ -515,6 +521,12 @@ class PhaseStepping:
             warnings.append(
                 "the driver did not receive changing coil currents, so the"
                 " motor did not move"
+            )
+        if state["pair_timeouts"]:
+            warnings.append(
+                "%d driver reads were interrupted by coil writes, so driver"
+                " values read during the test may be wrong"
+                % (state["pair_timeouts"],)
             )
         msg.extend("WARNING: %s" % (w,) for w in warnings)
         if state["phase"] != start_phase & 0xFFFFFFFF or end_mscnt != mscnt:

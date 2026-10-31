@@ -20,7 +20,7 @@
 #define MAX_PHASE_STEPPERS 4
 #define MOVE_QUEUE_SIZE 32
 #define SPI_WRITE 0x80
-#define PAIR_TIMEOUT_US 2000
+#define PAIR_TIMEOUT_US 250
 
 DECL_CONSTANT("PHASE_STEPPER_TICK_FREQ", CONFIG_PHASE_STEPPING_FREQ);
 
@@ -97,7 +97,8 @@ static uint8_t xfer_buf[5];
 static uint32_t next_tick_clock;
 
 static struct {
-    uint32_t ticks, lost_ticks, locked_ticks, xfers, max_cycles;
+    uint32_t ticks, lost_ticks, locked_ticks, pair_timeouts, xfers;
+    uint32_t max_cycles;
     uint64_t total_cycles;
 } stats;
 
@@ -255,8 +256,10 @@ phase_stepper_update(void)
     }
 
     if (pair_spi && !task_spi_active && timer_is_before(
-            pair_start + timer_from_us(PAIR_TIMEOUT_US), start))
+            pair_start + timer_from_us(PAIR_TIMEOUT_US), start)) {
         pair_spi = NULL;
+        stats.pair_timeouts++;
+    }
     if (task_spi_active || pair_spi) {
         stats.locked_ticks++;
     } else {
@@ -410,15 +413,15 @@ command_phase_stepper_query(uint32_t *args)
     uint32_t pending = ps->count || ps->queue_tail != ps->queue_head;
     uint32_t ticks = stats.ticks, lost = stats.lost_ticks;
     uint32_t locked = stats.locked_ticks, max_cycles = stats.max_cycles;
-    uint32_t xfers = stats.xfers;
+    uint32_t xfers = stats.xfers, pair_timeouts = stats.pair_timeouts;
     uint64_t total_cycles = stats.total_cycles;
     memset(&stats, 0, sizeof(stats));
     irq_enable();
     uint32_t avg_cycles = ticks ? total_cycles / ticks : 0;
     sendf("phase_stepper_state oid=%c phase=%u flags=%c pending=%c ticks=%u"
-          " lost_ticks=%u locked_ticks=%u xfers=%u max_cycles=%u"
-          " avg_cycles=%u", oid, phase, flags, pending, ticks, lost, locked
-          , xfers, max_cycles, avg_cycles);
+          " lost_ticks=%u locked_ticks=%u pair_timeouts=%u xfers=%u"
+          " max_cycles=%u avg_cycles=%u", oid, phase, flags, pending, ticks
+          , lost, locked, pair_timeouts, xfers, max_cycles, avg_cycles);
 }
 DECL_COMMAND(command_phase_stepper_query, "phase_stepper_query oid=%c");
 
