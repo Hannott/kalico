@@ -22,6 +22,7 @@
 - Input shaper calibration now warns about active fans that may affect measurement accuracy.
 - [`BED_MESH_CHECK`](./G-Codes.md#bed_mesh_check) validates the current bed mesh against specified criteria, allowing you to check maximum deviation and slope between adjacent points before printing.
 - [`[resonance_tester]`](./Config_Reference.md#resonance_tester) now supports multiple accelerometer chips via the new `accel_chips` parameter, allowing data from multiple accelerometers to be combined for more accurate input shaper calibration.
+- [`[resonance_tester] crosstalk_calibration`](./Config_Reference.md#resonance_tester) automatically probes each accelerometer for cross-axis leakage (a sign of imperfect mounting) before every sweep and compensates for it, so a misaligned accelerometer doesn't skew shaper calibration.
 
 ## New Kalico Modules
 
