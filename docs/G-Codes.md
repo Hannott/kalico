@@ -1298,6 +1298,23 @@ Palette 2 once the loading has been completed. This command is the
 same as pressing **Smart Load** directly on the Palette 2 screen after
 the filament load is complete.
 
+### [phase_calibrate]
+
+The following command is available when a
+[phase_calibrate config section](Config_Reference.md#phase_calibrate)
+is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
+
+#### MEASURE_MOTOR_HARMONICS
+`MEASURE_MOTOR_HARMONICS STEPPER=<config_name> [SPEED_MIN=<mm/s>]
+[SPEED_MAX=<mm/s>] [SPEED_STEP=<mm/s>] [ACCEL=<mm/s^2>]
+[HARMONICS=<h1,h2,...>] [POINT=x,y,z] [NAME=<name>]`: Moves only the
+given X/Y stepper (diagonally on a CoreXY printer) at a series of
+constant speeds in both directions, and measures the toolhead vibration
+at each harmonic of the motor's electrical frequency. It reports the
+strongest vibration per harmonic and direction, and writes all
+measurements to `/tmp/motor_harmonics_<stepper>_<name>.csv`. Speeds and
+acceleration are in mm/s of motor travel. X and Y must be homed.
+
 ### [pid_calibrate]
 
 The pid_calibrate module is automatically loaded if a heater is defined
