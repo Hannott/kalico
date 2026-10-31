@@ -26,6 +26,7 @@
 ## New Kalico Modules
 
 - [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Kalico
+- [phase_calibrate](./Motor_Harmonics.md) - Measure stepper motor vibration at harmonics of the electrical frequency (the source of VFA)
 
 ## Sensorless Homing
 

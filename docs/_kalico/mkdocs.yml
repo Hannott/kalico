@@ -132,6 +132,7 @@ nav:
     - Tuning:
       - Measuring_Resonances.md
       - Resonance_Compensation.md
+      - Motor_Harmonics.md
       - Pressure_Advance.md
   - Slicers:
     - Slicers.md
