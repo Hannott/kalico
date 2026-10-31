@@ -30,6 +30,11 @@ AUTOTUNE_SHAPERS = [
     "2hump_ei",
 ]
 
+# Largest number of resonance peaks extract_resonance_peaks reports. More
+# than a handful of distinct, well-separated, significant resonances per
+# axis is rare on real printers.
+MAX_RESONANCE_PEAKS = 4
+
 ######################################################################
 # Frequency response calculation and shaper auto-tuning
 ######################################################################
@@ -531,6 +536,102 @@ class ShaperCalibrate:
             1e-2,
         )
         return max_accel
+
+    def _detect_resonance_peaks(
+        self,
+        freq_bins,
+        psd,
+        min_freq,
+        max_freq,
+        min_prominence=0.12,
+        min_separation=8.0,
+        max_peaks=2,
+    ):
+        # Well-separated local maxima in the PSD, at most `max_peaks` of
+        # them, sorted by descending PSD magnitude (most significant first).
+        np = self.numpy
+        mask = (freq_bins >= min_freq) & (freq_bins <= max_freq)
+        freqs = freq_bins[mask]
+        vals = psd[mask]
+        if freqs.shape[0] < 3:
+            return []
+        is_peak = (vals[1:-1] > vals[:-2]) & (vals[1:-1] > vals[2:])
+        idx = np.nonzero(is_peak)[0] + 1
+        if idx.shape[0] == 0:
+            return []
+        peak_freqs = freqs[idx]
+        peak_vals = vals[idx]
+        order = np.argsort(peak_vals)[::-1]
+        top_val = peak_vals[order[0]]
+        selected = []
+        for i in order:
+            v = peak_vals[i]
+            if v < min_prominence * top_val:
+                break
+            f = float(peak_freqs[i])
+            if any(abs(f - sf) < min_separation for sf in selected):
+                continue
+            selected.append(f)
+            if len(selected) >= max_peaks:
+                break
+        return selected
+
+    def _estimate_damping_ratio(
+        self, freq_bins, psd, f0, max_span_lo=None, max_span_hi=None
+    ):
+        # Half-power (-3 dB) bandwidth method: for a lightly damped 2nd
+        # order resonance, the two frequencies either side of the peak
+        # where the PSD drops to half its peak value bracket a bandwidth
+        # of approximately 2 * zeta * f0. Only meaningful for an isolated,
+        # reasonably narrow peak, hence the search span limits (to avoid
+        # running into a neighboring peak) and the sanity-clipped result.
+        #
+        # The two directions are bounded independently: a real resonance
+        # can decay asymmetrically (steep on one side, a gradual shoulder
+        # on the other), so a single symmetric span tight enough to
+        # protect against a neighboring peak on one side can cut the
+        # search short on the other side. Callers that know of a nearby
+        # second peak should tighten max_span_lo/max_span_hi only on the
+        # side that peak is actually on.
+        np = self.numpy
+        if f0 <= 0.0 or freq_bins.shape[0] < 3:
+            return None
+        i0 = int(np.argmin(np.abs(freq_bins - f0)))
+        p0 = psd[i0]
+        if p0 <= 0.0:
+            return None
+        half = 0.5 * p0
+        default_span = max(15.0, 0.3 * f0)
+        span_lo = max_span_lo if max_span_lo is not None else default_span
+        span_hi = max_span_hi if max_span_hi is not None else default_span
+        n = freq_bins.shape[0]
+
+        def find_crossing(step, span):
+            i = i0
+            while (
+                0 <= i + step < n
+                and psd[i + step] > half
+                and abs(freq_bins[i + step] - f0) <= span
+            ):
+                i += step
+            j = i + step
+            if not (0 <= j < n) or abs(freq_bins[j] - f0) > span:
+                return None
+            f_i, p_i = freq_bins[i], psd[i]
+            f_j, p_j = freq_bins[j], psd[j]
+            if p_i == p_j:
+                return float(f_j)
+            t = (half - p_i) / (p_j - p_i)
+            return float(f_i + t * (f_j - f_i))
+
+        f_lo = find_crossing(-1, span_lo)
+        f_hi = find_crossing(1, span_hi)
+        if f_lo is None or f_hi is None or f_hi <= f_lo:
+            return None
+        zeta = (f_hi - f_lo) / (2.0 * f0)
+        if zeta < 0.005 or zeta > 0.5:
+            return None
+        return zeta
 
     def find_best_shaper(
         self,
