@@ -1282,6 +1282,23 @@ strongest vibration per harmonic and direction, and writes all
 measurements to `/tmp/motor_harmonics_<stepper>_<name>.csv`. Speeds and
 acceleration are in mm/s of motor travel. X and Y must be homed.
 
+### [phase_stepping]
+
+The following command is available when a
+[phase_stepping config section](Config_Reference.md#phase_stepping)
+is enabled (also see the [phase stepping guide](Phase_Stepping.md)).
+
+#### PHASE_STEPPING_TEST
+`PHASE_STEPPING_TEST STEPPER=<config_name> [DISTANCE=<mm>]
+[VELOCITY=<mm/s>] [ACCEL=<mm/s^2>] [AMPLITUDE=<16-255>]
+[BUS_LOAD=<0|1>]`: Switches the stepper's driver to direct mode, moves
+the motor forward by DISTANCE (default 10) and back again by setting its
+coil currents from the micro-controller, and switches the driver back.
+It reports the update timing on the micro-controller and whether the
+motor returned to its start phase. `BUS_LOAD=1` reads driver registers
+during the move to test sharing of the SPI bus. Distances and speeds are
+in mm of motor travel. X and Y must be homed and the motor enabled.
+
 ### [pid_calibrate]
 
 The pid_calibrate module is automatically loaded if a heater is defined
