@@ -143,7 +143,7 @@ spidev_transfer(struct spidev_s *spi, uint8_t receive_data
         gpio_out_write(spi->pin, !(flags & SF_CS_ACTIVE_HIGH));
 
     if (CONFIG_WANT_PHASE_STEPPING && flags & SF_HARDWARE)
-        phase_stepper_spi_release();
+        phase_stepper_spi_release(spi);
 }
 
 void
