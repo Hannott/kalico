@@ -186,8 +186,6 @@ class ForceMove:
         "X": {"type": "float", "required": False},
         "Y": {"type": "float", "required": False},
         "Z": {"type": "float", "required": False},
-        "SET_HOMED": {"type": "string", "default": "xyz"},
-        "CLEAR_HOMED": {"type": "string", "default": ""},
         "CLEAR": {"type": "string", "default": ""},
     }
 
