@@ -121,3 +121,14 @@ def test_summarize_samples_reports_coils_and_driver_state():
     assert "direct_mode on in 3/4 samples" in lines[1]
     assert warnings == ["the driver was not in direct mode for the whole test"]
     assert ps.summarize_samples([], fields, True) == ([], [])
+
+
+def test_with_field_leaves_the_register_cache_alone():
+    from klippy.extras import tmc, tmc5160
+
+    fields = tmc.FieldHelper(tmc5160.Fields, tmc5160.SignedFields)
+    fields.registers["IHOLD_IRUN"] = cached = fields.set_field("irun", 20, 0)
+    value = ps.with_field(fields, "ihold", 20, cached)
+    assert fields.get_field("ihold", value) == 20
+    assert fields.get_field("irun", value) == 20
+    assert fields.registers["IHOLD_IRUN"] == cached

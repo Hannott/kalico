@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
 
-from . import motor_kinematics
+from . import motor_kinematics, tmc
 
 # One electrical period (4 full steps) is a full 32 bit phase wrap, and the
 # drivers' microstep counter (MSCNT) has 1024 positions per period.
@@ -96,6 +96,18 @@ def plan_trapezoid(distance, velocity, accel):
 
 def reverse_moves(moves):
     return [(count, -vel, -half) for count, vel, half in moves]
+
+
+def with_field(fields, field_name, value, reg_value):
+    """Return reg_value with one field replaced.
+
+    Unlike FieldHelper.set_field() this leaves the driver module's cached
+    register values alone, so temporary settings cannot leak into later
+    register writes made by the driver module.
+    """
+    reg_name = fields.lookup_register(field_name)
+    mask = fields.all_fields[reg_name][field_name]
+    return (reg_value & ~mask) | ((value << tmc.ffs(mask)) & mask)
 
 
 def sign9(value):
@@ -398,8 +410,15 @@ class PhaseStepping:
 
         mcu_tmc = self.mcu_tmc
         fields = mcu_tmc.get_fields()
-        gconf = mcu_tmc.get_register("GCONF")
-        if fields.get_field("direct_mode", gconf):
+        # Use the values the driver module last wrote: IHOLD_IRUN is write
+        # only, so reading it back from the driver returns zero.
+        gconf = fields.registers.get("GCONF", 0)
+        ihold_irun = fields.registers.get("IHOLD_IRUN")
+        if ihold_irun is None or not fields.get_field("irun", ihold_irun):
+            raise gcmd.error(
+                "No run current known for '%s'" % (self.stepper_name,)
+            )
+        if fields.get_field("direct_mode", mcu_tmc.get_register("GCONF")):
             raise gcmd.error("Driver is already in direct mode")
         mscnt = self._read_field("MSCNT", "mscnt")
         mscuract = mcu_tmc.get_register("MSCURACT")
@@ -427,10 +446,9 @@ class PhaseStepping:
         ticks = sum(m[0] for m in moves)
         start_phase = mscnt << MSCNT_SHIFT
 
-        ihold_irun = mcu_tmc.get_register("IHOLD_IRUN")
         # Drivers scale direct mode currents by the hold current
-        run_current = fields.set_field(
-            "ihold", fields.get_field("irun", ihold_irun), ihold_irun
+        run_current = with_field(
+            fields, "ihold", fields.get_field("irun", ihold_irun), ihold_irun
         )
         self.query_cmd.send([self.oid])
         completed = False
@@ -443,8 +461,8 @@ class PhaseStepping:
             )
             # Without step pulses the driver sees standstill, where an
             # enabled stealthChop would take over from the coil currents.
-            direct_gconf = fields.set_field("en_pwm_mode", 0, gconf)
-            direct_gconf = fields.set_field("direct_mode", 1, direct_gconf)
+            direct_gconf = with_field(fields, "en_pwm_mode", 0, gconf)
+            direct_gconf = with_field(fields, "direct_mode", 1, direct_gconf)
             mcu_tmc.set_register("GCONF", direct_gconf)
             for count, vel, half in moves:
                 self.queue_move_cmd.send([self.oid, count, vel, half])
