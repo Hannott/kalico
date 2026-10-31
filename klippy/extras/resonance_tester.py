@@ -727,7 +727,6 @@ class ResonanceTester:
         "AXIS": {"type": "string", "required": False},
         "CHIPS": {"type": "string", "required": False},
         "MAX_SMOOTHING": {"type": "float", "required": False},
-        "MULTIMODE_BIAS": {"type": "float", "required": False},
         "NAME": {"type": "string", "required": False},
         # Consumed by self._run_test() -> self.generator.prepare_test() and
         # self.executor.run_test(), not read directly in this method.
