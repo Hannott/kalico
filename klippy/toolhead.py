@@ -915,6 +915,7 @@ class ToolHead:
         "ACCEL": {"type": "float", "required": False},
         "SQUARE_CORNER_VELOCITY": {"type": "float", "required": False},
         "MINIMUM_CRUISE_RATIO": {"type": "float", "required": False},
+        "ACCEL_TO_DECEL": {"type": "float", "required": False},
         "X_VELOCITY": {"type": "float", "required": False},
         "X_ACCEL": {"type": "float", "required": False},
         "Y_VELOCITY": {"type": "float", "required": False},
