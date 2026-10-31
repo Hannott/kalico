@@ -20,7 +20,12 @@ def parse_csv(filename):
         key = (int(row["harmonic"]), row["direction"])
         noise = float(row["noise_um"]) if row["noise_um"] else float("nan")
         data.setdefault(key, []).append(
-            (float(row["speed"]), float(row["disp_um"]), noise)
+            (
+                float(row["speed"]),
+                float(row["freq"]),
+                float(row["disp_um"]),
+                noise,
+            )
         )
     return header, data
 
@@ -31,7 +36,9 @@ def plot(filename, output):
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # The top panel shows where each harmonic is worst while printing; the
+    # bottom one lines the harmonics up on the printer's resonances.
+    fig, (ax_speed, ax_freq) = plt.subplots(2, 1, figsize=(10, 10))
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     for idx, harmonic in enumerate(sorted({h for h, _ in data})):
         color = colors[idx % len(colors)]
@@ -39,24 +46,23 @@ def plot(filename, output):
             points = data.get((harmonic, direction))
             if not points:
                 continue
-            speeds, disps, noises = zip(*sorted(points))
-            ax.plot(
-                speeds,
-                disps,
-                style,
-                color=color,
-                label="H%d %s" % (harmonic, direction),
-            )
+            speeds, freqs, disps, noises = zip(*sorted(points))
+            label = "H%d %s" % (harmonic, direction)
+            ax_speed.plot(speeds, disps, style, color=color, label=label)
+            ax_freq.plot(freqs, disps, style, color=color, label=label)
             if direction == "fwd":
-                ax.plot(speeds, noises, ":", color=color, alpha=0.5)
-    ax.set_title(
+                ax_speed.plot(speeds, noises, ":", color=color, alpha=0.5)
+    ax_speed.set_title(
         "Motor harmonics (%s)\ndotted: noise level" % (header,), fontsize=10
     )
-    ax.set_xlabel("Motor speed (mm/s)")
-    ax.set_ylabel("Toolhead displacement amplitude (um)")
-    ax.set_yscale("log")
-    ax.grid(which="both", alpha=0.3)
-    ax.legend(loc="best", fontsize="small")
+    ax_speed.set_xlabel("Motor speed (mm/s)")
+    ax_freq.set_title("Same data by vibration frequency", fontsize=10)
+    ax_freq.set_xlabel("Frequency (Hz)")
+    for ax in (ax_speed, ax_freq):
+        ax.set_ylabel("Toolhead displacement amplitude (um)")
+        ax.set_yscale("log")
+        ax.grid(which="both", alpha=0.3)
+        ax.legend(loc="best", fontsize="small")
     if output:
         fig.savefig(output)
     else:
