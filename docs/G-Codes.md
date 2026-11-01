@@ -1271,6 +1271,17 @@ The following command is available when a
 [phase_calibrate config section](Config_Reference.md#phase_calibrate)
 is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
 
+#### PHASE_STEPPING_CALIBRATE
+`PHASE_STEPPING_CALIBRATE STEPPER=<config_name> [HARMONICS=<h1,h2,...>]
+[PASSES=<n>] [PROBE=<radians>] [SPEED_MAX=<mm/s>] [ACCEL=<mm/s^2>]
+[POINT=x,y,z] [SAVE=<0|1>]`: Find the coil angle corrections that cancel
+the given harmonics (default 2, 4 and 1) of a phase stepped motor, per
+direction of motion. It first measures at which speed each harmonic
+vibrates most, then measures there with no correction, two small probe
+corrections and the resulting estimates, and keeps the best. The
+results are stored for `SAVE_CONFIG` unless `SAVE=0`. Phase stepping must
+be enabled on the stepper.
+
 #### MEASURE_MOTOR_HARMONICS
 `MEASURE_MOTOR_HARMONICS STEPPER=<config_name> [SPEED_MIN=<mm/s>]
 [SPEED_MAX=<mm/s>] [SPEED_STEP=<mm/s>] [ACCEL=<mm/s^2>]
@@ -1292,6 +1303,13 @@ is enabled (also see the [phase stepping guide](Phase_Stepping.md)).
 `PHASE_STEPPING_ENABLE STEPPER=<config_name> [ENABLE=<0|1>]`: Switch
 the stepper to phase stepping (`ENABLE=1`, the default) or back to step
 pulses. The stepper must be enabled and at rest.
+
+#### PHASE_STEPPING_SET_CORRECTION
+`PHASE_STEPPING_SET_CORRECTION STEPPER=<config_name> [HARMONIC=<n>
+MAG=<radians> [PHASE=<radians>]] [DIRECTION=<forward|backward|both>]
+[SAVE=<0|1>]`: Set (or with `MAG=0` remove) the coil angle correction of
+one harmonic and report the corrections in use. `SAVE=1` stores them for
+`SAVE_CONFIG`.
 
 #### PHASE_STEPPING_STEP_TEST
 `PHASE_STEPPING_STEP_TEST STEPPER=<config_name> [DISTANCE=<mm>]`: Moves

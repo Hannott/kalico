@@ -49,7 +49,7 @@ def window_slice(times, start_time, end_time):
     return slice(lo, hi)
 
 
-def harmonic_amplitude(times, values, freq):
+def harmonic_amplitude(times, values, freq, t_ref=None):
     """Complex amplitude of values at freq (single-bin DFT).
 
     Uses a Hann window over the sample times, so windows need not be a
@@ -57,7 +57,7 @@ def harmonic_amplitude(times, values, freq):
     capped at the typical sample interval so that the samples next to a
     dropped accelerometer batch do not stand in for the whole gap.
     For values = A*cos(2*pi*freq*t + phi) it returns about A*exp(1j*phi),
-    relative to the first sample time.
+    relative to the first sample time, or to t_ref when given.
     """
     t = times - times[0]
     duration = t[-1]
@@ -67,7 +67,11 @@ def harmonic_amplitude(times, values, freq):
     spacing = 0.5 * (np.append(covered, 0.0) + np.insert(covered, 0, 0.0))
     window = (0.5 - 0.5 * np.cos(2.0 * math.pi * t / duration)) * spacing
     centered = values - np.sum(window * values) / np.sum(window)
-    phasor = np.exp(-2j * math.pi * freq * t)
+    if t_ref is not None:
+        t_phase = times - t_ref
+    else:
+        t_phase = t
+    phasor = np.exp(-2j * math.pi * freq * t_phase)
     return 2.0 * np.sum(window * centered * phasor) / np.sum(window)
 
 
@@ -145,3 +149,40 @@ def peak_per_harmonic(rows, min_snr=MIN_PEAK_SNR):
         if key not in peaks or result.disp > peaks[key][2].disp:
             peaks[key] = row
     return peaks
+
+
+def estimate_correction(r0, r_real, r_imag, c0, delta):
+    """One step towards the correction that cancels a harmonic.
+
+    The vibration at a harmonic responds linearly to a small change of its
+    correction c (complex: magnitude * exp(1j * phase)): r(c) = r0 + G*(c -
+    c0). r_real and r_imag are measured at c0 + delta and c0 + 1j*delta.
+    Returns (new correction, G, nonlinearity), where nonlinearity compares
+    the two estimates of G.
+    """
+    g_real = (r_real - r0) / delta
+    g_imag = (r_imag - r0) / (1j * delta)
+    gain = 0.5 * (g_real + g_imag)
+    if abs(gain) == 0.0:
+        return c0, gain, float("inf")
+    nonlinearity = abs(g_real - g_imag) / abs(gain)
+    return c0 - r0 / gain, gain, nonlinearity
+
+
+def pick_calibration_speed(rows, harmonic, min_snr=5.0):
+    """Speed where a harmonic vibrates most in both directions, or None."""
+    by_speed = {}
+    for speed, motor_dir, res in rows:
+        if res.harmonic != harmonic or res.disp is None:
+            continue
+        if res.noise_disp is not None and res.disp < min_snr * res.noise_disp:
+            continue
+        by_speed.setdefault(speed, {})[motor_dir] = res.disp
+    best = None
+    for speed, dirs in by_speed.items():
+        if len(dirs) < 2:
+            continue
+        score = min(dirs.values())
+        if best is None or score > best[0]:
+            best = (score, speed)
+    return best[1] if best else None

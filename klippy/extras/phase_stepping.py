@@ -45,6 +45,8 @@ ANGLE_SHIFT = 20
 CORRECTION_SIZE = 1024
 CORRECTION_LIMIT = 127
 CORRECTION_CHUNK = 40
+# Largest correction magnitude (radians) that fits the MCU's signed bytes
+CORRECTION_MAX = CORRECTION_LIMIT * 2.0 * math.pi / 4096.0
 DIRECTIONS = ("forward", "backward")
 
 
@@ -485,6 +487,36 @@ class PhaseStepping:
             ),
         }
 
+    def get_harmonic(self, direction, harmonic):
+        mag, pha = self.corrections[direction].get(harmonic, (0.0, 0.0))
+        return complex(mag * math.cos(pha), mag * math.sin(pha))
+
+    def set_harmonic(self, direction, harmonic, value):
+        mag = min(abs(value), CORRECTION_MAX)
+        if mag:
+            self.corrections[direction][harmonic] = (
+                mag,
+                math.atan2(value.imag, value.real),
+            )
+        else:
+            self.corrections[direction].pop(harmonic, None)
+
+    def apply_corrections(self):
+        """Send changed corrections to the MCU (the motor must be at rest)."""
+        if self.active:
+            self.printer.lookup_object("toolhead").wait_moves()
+            self._upload_corrections()
+
+    def save_corrections(self):
+        configfile = self.printer.lookup_object("configfile")
+        section = "phase_stepping %s" % (self.stepper_name,)
+        for d in DIRECTIONS:
+            configfile.set(
+                section,
+                "correction_" + d,
+                format_correction(self.corrections[d]),
+            )
+
     def _upload_corrections(self):
         for index, direction in enumerate(DIRECTIONS):
             table = correction_table(self.corrections[direction])
@@ -780,14 +812,7 @@ class PhaseStepping:
                 self.printer.lookup_object("toolhead").wait_moves()
                 self._upload_corrections()
         if gcmd.get_int("SAVE", 0, minval=0, maxval=1):
-            configfile = self.printer.lookup_object("configfile")
-            section = "phase_stepping %s" % (self.stepper_name,)
-            for d in DIRECTIONS:
-                configfile.set(
-                    section,
-                    "correction_" + d,
-                    format_correction(self.corrections[d]),
-                )
+            self.save_corrections()
         gcmd.respond_info(
             "%s correction forward: %s\nbackward: %s"
             % (

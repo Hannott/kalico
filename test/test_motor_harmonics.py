@@ -142,3 +142,43 @@ def test_peak_per_harmonic_picks_largest_per_direction():
     assert peaks[(2, -1)][0] == 40.0
     assert (4, 1) not in peaks
     assert (4, -1) not in peaks
+
+
+def test_estimate_correction_finds_the_cancelling_correction():
+    target = 0.031 * np.exp(1j * 2.2)
+    gain = 4000.0 * np.exp(-1j * 0.7)
+
+    def vibration(c):
+        return gain * (c - target)
+
+    c0 = 0.0 + 0.0j
+    new, est_gain, nonlinearity = mh.estimate_correction(
+        vibration(c0), vibration(c0 + 0.02), vibration(c0 + 0.02j), c0, 0.02
+    )
+    assert new == pytest.approx(target)
+    assert est_gain == pytest.approx(gain)
+    assert nonlinearity == pytest.approx(0.0, abs=1e-9)
+
+
+def test_pick_calibration_speed_needs_both_directions():
+    def res(disp, noise=0.01):
+        return mh.HarmonicResult(2, 100.0, 1.0, disp, noise)
+
+    rows = [
+        (20.0, 1, res(5.0)),
+        (20.0, -1, res(0.02)),  # backward barely above noise
+        (40.0, 1, res(3.0)),
+        (40.0, -1, res(2.8)),
+        (60.0, 1, res(9.0)),  # backward missing
+    ]
+    assert mh.pick_calibration_speed(rows, 2) == 40.0
+    assert mh.pick_calibration_speed(rows, 4) is None
+
+
+def test_coherent_amplitude_keeps_phase_relative_to_reference():
+    times = np.arange(10.0, 10.5, 1.0 / SAMPLE_RATE)
+    values = 2.0 * np.cos(2.0 * math.pi * 80.0 * (times - 10.0) + 0.9)
+    late = times[100:]
+    amp = mh.harmonic_amplitude(late, values[100:], 80.0, t_ref=10.0)
+    assert abs(amp) == pytest.approx(2.0, rel=0.02)
+    assert np.angle(amp) == pytest.approx(0.9, abs=0.02)

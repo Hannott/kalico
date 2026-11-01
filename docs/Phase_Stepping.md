@@ -1,7 +1,6 @@
 # Phase stepping
 
-**This feature is experimental.** It follows normal motion but does not
-yet correct the motor's own position errors.
+**This feature is experimental.**
 
 Phase stepping drives a stepper motor by setting its two coil currents
 directly, many thousand times a second, instead of sending step pulses
@@ -52,6 +51,22 @@ disable phase stepping first with `ENABLE=0`.
 When it is disabled, the command warns if the driver's step position and
 the phase ended apart by more than half a microstep, which would point to
 a wrong direction or lost steps.
+
+## Calibration
+
+With phase stepping enabled and the accelerometer from
+[phase_calibrate](Config_Reference.md#phase_calibrate) on the toolhead,
+run for each motor:
+
+```
+PHASE_STEPPING_CALIBRATE STEPPER=stepper_x
+PHASE_STEPPING_CALIBRATE STEPPER=stepper_y
+SAVE_CONFIG
+```
+
+The correction shifts the coil current angle so that the rotor lands
+where it should; it is measured and stored separately for each motor and
+direction. Compare with `MEASURE_MOTOR_HARMONICS` before and after.
 
 ## Test move
 
