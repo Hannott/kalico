@@ -306,7 +306,15 @@ class PrinterMotionReport:
         if ehandler is not None:
             pos, velocity = ehandler.get_trapq_position(print_time)
             if pos is not None:
-                epos = (pos[0],)
+                # PrinterExtruder.move() (kinematics/extruder.py) stores the
+                # extruded distance as three per-axis, r^2-weighted
+                # components (x/y/z) for the multi-axis pressure-advance
+                # model, rather than a single scalar in the x slot. Summing
+                # them back together mirrors what kin_extruder.c's
+                # extruder_calc_position() does for step generation, and
+                # recovers the true cumulative extruder position (up to the
+                # usually-negligible r_e^2 term dropped from x^2+y^2+z^2).
+                epos = (pos[0] + pos[1] + pos[2],)
                 evelocity = velocity
         # Report status
         self.last_status = dict(self.last_status)
