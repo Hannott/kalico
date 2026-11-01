@@ -136,6 +136,13 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
   H4 0.13 to 0.037 um). A minimax objective on absolute vibration is an
   option if wider ranges are needed. The default range now starts at
   30 mm/s.
+- Calibration used to start from the stored correction and pick the
+  speeds where the remaining vibration was above noise. Speeds the
+  earlier correction already cancelled were then left out, and the new
+  correction made them worse (stepper_x H2 at 40-50 mm/s rose 2-4 times
+  while 55-100 mm/s fell). The result also depended on which
+  calibration came before. Calibration now clears the harmonic's
+  correction first.
 - With phase stepping and corrections the motors are much quieter. Input
   shaper measurements before and after showed unchanged resonance
   frequencies; differences in peak height and damping were within run to
