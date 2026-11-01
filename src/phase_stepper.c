@@ -20,7 +20,7 @@
 #define MAX_PHASE_STEPPERS 4
 #define MOVE_QUEUE_SIZE 128
 #define SPI_WRITE 0x80
-#define PAIR_TIMEOUT_US 250
+#define HOST_MSG_SIZE 5
 
 DECL_CONSTANT("PHASE_STEPPER_TICK_FREQ", CONFIG_PHASE_STEPPING_FREQ);
 DECL_CONSTANT("PHASE_STEPPER_QUEUE_SIZE", MOVE_QUEUE_SIZE - 1);
@@ -189,6 +189,9 @@ struct phase_stepper {
     uint32_t phase;
     int32_t vel, half_accel;
     uint32_t count, start_clock, last_sent;
+    // The host's last message to the driver, and whether a coil write
+    // went to the driver after it
+    uint8_t host_msg[HOST_MSG_SIZE], host_msg_len, coil_written;
     struct phase_move queue[MOVE_QUEUE_SIZE];
     volatile uint8_t queue_head, queue_tail;
 };
@@ -197,14 +200,11 @@ static struct phase_stepper *steppers[MAX_PHASE_STEPPERS];
 static uint8_t stepper_count, next_stepper, timer_running;
 static struct phase_stepper *xfer_owner;
 static volatile uint8_t task_spi_active;
-// A driver whose message pair from the host is half done (see release)
-static struct spidev_s *volatile pair_spi;
-static uint32_t pair_start;
 static uint8_t xfer_buf[5];
 static uint32_t next_tick_clock;
 
 static struct {
-    uint32_t ticks, lost_ticks, locked_ticks, pair_timeouts, xfers;
+    uint32_t ticks, lost_ticks, locked_ticks, replays, xfers;
     uint32_t max_cycles;
     uint64_t total_cycles;
 } stats;
@@ -271,50 +271,64 @@ xfer_start(struct phase_stepper *ps, uint32_t value)
     gpio_out_write(ps->cs, ps->cs_active_high);
     xfer_owner = ps;
     ps->last_sent = value;
+    ps->coil_written = 1;
     stats.xfers++;
     phase_board_xfer_start(&ps->config, xfer_buf, sizeof(xfer_buf));
 }
 
-void
-phase_stepper_spi_acquire(void)
-{
-    if (!timer_running)
-        return;
-    // May run from shutdown handlers, which run with irqs disabled
-    irqstatus_t flag = irq_save();
-    task_spi_active = 1;
-    if (xfer_owner)
-        xfer_finish();
-    irq_restore(flag);
-}
-
-static int
-is_phase_spi(struct spidev_s *spi)
+static struct phase_stepper *
+spi_stepper(struct spidev_s *spi)
 {
     uint32_t i;
     for (i = 0; i < stepper_count; i++)
-        if (steppers[i]->spi == spi && steppers[i]->flags)
-            return 1;
-    return 0;
+        if (steppers[i]->spi == spi)
+            return steppers[i];
+    return NULL;
 }
 
-// Trinamic drivers answer a read in the following message, so the host
-// always sends them messages in pairs (read and read again, or write and
-// a verifying read). A coil write between the two would make the second
-// answer return the coil register, so the bus stays locked until the
-// second message of a pair to a phase stepped driver.
-void
-phase_stepper_spi_release(struct spidev_s *spi)
+// Trinamic drivers answer each message with the register that the message
+// before it addressed, so the host reads a register with two messages. A
+// coil write between the two would make the second answer return the coil
+// register. However long the host takes between its messages, the answer
+// it reads stays right if its previous message is sent again first.
+static void
+replay_host_msg(struct phase_stepper *ps)
 {
-    irqstatus_t flag = irq_save();
-    if (spi == pair_spi) {
-        pair_spi = NULL;
-    } else if (!pair_spi && timer_running && is_phase_spi(spi)) {
-        pair_spi = spi;
-        pair_start = timer_read_time();
+    uint8_t msg[HOST_MSG_SIZE];
+    memcpy(msg, ps->host_msg, ps->host_msg_len);
+    spi_prepare(ps->config);
+    gpio_out_write(ps->cs, ps->cs_active_high);
+    spi_transfer(ps->config, 0, ps->host_msg_len, msg);
+    gpio_out_write(ps->cs, !ps->cs_active_high);
+    stats.replays++;
+}
+
+void
+phase_stepper_spi_acquire(struct spidev_s *spi, uint8_t receive_data
+                          , uint8_t data_len, uint8_t *data)
+{
+    if (timer_running) {
+        // May run from shutdown handlers, which run with irqs disabled
+        irqstatus_t flag = irq_save();
+        task_spi_active = 1;
+        if (xfer_owner)
+            xfer_finish();
+        irq_restore(flag);
     }
+    struct phase_stepper *ps = spi_stepper(spi);
+    if (!ps)
+        return;
+    if (receive_data && ps->coil_written && ps->host_msg_len)
+        replay_host_msg(ps);
+    ps->coil_written = 0;
+    ps->host_msg_len = data_len <= HOST_MSG_SIZE ? data_len : 0;
+    memcpy(ps->host_msg, data, ps->host_msg_len);
+}
+
+void
+phase_stepper_spi_release(void)
+{
     task_spi_active = 0;
-    irq_restore(flag);
 }
 
 
@@ -403,12 +417,7 @@ phase_stepper_update(void)
             stepper_tick(ps, now - (ticks - 1 - t) * TICK_CYCLES);
     }
 
-    if (pair_spi && !task_spi_active && timer_is_before(
-            pair_start + timer_from_us(PAIR_TIMEOUT_US), start)) {
-        pair_spi = NULL;
-        stats.pair_timeouts++;
-    }
-    if (task_spi_active || pair_spi) {
+    if (task_spi_active) {
         stats.locked_ticks++;
     } else {
         // The previous transfer's chip select is released here, so new
@@ -453,7 +462,6 @@ timer_stop(void)
     irq_disable();
     if (xfer_owner)
         xfer_finish();
-    pair_spi = NULL;
     timer_running = 0;
     irq_enable();
 }
@@ -614,15 +622,15 @@ command_phase_stepper_query(uint32_t *args)
     uint32_t pending = ps->count || ps->queue_tail != ps->queue_head;
     uint32_t ticks = stats.ticks, lost = stats.lost_ticks;
     uint32_t locked = stats.locked_ticks, max_cycles = stats.max_cycles;
-    uint32_t xfers = stats.xfers, pair_timeouts = stats.pair_timeouts;
+    uint32_t xfers = stats.xfers, replays = stats.replays;
     uint64_t total_cycles = stats.total_cycles;
     memset(&stats, 0, sizeof(stats));
     irq_enable();
     uint32_t avg_cycles = ticks ? total_cycles / ticks : 0;
     sendf("phase_stepper_state oid=%c phase=%u flags=%c pending=%c ticks=%u"
-          " lost_ticks=%u locked_ticks=%u pair_timeouts=%u xfers=%u"
+          " lost_ticks=%u locked_ticks=%u replays=%u xfers=%u"
           " max_cycles=%u avg_cycles=%u tick_clock=%u", oid, phase, flags
-          , pending, ticks, lost, locked, pair_timeouts, xfers, max_cycles
+          , pending, ticks, lost, locked, replays, xfers, max_cycles
           , avg_cycles, tick_clock);
 }
 DECL_COMMAND(command_phase_stepper_query, "phase_stepper_query oid=%c");
@@ -642,7 +650,6 @@ phase_stepper_shutdown(void)
     for (i = 0; i < stepper_count; i++)
         steppers[i]->flags = 0;
     task_spi_active = 0;
-    pair_spi = NULL;
     timer_running = 0;
 }
 DECL_SHUTDOWN(phase_stepper_shutdown);

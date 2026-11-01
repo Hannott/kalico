@@ -124,7 +124,7 @@ spidev_transfer(struct spidev_s *spi, uint8_t receive_data
         return;
 
     if (CONFIG_WANT_PHASE_STEPPING && flags & SF_HARDWARE)
-        phase_stepper_spi_acquire();
+        phase_stepper_spi_acquire(spi, receive_data, data_len, data);
 
     if (CONFIG_WANT_SOFTWARE_SPI && flags & SF_SOFTWARE)
         spi_software_prepare(spi->spi_software);
@@ -143,7 +143,7 @@ spidev_transfer(struct spidev_s *spi, uint8_t receive_data
         gpio_out_write(spi->pin, !(flags & SF_CS_ACTIVE_HIGH));
 
     if (CONFIG_WANT_PHASE_STEPPING && flags & SF_HARDWARE)
-        phase_stepper_spi_release(spi);
+        phase_stepper_spi_release();
 }
 
 void
