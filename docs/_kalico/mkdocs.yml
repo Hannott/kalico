@@ -135,6 +135,7 @@ nav:
       - Resonance_Compensation.md
       - Motor_Harmonics.md
       - Phase_Stepping.md
+      - Phase_Stepping_Findings.md
       - Pressure_Advance.md
   - Slicers:
     - Slicers.md
