@@ -516,6 +516,7 @@ class PhaseStepping:
             self.stepper_name,
             self.cmd_PHASE_STEPPING_SET_CORRECTION,
             desc=self.cmd_PHASE_STEPPING_SET_CORRECTION_help,
+            params=self.cmd_PHASE_STEPPING_SET_CORRECTION_params,
         )
         self.gcode.register_mux_command(
             "PHASE_STEPPING_ENABLE",
@@ -523,6 +524,7 @@ class PhaseStepping:
             self.stepper_name,
             self.cmd_PHASE_STEPPING_ENABLE,
             desc=self.cmd_PHASE_STEPPING_ENABLE_help,
+            params=self.cmd_PHASE_STEPPING_ENABLE_params,
         )
         self.gcode.register_mux_command(
             "PHASE_STEPPING_TEST",
@@ -530,6 +532,7 @@ class PhaseStepping:
             self.stepper_name,
             self.cmd_PHASE_STEPPING_TEST,
             desc=self.cmd_PHASE_STEPPING_TEST_help,
+            params=self.cmd_PHASE_STEPPING_TEST_params,
         )
         self.gcode.register_mux_command(
             "PHASE_STEPPING_STEP_TEST",
@@ -537,6 +540,7 @@ class PhaseStepping:
             self.stepper_name,
             self.cmd_PHASE_STEPPING_STEP_TEST,
             desc=self.cmd_PHASE_STEPPING_STEP_TEST_help,
+            params=self.cmd_PHASE_STEPPING_STEP_TEST_params,
         )
 
     def _build_config(self):
@@ -1103,6 +1107,14 @@ class PhaseStepping:
     cmd_PHASE_STEPPING_SET_CORRECTION_help = (
         "Set the angle correction of one harmonic of a phase stepped motor"
     )
+    cmd_PHASE_STEPPING_SET_CORRECTION_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "HARMONIC": {"type": "int", "required": False},
+        "DIRECTION": {"type": "string", "default": "both"},
+        "MAG": {"type": "float", "required": False},
+        "PHASE": {"type": "float", "default": 0.0},
+        "SAVE": {"type": "int", "default": 0},
+    }
 
     def cmd_PHASE_STEPPING_SET_CORRECTION(self, gcmd):
         harmonic = gcmd.get_int("HARMONIC", None, minval=1, maxval=16)
@@ -1139,6 +1151,10 @@ class PhaseStepping:
     cmd_PHASE_STEPPING_ENABLE_help = (
         "Enable or disable phase stepping for a stepper"
     )
+    cmd_PHASE_STEPPING_ENABLE_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "ENABLE": {"type": "int", "default": 1},
+    }
 
     def cmd_PHASE_STEPPING_ENABLE(self, gcmd):
         if gcmd.get_int("ENABLE", 1, minval=0, maxval=1):
@@ -1230,6 +1246,14 @@ class PhaseStepping:
     cmd_PHASE_STEPPING_TEST_help = (
         "Move a stepper forward and back by setting its coil currents directly"
     )
+    cmd_PHASE_STEPPING_TEST_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "DISTANCE": {"type": "float", "default": 10.0},
+        "VELOCITY": {"type": "float", "default": 20.0},
+        "ACCEL": {"type": "float", "default": 500.0},
+        "AMPLITUDE": {"type": "int", "required": False},
+        "BUS_LOAD": {"type": "int", "default": 0},
+    }
 
     def cmd_PHASE_STEPPING_TEST(self, gcmd):
         if self.active:
@@ -1363,6 +1387,10 @@ class PhaseStepping:
         "Check how the driver's microstep counter follows step pulses in"
         " normal and in direct mode"
     )
+    cmd_PHASE_STEPPING_STEP_TEST_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "DISTANCE": {"type": "float", "required": False},
+    }
 
     def cmd_PHASE_STEPPING_STEP_TEST(self, gcmd):
         if self.active:
