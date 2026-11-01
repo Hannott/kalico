@@ -1273,14 +1273,18 @@ is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
 
 #### PHASE_STEPPING_CALIBRATE
 `PHASE_STEPPING_CALIBRATE STEPPER=<config_name> [HARMONICS=<h1,h2,...>]
-[PASSES=<n>] [PROBE=<radians>] [SPEED_MAX=<mm/s>] [ACCEL=<mm/s^2>]
-[POINT=x,y,z] [SAVE=<0|1>]`: Find the coil angle corrections that cancel
-the given harmonics (default 2, 4 and 1) of a phase stepped motor, per
-direction of motion. It first measures at which speed each harmonic
-vibrates most, then measures there with no correction, two small probe
-corrections and the resulting estimates, and keeps the best. The
-results are stored for `SAVE_CONFIG` unless `SAVE=0`. Phase stepping must
-be enabled on the stepper.
+[SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [SPEED_COUNT=<n>] [PASSES=<n>]
+[PROBE=<radians>] [ACCEL=<mm/s^2>] [POINT=x,y,z] [SAVE=<0|1>]`: Find the
+coil angle corrections that cancel the given harmonics (default 2, 4 and
+1) of a phase stepped motor, per direction of motion. A motor's error
+changes somewhat with speed, so each harmonic is measured at up to
+SPEED_COUNT (default 5) speeds between SPEED_MIN and SPEED_MAX where it is
+clearly measurable, with no correction and two small probe corrections,
+and gets the single correction that leaves the least vibration across
+those speeds relative to where it started. Limit the speed range to the
+speeds you print at to favour them. The results are stored for
+`SAVE_CONFIG` unless `SAVE=0`. Phase stepping must be enabled on the
+stepper.
 
 #### MEASURE_MOTOR_HARMONICS
 `MEASURE_MOTOR_HARMONICS STEPPER=<config_name> [SPEED_MIN=<mm/s>]

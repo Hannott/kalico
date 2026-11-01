@@ -226,25 +226,34 @@ class PhaseCalibrate:
                 rows.append((speed, motor_dir, res))
         return rows
 
-    def _measure_coherent(self, gcmd, test, speed, harmonic, passes):
-        """Average complex vibration (mm/s^2) of one harmonic per direction,
-        in phase with the motor's electrical angle."""
+    def _measure_coherent(self, gcmd, test, speeds, harmonic, passes):
+        """Average complex displacement (mm) of one harmonic per direction
+        and speed, in phase with the motor's electrical angle; returns
+        {direction: {speed: displacement}}."""
         from . import motor_harmonics
 
-        entry = [p for p in test["plan"] if p[0] == speed][0]
-        times, values, windows = self._run_test(gcmd, test, [entry] * passes)
-        freq = harmonic * speed / test["period"]
-        sums = {1: [], -1: []}
-        for _, motor_dir, begin, end in windows:
+        plan = [p for p in test["plan"] if p[0] in speeds] * passes
+        times, values, windows = self._run_test(gcmd, test, plan)
+        sums = {}
+        for speed, motor_dir, begin, end in windows:
+            omega = 2.0 * math.pi * harmonic * speed / test["period"]
             sl = motor_harmonics.window_slice(times, begin, end)
-            # Every pass starts from the same point, so the motor's angle at
-            # the window start is the same and the phases are comparable.
-            sums[motor_dir].append(
-                motor_harmonics.harmonic_amplitude(
-                    times[sl], values[sl], motor_dir * freq, t_ref=begin
-                )
+            # Every pass at a speed starts from the same point, so the
+            # motor's angle at the window start is the same and the phases
+            # are comparable.
+            amp = motor_harmonics.harmonic_amplitude(
+                times[sl],
+                values[sl],
+                motor_dir * omega / (2.0 * math.pi),
+                t_ref=begin,
             )
-        return {d: sum(v) / len(v) for d, v in sums.items()}
+            sums.setdefault(motor_dir, {}).setdefault(speed, []).append(
+                amp / omega**2
+            )
+        return {
+            d: {s: sum(v) / len(v) for s, v in by_speed.items()}
+            for d, by_speed in sums.items()
+        }
 
     def _write_csv(self, filename, stepper_name, period, rows):
         with open(filename, "w") as f:
@@ -373,12 +382,17 @@ class PhaseCalibrate:
         accel = gcmd.get_float("ACCEL", self.accel, above=0.0)
         passes = gcmd.get_int("PASSES", 2, minval=1, maxval=10)
         probe = gcmd.get_float("PROBE", 0.02, above=0.0, maxval=0.1)
-        speed_max = gcmd.get_float("SPEED_MAX", self.speed_max, above=0.0)
+        speed_min = gcmd.get_float("SPEED_MIN", self.speed_min, above=0.0)
+        speed_max = gcmd.get_float(
+            "SPEED_MAX", max(self.speed_max, speed_min), minval=speed_min
+        )
+        speed_count = gcmd.get_int("SPEED_COUNT", 5, minval=1, maxval=10)
         point = self._get_point(gcmd, toolhead)
 
-        # Calibrate each harmonic where it vibrates most: usually where its
-        # frequency meets a printer resonance, which makes it easiest to see.
-        speeds = motor_harmonics.plan_speeds(self.speed_min, speed_max, 5.0)
+        # A motor's error changes with speed (its load angle grows), so each
+        # harmonic is measured at several speeds where it is clearly seen
+        # and gets the one correction that does best across all of them.
+        speeds = motor_harmonics.plan_speeds(speed_min, speed_max, 5.0)
         test = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
         gcmd.respond_info("Finding calibration speeds for %s" % (name,))
         rows = self._measure_rows(gcmd, test, harmonics)
@@ -386,58 +400,80 @@ class PhaseCalibrate:
         directions = {1: "forward", -1: "backward"}
         lines = ["Phase stepping calibration of %s:" % (name,)]
         for harmonic in harmonics:
-            speed = motor_harmonics.pick_calibration_speed(rows, harmonic)
-            if speed is None:
+            cal_speeds = motor_harmonics.pick_calibration_speeds(
+                rows, harmonic, speed_count
+            )
+            if not cal_speeds:
                 lines.append("H%d: not measurably above noise" % (harmonic,))
                 continue
-            freq = harmonic * speed / period
-            to_um = 1000.0 / (2.0 * math.pi * freq) ** 2
 
             def measure(corr):
                 for d, label in directions.items():
                     phase_stepping.set_harmonic(label, harmonic, corr[d])
                 phase_stepping.apply_corrections()
                 return self._measure_coherent(
-                    gcmd, test, speed, harmonic, passes
+                    gcmd, test, cal_speeds, harmonic, passes
                 )
 
             gcmd.respond_info(
-                "Calibrating H%d at %.1f mm/s (%.0f Hz)"
-                % (harmonic, speed, freq)
+                "Calibrating H%d at %s mm/s"
+                % (harmonic, ", ".join("%.1f" % s for s in cal_speeds))
             )
             c0 = {
                 d: phase_stepping.get_harmonic(label, harmonic)
                 for d, label in directions.items()
             }
-            r0 = measure(c0)
-            r_real = measure({d: c0[d] + probe for d in directions})
-            r_imag = measure({d: c0[d] + 1j * probe for d in directions})
-            best, best_r, gains = dict(c0), dict(r0), {}
-            new = {}
+            d0 = measure(c0)
+            d_real = measure({d: c0[d] + probe for d in directions})
+            d_imag = measure({d: c0[d] + 1j * probe for d in directions})
+            new, gains, weights, best, best_vib, best_cost = (
+                {},
+                {},
+                {},
+                {},
+                {},
+                {},
+            )
             for d in directions:
-                new[d], gains[d], _ = motor_harmonics.estimate_correction(
-                    r0[d], r_real[d], r_imag[d], c0[d], probe
+                new[d], gains[d], weights[d] = (
+                    motor_harmonics.multi_speed_correction(
+                        d0[d], d_real[d], d_imag[d], c0[d], probe
+                    )
                 )
+                best[d], best_vib[d] = c0[d], d0[d]
+                best_cost[d] = motor_harmonics.weighted_cost(d0[d], weights[d])
             for _ in range(2):
-                r_new = measure(new)
+                vib = measure(new)
                 for d in directions:
-                    if abs(r_new[d]) < abs(best_r[d]):
-                        best[d], best_r[d] = new[d], r_new[d]
-                    if gains[d]:
-                        new[d] = best[d] - best_r[d] / gains[d]
+                    cost = motor_harmonics.weighted_cost(vib[d], weights[d])
+                    if cost < best_cost[d]:
+                        best[d], best_vib[d], best_cost[d] = (
+                            new[d],
+                            vib[d],
+                            cost,
+                        )
+                    new[d] = motor_harmonics.refine_correction(
+                        best[d], best_vib[d], gains[d], weights[d]
+                    )
             for d, label in directions.items():
                 phase_stepping.set_harmonic(label, harmonic, best[d])
             phase_stepping.apply_corrections()
             for d, label in directions.items():
+                before = [abs(v) * 1000.0 for v in d0[d].values()]
+                after = [abs(v) * 1000.0 for v in best_vib[d].values()]
                 lines.append(
-                    "H%d %s at %.1f mm/s: %.3f um -> %.3f um (correction"
-                    " %.4f rad at %.2f rad)"
+                    "H%d %s over %.0f-%.0f mm/s: worst %.3f -> %.3f um,"
+                    " average %.3f -> %.3f um (correction %.4f rad at %.2f"
+                    " rad)"
                     % (
                         harmonic,
                         label,
-                        speed,
-                        abs(r0[d]) * to_um,
-                        abs(best_r[d]) * to_um,
+                        cal_speeds[0],
+                        cal_speeds[-1],
+                        max(before),
+                        max(after),
+                        sum(before) / len(before),
+                        sum(after) / len(after),
                         min(abs(best[d]), CORRECTION_LIMIT_RAD),
                         math.atan2(best[d].imag, best[d].real),
                     )
