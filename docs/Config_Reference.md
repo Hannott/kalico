@@ -2502,12 +2502,12 @@ accel_chip:
 #point:
 #   An X, Y, Z position to run the test around. The default is the
 #   current toolhead position.
-#speed_min: 10
+#speed_min: 30
 #speed_max: 160
 #speed_step: 5
 #   The range and step of motor speeds to test, in mm/s of motor travel.
 #   On a CoreXY printer, a motor speed of v moves the toolhead at
-#   v*0.707 mm/s. The defaults are 10, 160 and 5.
+#   v*0.707 mm/s. The defaults are 30, 160 and 5.
 #accel: 2000
 #   The acceleration used to reach each test speed or speed ramp, in
 #   mm/s^2 of motor travel. The default is 2000.

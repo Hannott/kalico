@@ -38,7 +38,7 @@ class PhaseCalibrate:
         self.printer = config.get_printer()
         self.accel_chip_name = config.get("accel_chip").strip()
         self.point = config.getfloatlist("point", None, count=3)
-        self.speed_min = config.getfloat("speed_min", 10.0, above=0.0)
+        self.speed_min = config.getfloat("speed_min", 30.0, above=0.0)
         self.speed_max = config.getfloat(
             "speed_max", 160.0, minval=self.speed_min
         )
