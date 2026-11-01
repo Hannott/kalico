@@ -2473,6 +2473,9 @@ direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
 #swap_coils: True
 #   Swap the two coil currents when writing them in direct mode, as
 #   Trinamic drivers expect. The default is True.
+#auto_enable: False
+#   Enable phase stepping after each homing of this stepper. The
+#   default is False.
 ```
 
 ## Config file helpers

@@ -1,7 +1,7 @@
 # Phase stepping
 
-**This feature is experimental and incomplete.** It can currently only
-run a test move; printing with it is not supported yet.
+**This feature is experimental.** It follows normal motion but does not
+yet correct the motor's own position errors.
 
 Phase stepping drives a stepper motor by setting its two coil currents
 directly, many thousand times a second, instead of sending step pulses
@@ -34,6 +34,24 @@ Add a section for each stepper to drive this way:
 ```
 [phase_stepping stepper_x]
 ```
+
+## Enabling it
+
+```
+PHASE_STEPPING_ENABLE STEPPER=stepper_x
+```
+
+The step pulses keep running as before, so homing and position tracking
+work unchanged; the driver ignores them for its coils while phase stepping
+is enabled but keeps counting them. Phase stepping turns off by itself for
+homing moves of the stepper and returns afterwards, and turns off when the
+motors are disabled. Set `auto_enable: True` to turn it on after each
+homing. `FORCE_MOVE` and `STEPPER_BUZZ` do not move a phase stepped motor:
+disable phase stepping first with `ENABLE=0`.
+
+When it is disabled, the command warns if the driver's step position and
+the phase ended apart by more than half a microstep, which would point to
+a wrong direction or lost steps.
 
 ## Test move
 
