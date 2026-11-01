@@ -84,11 +84,13 @@ class PhaseCalibrate:
             "PHASE_STEPPING_CALIBRATE",
             self.cmd_PHASE_STEPPING_CALIBRATE,
             desc=self.cmd_PHASE_STEPPING_CALIBRATE_help,
+            params=self.cmd_PHASE_STEPPING_CALIBRATE_params,
         )
         self.gcode.register_command(
             "MEASURE_MOTOR_HARMONICS",
             self.cmd_MEASURE_MOTOR_HARMONICS,
             desc=self.cmd_MEASURE_MOTOR_HARMONICS_help,
+            params=self.cmd_MEASURE_MOTOR_HARMONICS_params,
         )
 
     def _handle_connect(self):
@@ -564,6 +566,20 @@ class PhaseCalibrate:
         "Measure the vibration of one stepper motor at harmonics of its"
         " electrical frequency"
     )
+    cmd_MEASURE_MOTOR_HARMONICS_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "SPEED_MIN": {"type": "float", "required": False},
+        "SPEED_MAX": {"type": "float", "required": False},
+        "SPEED_STEP": {"type": "float", "required": False},
+        "ACCEL": {"type": "float", "required": False},
+        "RAMP": {"type": "int", "default": 1},
+        "RAMP_ACCEL": {"type": "float", "required": False},
+        "GRAPH": {"type": "int", "required": False},
+        # Read by the _get_*() helpers, not directly in this method
+        "HARMONICS": {"type": "string", "required": False},
+        "NAME": {"type": "string", "required": False},
+        "POINT": {"type": "string", "required": False},
+    }
 
     def cmd_MEASURE_MOTOR_HARMONICS(self, gcmd):
         try:
@@ -638,6 +654,23 @@ class PhaseCalibrate:
         "Find the angle corrections that cancel a phase stepped motor's"
         " harmonics"
     )
+    cmd_PHASE_STEPPING_CALIBRATE_params = {
+        "STEPPER": {"type": "string", "required": True},
+        "HARMONICS": {"type": "string", "default": "2,4,1"},
+        "ACCEL": {"type": "float", "required": False},
+        "PASSES": {"type": "int", "default": 2},
+        "PROBE": {"type": "float", "default": 0.02},
+        "SPEED_MIN": {"type": "float", "required": False},
+        "SPEED_MAX": {"type": "float", "required": False},
+        "SPEED_COUNT": {"type": "int", "default": 5},
+        "RAMP": {"type": "int", "default": 1},
+        "RAMP_ACCEL": {"type": "float", "required": False},
+        "GRAPH": {"type": "int", "required": False},
+        "SAVE": {"type": "int", "default": 1},
+        # Read by the _get_*() helpers, not directly in this method
+        "NAME": {"type": "string", "required": False},
+        "POINT": {"type": "string", "required": False},
+    }
 
     def cmd_PHASE_STEPPING_CALIBRATE(self, gcmd):
         try:
