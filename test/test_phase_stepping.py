@@ -283,3 +283,74 @@ def test_driver_writes_keep_direct_mode_and_its_current():
     }
     assert fields.get_field("ihold", fields.registers["IHOLD_IRUN"]) == 10
     assert fields.get_field("en_pwm_mode", fields.registers["GCONF"]) == 1
+
+
+class _Gcode:
+    def __init__(self, handler):
+        self.handlers = {"FORCE_MOVE": handler}
+        self.gcode_help = {"FORCE_MOVE": "Manually move a stepper"}
+
+    def register_command(self, cmd, func, desc=None):
+        if func is None:
+            return self.handlers.pop(cmd, None)
+        self.handlers[cmd] = func
+        self.gcode_help[cmd] = desc
+
+
+class _GCmd:
+    def __init__(self, stepper):
+        self.stepper = stepper
+
+    def get(self, name, default=None):
+        return self.stepper if name == "STEPPER" else default
+
+
+def test_force_move_runs_with_phase_stepping_off():
+    calls = []
+    obj = _bare_phase_stepping(object(), False)
+    obj.stepper_name = "stepper_x"
+    obj.gcode = _Gcode(lambda gcmd: calls.append(("move", obj.active)))
+    obj._motor_enabled = lambda: True
+    obj._wrap_step_command("FORCE_MOVE")
+    obj._wrap_step_command("STEPPER_BUZZ")
+    assert "STEPPER_BUZZ" not in obj.gcode.handlers
+    run = obj.gcode.handlers["FORCE_MOVE"]
+    assert obj.gcode.gcode_help["FORCE_MOVE"] == "Manually move a stepper"
+    obj.active = True
+    run(_GCmd("stepper_x"))
+    assert calls == [("move", False)] and obj.active
+    # Other steppers move with phase stepping left alone
+    run(_GCmd("stepper_y"))
+    assert calls[-1] == ("move", True)
+    # A motor turned off by the command stays off
+    obj._motor_enabled = lambda: False
+    run(_GCmd("stepper_x"))
+    assert calls[-1] == ("move", False) and not obj.active
+
+
+def test_stats_report_lead_and_mcu_counters():
+    obj = ps.PhaseStepping.__new__(ps.PhaseStepping)
+    obj.stepper_name = "stepper_x"
+    obj.active = False
+    assert obj.stats(0.0) == (False, "phase_stepping_stepper_x: off")
+    obj.active = True
+    obj.lead_min, obj.generate_max = 0.2312, 0.0042
+    obj.mcu = type("M", (), {"get_constants": lambda s: {"CLOCK_FREQ": 1e6}})()
+    obj.mcu_stats = {
+        "lost_ticks": 2,
+        "locked_ticks": 7,
+        "pair_timeouts": 0,
+        "max_cycles": 3,
+        "avg_cycles": 1,
+    }
+    active, msg = obj.stats(0.0)
+    assert active
+    assert msg == (
+        "phase_stepping_stepper_x: lead_min=0.231 generate_max=0.0042"
+        " lost_ticks=2 locked_ticks=7 pair_timeouts=0 update_max_us=3.0"
+        " update_avg_us=1.0"
+    )
+    # Each interval starts over
+    assert obj.stats(0.0)[1] == (
+        "phase_stepping_stepper_x: lead_min=- generate_max=0.0000"
+    )

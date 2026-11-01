@@ -2,6 +2,7 @@
 # MCU: replay the exact commands sent to a fake MCU the way
 # src/phase_stepper.c executes them and check the timing, queue flow
 # control and position resets against the planned motion.
+import contextlib
 import math
 import os
 import sys
@@ -39,6 +40,9 @@ class Reactor:
 
     def pause(self, waketime):
         self.t = max(self.t + 0.001, waketime)
+
+    def mutex(self):
+        return contextlib.nullcontext()
 
 
 class Cmd:
@@ -253,7 +257,12 @@ class Printer:
             "toolhead": toolhead,
             "stepper_enable": StepperEnable(),
             "gcode": type(
-                "G", (), {"register_mux_command": lambda *a, **k: 0}
+                "G",
+                (),
+                {
+                    "register_mux_command": lambda *a, **k: 0,
+                    "register_command": lambda *a, **k: None,
+                },
             )(),
             "configfile": Configfile(),
         }
@@ -263,6 +272,9 @@ class Printer:
 
     def lookup_object(self, name, default=None):
         return self.objs.get(name, default)
+
+    def lookup_objects(self, module=None):
+        return []
 
     def get_reactor(self):
         return self.reactor

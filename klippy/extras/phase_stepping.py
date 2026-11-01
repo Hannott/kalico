@@ -6,6 +6,7 @@
 import collections
 import logging
 import math
+import time
 
 from klippy import chelper
 
@@ -29,6 +30,9 @@ SEG_BUFFER = 4096
 PG_ERR_FULL = -1
 DRAIN_TIMEOUT = 2.0
 START_DELAY = 0.250
+STATS_INTERVAL = 1.0
+# Motion queued closer to its start than this is reported in the log
+LEAD_WARNING = 0.050
 DEFAULT_TMC_FREQ = 12000000.0
 REVERSE_DWELL = 0.100
 QUERY_INTERVAL = 0.050
@@ -401,6 +405,13 @@ class PhaseStepping:
         self.seg_buf = self.ffi_main.new("struct phasegen_seg[]", SEG_BUFFER)
         self.stepper = None
         self.active = False
+        # Since the last stats line: least time between queueing a motion
+        # start and its start, longest segment generation, MCU counters
+        self.lead_min = None
+        self.generate_max = 0.0
+        self.mcu_stats = None
+        self.peers = []
+        self.query_mutex = self.printer.get_reactor().mutex()
         # The driver is in direct mode (also during PHASE_STEPPING_TEST)
         self.direct = False
         self._guard_driver_writes()
@@ -502,6 +513,84 @@ class PhaseStepping:
             if stepper.get_name() == self.stepper_name:
                 self.stepper = stepper
         toolhead.register_step_generator(self._generate)
+        for cmd in ("FORCE_MOVE", "STEPPER_BUZZ"):
+            self._wrap_step_command(cmd)
+        # The MCU's counters are shared by its phase steppers and a query
+        # resets them, so one of them collects them for all
+        peers = [
+            obj
+            for name, obj in self.printer.lookup_objects("phase_stepping")
+            if obj.mcu is self.mcu
+        ]
+        if peers and peers[0] is self:
+            self.peers = peers
+            reactor = self.printer.get_reactor()
+            reactor.register_timer(self._collect_mcu_stats, reactor.NOW)
+
+    def _wrap_step_command(self, cmd):
+        """FORCE_MOVE and STEPPER_BUZZ move a stepper by step pulses, which
+        the driver ignores in direct mode: turn phase stepping off around
+        them."""
+        gcode = self.gcode
+        handler = gcode.register_command(cmd, None)
+        if handler is None:
+            return
+        kwargs = {"desc": gcode.gcode_help.get(cmd)}
+        params = getattr(gcode, "gcode_params", {}).get(cmd)
+        if params is not None:
+            kwargs["params"] = params
+
+        def run(gcmd):
+            if (
+                not self.active
+                or gcmd.get("STEPPER", None) != self.stepper_name
+            ):
+                return handler(gcmd)
+            self._report_disagreement(self._disable(), gcmd)
+            try:
+                handler(gcmd)
+            finally:
+                if self._motor_enabled():
+                    self._enable()
+
+        gcode.register_command(cmd, run, **kwargs)
+
+    def _query(self):
+        # The stats timer queries too, and two queries of one oid at once
+        # would take each other's response
+        with self.query_mutex:
+            return self.query_cmd.send([self.oid])
+
+    def _collect_mcu_stats(self, eventtime):
+        if any(peer.active for peer in self.peers):
+            try:
+                self.mcu_stats = self._query()
+            except self.printer.command_error:
+                return self.printer.get_reactor().NEVER
+        return eventtime + STATS_INTERVAL
+
+    def stats(self, eventtime):
+        msg = "phase_stepping_%s:" % (self.stepper_name,)
+        if not self.active:
+            return False, msg + " off"
+        lead = "-" if self.lead_min is None else "%.3f" % (self.lead_min,)
+        msg += " lead_min=%s generate_max=%.4f" % (lead, self.generate_max)
+        self.lead_min, self.generate_max = None, 0.0
+        state, self.mcu_stats = self.mcu_stats, None
+        if state is not None:
+            cycle_us = 1000000.0 / self.mcu.get_constants()["CLOCK_FREQ"]
+            msg += (
+                " lost_ticks=%d locked_ticks=%d pair_timeouts=%d"
+                " update_max_us=%.1f update_avg_us=%.1f"
+                % (
+                    state["lost_ticks"],
+                    state["locked_ticks"],
+                    state["pair_timeouts"],
+                    state["max_cycles"] * cycle_us,
+                    state["avg_cycles"] * cycle_us,
+                )
+            )
+        return True, msg
 
     def get_status(self, eventtime):
         return {
@@ -636,11 +725,15 @@ class PhaseStepping:
         self.mcu_tmc.set_register("GCONF", registers.get("GCONF", 0))
         self.mcu_tmc.set_register("IHOLD_IRUN", registers["IHOLD_IRUN"])
 
+    def _motor_enabled(self):
+        stepper_enable = self.printer.lookup_object("stepper_enable")
+        return stepper_enable.lookup_enable(
+            self.stepper_name
+        ).is_motor_enabled()
+
     def _check_driver_ready(self):
         error = self.printer.command_error
-        stepper_enable = self.printer.lookup_object("stepper_enable")
-        enable_line = stepper_enable.lookup_enable(self.stepper_name)
-        if not enable_line.is_motor_enabled():
+        if not self._motor_enabled():
             raise error("'%s' is not enabled" % (self.stepper_name,))
         mcu_tmc = self.mcu_tmc
         fields = mcu_tmc.get_fields()
@@ -691,7 +784,7 @@ class PhaseStepping:
             self.start_cmd.send(
                 [self.oid, start_clock & MASK32, start_phase, self.amplitude]
             )
-            state = self.query_cmd.send([self.oid])
+            state = self._query()
         except self.printer.command_error:
             self._leave_direct()
             raise
@@ -732,9 +825,11 @@ class PhaseStepping:
         if not self.active:
             return
         self._update_sk()
+        begin = time.perf_counter()
         num = self.ffi_lib.phasegen_generate(
             self.pg, flush_time, self.seg_buf, SEG_BUFFER
         )
+        self.generate_max = max(self.generate_max, time.perf_counter() - begin)
         if num < 0:
             self.active = False
             self.printer.invoke_shutdown(
@@ -763,6 +858,22 @@ class PhaseStepping:
                     minclock=minclock,
                     reqclock=reqclock,
                 )
+                self._note_lead(reqclock)
+
+    def _note_lead(self, clock):
+        """Track how far ahead of its start a motion was queued; the MCU
+        shuts down if it arrives late."""
+        mcu = self.mcu
+        now = mcu.estimated_print_time(self.printer.get_reactor().monotonic())
+        lead = mcu.clock_to_print_time(clock) - now
+        if self.lead_min is None or lead < self.lead_min:
+            self.lead_min = lead
+        if lead < LEAD_WARNING:
+            logging.warning(
+                "Phase stepping %s: motion queued only %.3f s before it starts",
+                self.stepper_name,
+                lead,
+            )
 
     def _describe_failure(self, code):
         if code == PG_ERR_FULL:
@@ -783,7 +894,7 @@ class PhaseStepping:
             self.printer.lookup_object("toolhead").wait_moves()
             reactor = self.printer.get_reactor()
             end = reactor.monotonic() + DRAIN_TIMEOUT
-            while self.query_cmd.send([self.oid])["pending"]:
+            while self._query()["pending"]:
                 if reactor.monotonic() > end:
                     break
                 reactor.pause(reactor.monotonic() + QUERY_INTERVAL)
@@ -967,7 +1078,7 @@ class PhaseStepping:
             eventtime = reactor.monotonic()
             est = self.mcu.estimated_print_time(eventtime)
             if est > end_time:
-                state = self.query_cmd.send([self.oid])
+                state = self._query()
                 if not state["pending"]:
                     return state, samples
                 if est > end_time + 2.0:
@@ -1042,7 +1153,7 @@ class PhaseStepping:
         ticks = sum(m[0] for m in moves)
         start_phase = mscnt << MSCNT_SHIFT
 
-        self.query_cmd.send([self.oid])
+        self._query()
         self._enter_direct(start_phase, amplitude)
         completed = False
         try:

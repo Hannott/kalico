@@ -8,6 +8,13 @@ to the driver. This is the basis for correcting the motor's own
 position errors, which cause vertical fine artifacts (VFA). See
 [motor harmonics](Motor_Harmonics.md) for how to measure them.
 
+The technique comes from Prusa Research, whose
+[Prusa-Firmware-Buddy](https://github.com/prusa3d/Prusa-Firmware-Buddy)
+introduced phase stepping and its accelerometer based correction for
+their printers. This implementation is written for Kalico's split
+between the host, which plans the motion, and the micro-controller,
+which drives the coils.
+
 ## Requirements
 
 - A Trinamic driver on SPI that supports direct mode: TMC2130, TMC2160,
@@ -52,8 +59,8 @@ work unchanged; the driver ignores them for its coils while phase stepping
 is enabled but keeps counting them. Phase stepping turns off by itself for
 homing moves of the stepper and returns afterwards, and turns off when the
 motors are disabled. Set `auto_enable: True` to turn it on after each
-homing. `FORCE_MOVE` and `STEPPER_BUZZ` do not move a phase stepped motor:
-disable phase stepping first with `ENABLE=0`.
+homing. `FORCE_MOVE` and `STEPPER_BUZZ` turn it off for their stepper
+while they run and back on afterwards if the motor is still enabled.
 
 When it is disabled, the command warns if the driver's step position and
 the phase ended apart by more than half a microstep, which would point to
@@ -105,3 +112,17 @@ being updated.
 
 If the test is interrupted, the motors are turned off, because the motor
 may have stopped anywhere along the move. Home again before continuing.
+
+## Diagnostics
+
+While phase stepping is on, the statistics lines in the log include, for
+each stepper, `lead_min` (the shortest time between queueing the start of
+a motion and that start; the micro-controller shuts down with "Phase
+stepper move too late" if it reaches zero) and `generate_max` (the longest
+time spent computing coil updates in one batch). One stepper per
+micro-controller also reports its lost and bus locked updates, unfinished
+driver register reads (`pair_timeouts`) and update times. A warning is
+logged when a motion is queued less than 50 ms before it starts.
+
+The driver module's periodic checks keep running in direct mode: a driver
+error or reset shuts the printer down as it would without phase stepping.
