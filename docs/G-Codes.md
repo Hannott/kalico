@@ -1281,13 +1281,14 @@ coil angle corrections that cancel the given harmonics (default 2, 4 and
 those harmonics are cleared first, so the result does not depend on an
 earlier calibration. It then ramps the motor through the speed range as
 `MEASURE_MOTOR_HARMONICS` does (or with `RAMP=0` steps through constant
-speeds) to find where each harmonic is clearly measurable. A motor's error changes somewhat with speed, so each
-harmonic is then measured at constant speed at up to SPEED_COUNT
-(default 5) of those speeds between SPEED_MIN and SPEED_MAX, with no
-correction and two small probe corrections,
-and gets the single correction that leaves the least vibration across
-those speeds relative to the uncorrected motor. Limit the speed range to
-the speeds you print at to favour them. The results are stored for
+speeds) to find where each harmonic vibrates most. A motor's error
+changes somewhat with speed, so each harmonic is then measured at
+constant speed at up to SPEED_COUNT (default 5) of those speeds between
+SPEED_MIN and SPEED_MAX, picked around its largest peaks, with no
+correction and two small probe corrections, and gets the single
+correction that leaves the least worst vibration across those speeds.
+Limit the speed range to the speeds you print at, so that peaks at
+other speeds don't take priority. The results are stored for
 `SAVE_CONFIG` unless `SAVE=0`. Phase stepping must be enabled on the
 stepper. With `GRAPH=1` (default from the `graph` config option) it also
 measures all speeds again after calibrating, and writes the sweeps before

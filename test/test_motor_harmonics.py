@@ -171,8 +171,8 @@ def test_pick_calibration_speed_needs_both_directions():
         (40.0, -1, res(2.8)),
         (60.0, 1, res(9.0)),  # backward missing
     ]
-    assert mh.pick_calibration_speed(rows, 2) == 40.0
-    assert mh.pick_calibration_speed(rows, 4) is None
+    assert mh.pick_calibration_speeds(rows, 2, 1) == [40.0]
+    assert mh.pick_calibration_speeds(rows, 4, 1) == []
 
 
 def test_coherent_amplitude_keeps_phase_relative_to_reference():
@@ -194,7 +194,7 @@ def test_multi_speed_correction_finds_a_shared_optimum():
     target = 0.025 * np.exp(1j * 1.1)
     vib = _linear(gains, {s: target for s in gains})
     c0 = 0.0j
-    new, est_gains, weights = mh.multi_speed_correction(
+    new, est_gains = mh.multi_speed_correction(
         vib(c0), vib(c0 + 0.02), vib(c0 + 0.02j), c0, 0.02
     )
     assert new == pytest.approx(target)
@@ -202,9 +202,11 @@ def test_multi_speed_correction_finds_a_shared_optimum():
         assert est_gains[s] == pytest.approx(gains[s])
 
 
-def test_multi_speed_correction_balances_speed_dependent_errors():
-    # The best correction differs per speed, as when the load angle grows
+def test_multi_speed_correction_minimises_the_worst_speed():
+    # The best correction differs per speed, as when the load angle grows,
+    # and one speed vibrates far more than the others
     gains = {s: 1e-2 * np.exp(1j * 0.3 * s / 10.0) for s in (10.0, 30.0, 50.0)}
+    gains[50.0] *= 5.0
     targets = {
         10.0: 0.03 * np.exp(1j * 0.0),
         30.0: 0.03 * np.exp(1j * 0.6),
@@ -213,33 +215,41 @@ def test_multi_speed_correction_balances_speed_dependent_errors():
     vib = _linear(gains, targets)
     c0 = 0.0j
     d0 = vib(c0)
-    new, est_gains, weights = mh.multi_speed_correction(
+    new, est_gains = mh.multi_speed_correction(
         d0, vib(c0 + 0.02), vib(c0 + 0.02j), c0, 0.02
     )
-    cost = mh.weighted_cost(vib(new), weights)
-    for single in targets.values():
-        assert cost < mh.weighted_cost(vib(single), weights)
-    assert cost < mh.weighted_cost(d0, weights)
-    # A Gauss-Newton step from the optimum stays there
-    assert mh.refine_correction(new, vib(new), est_gains, weights) == (
-        pytest.approx(new)
+    worst = mh.worst_vibration(vib(new))
+    grid = np.linspace(-0.05, 0.05, 201)
+    best_on_grid = min(
+        mh.worst_vibration(vib(complex(re, im))) for re in grid for im in grid
+    )
+    assert worst <= best_on_grid * 1.001
+    assert worst < 0.25 * mh.worst_vibration(d0)
+    # A step from the optimum stays there
+    assert mh.refine_correction(new, vib(new), est_gains) == (
+        pytest.approx(new, abs=1e-6)
     )
 
 
-def test_pick_calibration_speeds_spreads_over_the_usable_range():
+def test_pick_calibration_speeds_covers_the_peaks():
     def res(disp):
-        return mh.HarmonicResult(4, 100.0, 1.0, disp, 1e-5)
+        return mh.HarmonicResult(2, 100.0, 1.0, disp, 1e-5)
 
+    # Two resonance peaks over a slope, quiet above 110 mm/s
+    level = {s: 1e-3 * (1.0 - s / 200.0) for s in range(30, 161, 5)}
+    level[60] = level[65] = 8e-3
+    level[70] = 6e-3
+    level[95] = 4e-3
+    for s in range(115, 161, 5):
+        level[s] = 1e-6
     rows = []
-    for speed in range(10, 101, 5):
-        disp = 1e-3 if speed <= 70 else 1e-6
+    for speed, disp in level.items():
         rows += [(float(speed), 1, res(disp)), (float(speed), -1, res(disp))]
-    picked = mh.pick_calibration_speeds(rows, 4, 4)
-    assert picked == [10.0, 30.0, 50.0, 70.0]
-    assert mh.pick_calibration_speeds(rows, 4, 20) == [
-        float(s) for s in range(10, 71, 5)
-    ]
-    assert mh.pick_calibration_speeds(rows, 2, 4) == []
+    picked = mh.pick_calibration_speeds(rows, 2, 4)
+    assert picked == [30.0, 60.0, 70.0, 95.0]
+    assert mh.pick_calibration_speeds(rows, 2, 1) == [60.0]
+    assert len(mh.pick_calibration_speeds(rows, 2, 20)) == 17
+    assert mh.pick_calibration_speeds(rows, 4, 4) == []
 
 
 def _synthetic_ramp(ramp, disp_by_harmonic, noise=0.0):
