@@ -20,6 +20,7 @@ SWAP_COILS = 1
 START_DELAY = 0.250
 REVERSE_DWELL = 0.100
 QUERY_INTERVAL = 0.050
+STEP_TEST_SPEED = 10.0
 # Allowed difference between MSCURACT and the expected sine table value, as
 # a fraction of the current amplitude.
 MAPPING_TOL = 0.08
@@ -278,6 +279,13 @@ class PhaseStepping:
             self.stepper_name,
             self.cmd_PHASE_STEPPING_TEST,
             desc=self.cmd_PHASE_STEPPING_TEST_help,
+        )
+        self.gcode.register_mux_command(
+            "PHASE_STEPPING_STEP_TEST",
+            "STEPPER",
+            self.stepper_name,
+            self.cmd_PHASE_STEPPING_STEP_TEST,
+            desc=self.cmd_PHASE_STEPPING_STEP_TEST_help,
         )
 
     def _build_config(self):
@@ -550,6 +558,106 @@ class PhaseStepping:
         else:
             msg.append("Returned to the start phase (MSCNT %d)" % (mscnt,))
         gcmd.respond_info("\n".join(msg))
+
+    cmd_PHASE_STEPPING_STEP_TEST_help = (
+        "Check how the driver's microstep counter follows step pulses in"
+        " normal and in direct mode"
+    )
+
+    def cmd_PHASE_STEPPING_STEP_TEST(self, gcmd):
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.wait_moves()
+        kin, stepper = self._lookup_stepper(gcmd)
+        stepper_enable = self.printer.lookup_object("stepper_enable")
+        if not stepper_enable.lookup_enable(
+            self.stepper_name
+        ).is_motor_enabled():
+            raise gcmd.error("'%s' is not enabled" % (self.stepper_name,))
+        period = motor_kinematics.stepper_electrical_period(
+            self.printer, stepper
+        )
+        if period is None:
+            raise gcmd.error(
+                "Cannot find microsteps for '%s'" % (self.stepper_name,)
+            )
+        # A whole number of periods plus a quarter: big enough to see, and
+        # the counter (1024 per period) ends 256 away from where it began.
+        distance = gcmd.get_float(
+            "DISTANCE", 6.25 * period, above=0.0, maxval=20.0
+        )
+        expected = 1024.0 * distance / period
+        force_move = self.printer.lookup_object("force_move")
+        mcu_tmc = self.mcu_tmc
+        fields = mcu_tmc.get_fields()
+
+        def mscnt():
+            return self._read_field("MSCNT", "mscnt")
+
+        def move(dist):
+            force_move.manual_move(stepper, dist, STEP_TEST_SPEED)
+            toolhead.wait_moves()
+
+        def wrap(delta):
+            return (delta + 512) % 1024 - 512
+
+        start = mscnt()
+        move(distance)
+        after_step = mscnt()
+        move(-distance)
+        back_step = mscnt()
+
+        gconf = fields.registers.get("GCONF", 0)
+        ihold_irun = fields.registers.get("IHOLD_IRUN", 0)
+        run_current = with_field(
+            fields, "ihold", fields.get_field("irun", ihold_irun), ihold_irun
+        )
+        direct_gconf = with_field(fields, "en_pwm_mode", 0, gconf)
+        direct_gconf = with_field(fields, "direct_mode", 1, direct_gconf)
+        completed = False
+        try:
+            mcu_tmc.set_register("IHOLD_IRUN", run_current)
+            mcu_tmc.tmc_spi.reg_write(
+                self.direct_reg,
+                coil_value(
+                    back_step << MSCNT_SHIFT, self.amplitude, self.swap_coils
+                ),
+                mcu_tmc.chain_pos,
+            )
+            mcu_tmc.set_register("GCONF", direct_gconf)
+            move(distance)
+            after_direct = mscnt()
+            move(-distance)
+            back_direct = mscnt()
+            completed = True
+        finally:
+            mcu_tmc.set_register("GCONF", gconf)
+            mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
+            if not completed:
+                stepper_enable.motor_off()
+
+        expected_mod = wrap(int(round(expected)))
+        gcmd.respond_info(
+            "Step test on %s: %.3f mm forward and back (%.0f counter units)\n"
+            "Normal mode: counter %d -> %d -> %d (forward %+d, expected %+d"
+            " for this direction)\n"
+            "Direct mode: counter %d -> %d -> %d (forward %+d)\n"
+            "The motor should move in normal mode and stay still in direct"
+            " mode; tell which you saw."
+            % (
+                self.stepper_name,
+                distance,
+                expected,
+                start,
+                after_step,
+                back_step,
+                wrap(after_step - start),
+                expected_mod,
+                back_step,
+                after_direct,
+                back_direct,
+                wrap(after_direct - back_step),
+            )
+        )
 
 
 def load_config_prefix(config):
