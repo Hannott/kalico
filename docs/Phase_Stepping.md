@@ -5,7 +5,8 @@
 Phase stepping drives a stepper motor by setting its two coil currents
 directly, many thousand times a second, instead of sending step pulses
 to the driver. This is the basis for correcting the motor's own
-position errors, which cause vertical fine artifacts (VFA).
+position errors, which cause vertical fine artifacts (VFA). See
+[motor harmonics](Motor_Harmonics.md) for how to measure them.
 
 The technique comes from Prusa Research, whose
 [Prusa-Firmware-Buddy](https://github.com/prusa3d/Prusa-Firmware-Buddy)
@@ -67,6 +68,24 @@ while they run and back on afterwards if the motor is still enabled.
 When it is disabled, the command warns if the driver's step position and
 the phase ended apart by more than half a microstep, which would point to
 a wrong direction or lost steps.
+
+## Calibration
+
+With phase stepping enabled and the accelerometer from
+[phase_calibrate](Config_Reference.md#phase_calibrate) on the toolhead,
+run for each motor:
+
+```
+PHASE_STEPPING_CALIBRATE STEPPER=stepper_x
+PHASE_STEPPING_CALIBRATE STEPPER=stepper_y
+SAVE_CONFIG
+```
+
+The correction shifts the coil current angle so that the rotor lands
+where it should; it is measured and stored separately for each motor and
+direction. A motor's error changes somewhat with speed, so each harmonic
+is calibrated over several speeds; use `SPEED_MIN` and `SPEED_MAX` to
+favour the speeds you print walls at. Compare with `MEASURE_MOTOR_HARMONICS` before and after.
 
 ## Test move
 
