@@ -186,3 +186,57 @@ def pick_calibration_speed(rows, harmonic, min_snr=5.0):
         if best is None or score > best[0]:
             best = (score, speed)
     return best[1] if best else None
+
+
+def pick_calibration_speeds(rows, harmonic, count, min_snr=5.0, min_disp=1e-4):
+    """Up to count speeds spread over those where a harmonic clearly
+    vibrates in both directions (min_disp in mm)."""
+    by_speed = {}
+    for speed, motor_dir, res in rows:
+        if res.harmonic != harmonic or res.disp is None:
+            continue
+        floor = min_disp
+        if res.noise_disp is not None:
+            floor = max(floor, min_snr * res.noise_disp)
+        if res.disp >= floor:
+            by_speed.setdefault(speed, set()).add(motor_dir)
+    usable = sorted(s for s, dirs in by_speed.items() if len(dirs) == 2)
+    if len(usable) <= count:
+        return usable
+    if count == 1:
+        return [pick_calibration_speed(rows, harmonic, min_snr)]
+    step = (len(usable) - 1) / (count - 1)
+    return [usable[int(round(i * step))] for i in range(count)]
+
+
+def _weighted_step(c, vib, gains, weights):
+    num = sum(weights[s] * gains[s].conjugate() * vib[s] for s in vib)
+    den = sum(weights[s] * abs(gains[s]) ** 2 for s in vib)
+    return c - num / den if den else c
+
+
+def multi_speed_correction(d0, d_real, d_imag, c0, delta):
+    """Correction that best cancels a harmonic over several speeds.
+
+    Each argument d* maps speed to the complex vibration measured with the
+    correction at c0, c0 + delta and c0 + 1j*delta. Every speed responds
+    linearly but differently, so a single correction minimises the sum of
+    squared vibration, each speed weighted by its uncorrected level so that
+    all speeds count alike. Returns (correction, gains, weights).
+    """
+    gains = {
+        s: 0.5
+        * ((d_real[s] - d0[s]) / delta + (d_imag[s] - d0[s]) / (1j * delta))
+        for s in d0
+    }
+    weights = {s: 1.0 / abs(d0[s]) ** 2 if abs(d0[s]) else 0.0 for s in d0}
+    return _weighted_step(c0, d0, gains, weights), gains, weights
+
+
+def refine_correction(c, vib, gains, weights):
+    """Gauss-Newton step from correction c, which gave vibration vib."""
+    return _weighted_step(c, vib, gains, weights)
+
+
+def weighted_cost(vib, weights):
+    return sum(weights[s] * abs(v) ** 2 for s, v in vib.items())

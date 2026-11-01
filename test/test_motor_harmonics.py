@@ -182,3 +182,61 @@ def test_coherent_amplitude_keeps_phase_relative_to_reference():
     amp = mh.harmonic_amplitude(late, values[100:], 80.0, t_ref=10.0)
     assert abs(amp) == pytest.approx(2.0, rel=0.02)
     assert np.angle(amp) == pytest.approx(0.9, abs=0.02)
+
+
+def _linear(gains, targets):
+    """Vibration per speed for a correction c: gain * (c - target)."""
+    return lambda c: {s: gains[s] * (c - targets[s]) for s in gains}
+
+
+def test_multi_speed_correction_finds_a_shared_optimum():
+    gains = {20.0: 3e-2 * np.exp(1j * 0.4), 60.0: 8e-3 * np.exp(-1j * 2.0)}
+    target = 0.025 * np.exp(1j * 1.1)
+    vib = _linear(gains, {s: target for s in gains})
+    c0 = 0.0j
+    new, est_gains, weights = mh.multi_speed_correction(
+        vib(c0), vib(c0 + 0.02), vib(c0 + 0.02j), c0, 0.02
+    )
+    assert new == pytest.approx(target)
+    for s in gains:
+        assert est_gains[s] == pytest.approx(gains[s])
+
+
+def test_multi_speed_correction_balances_speed_dependent_errors():
+    # The best correction differs per speed, as when the load angle grows
+    gains = {s: 1e-2 * np.exp(1j * 0.3 * s / 10.0) for s in (10.0, 30.0, 50.0)}
+    targets = {
+        10.0: 0.03 * np.exp(1j * 0.0),
+        30.0: 0.03 * np.exp(1j * 0.6),
+        50.0: 0.03 * np.exp(1j * 1.2),
+    }
+    vib = _linear(gains, targets)
+    c0 = 0.0j
+    d0 = vib(c0)
+    new, est_gains, weights = mh.multi_speed_correction(
+        d0, vib(c0 + 0.02), vib(c0 + 0.02j), c0, 0.02
+    )
+    cost = mh.weighted_cost(vib(new), weights)
+    for single in targets.values():
+        assert cost < mh.weighted_cost(vib(single), weights)
+    assert cost < mh.weighted_cost(d0, weights)
+    # A Gauss-Newton step from the optimum stays there
+    assert mh.refine_correction(new, vib(new), est_gains, weights) == (
+        pytest.approx(new)
+    )
+
+
+def test_pick_calibration_speeds_spreads_over_the_usable_range():
+    def res(disp):
+        return mh.HarmonicResult(4, 100.0, 1.0, disp, 1e-5)
+
+    rows = []
+    for speed in range(10, 101, 5):
+        disp = 1e-3 if speed <= 70 else 1e-6
+        rows += [(float(speed), 1, res(disp)), (float(speed), -1, res(disp))]
+    picked = mh.pick_calibration_speeds(rows, 4, 4)
+    assert picked == [10.0, 30.0, 50.0, 70.0]
+    assert mh.pick_calibration_speeds(rows, 4, 20) == [
+        float(s) for s in range(10, 71, 5)
+    ]
+    assert mh.pick_calibration_speeds(rows, 2, 4) == []
