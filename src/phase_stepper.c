@@ -176,7 +176,11 @@ struct phase_stepper {
     struct spi_config config;
     struct gpio_out cs;
     uint8_t spi_oid, reg, coil_flags, cs_active_high, flags;
-    uint16_t amplitude;
+    // Coil current scale: run_amp while moving. After rest_ticks at rest it
+    // steps down by one every hold_ramp ticks to hold_amp, as a driver
+    // lowers its current to the hold current at standstill.
+    uint16_t amplitude, run_amp, hold_amp;
+    uint32_t hold_delay, hold_ramp, rest_ticks;
     // Motor direction (0 forward, 1 backward) and per direction angle
     // corrections in 1/4096 of an electrical period, by phase >> 22
     uint8_t dir;
@@ -318,6 +322,20 @@ phase_stepper_spi_release(struct spidev_s *spi)
  * Updates
  ****************************************************************/
 
+// A tick with the motor at rest
+static void
+stepper_rest(struct phase_stepper *ps)
+{
+    if (ps->amplitude <= ps->hold_amp)
+        return;
+    if (ps->rest_ticks) {
+        ps->rest_ticks--;
+        return;
+    }
+    ps->amplitude--;
+    ps->rest_ticks = ps->hold_ramp;
+}
+
 // Advance by the tick at clock now
 static void
 stepper_tick(struct phase_stepper *ps, uint32_t now)
@@ -329,6 +347,7 @@ stepper_tick(struct phase_stepper *ps, uint32_t now)
         if (tail == ps->queue_head) {
             if (ps->vel)
                 shutdown("Phase stepper queue underrun");
+            stepper_rest(ps);
             return;
         }
         struct phase_move *m = &ps->queue[tail];
@@ -336,14 +355,18 @@ stepper_tick(struct phase_stepper *ps, uint32_t now)
             if (ps->vel)
                 shutdown("Phase stepper queue underrun");
             uint32_t clock = m->start_vel;
-            if (timer_is_before(now, clock))
+            if (timer_is_before(now, clock)) {
+                stepper_rest(ps);
                 return;
+            }
             if (!timer_is_before(now, clock + TICK_CYCLES))
                 shutdown("Phase stepper move too late");
         } else {
             ps->count = m->count;
             ps->vel = m->start_vel;
             ps->half_accel = m->half_accel;
+            ps->amplitude = ps->run_amp;
+            ps->rest_ticks = ps->hold_delay;
         }
         ps->queue_tail = (tail + 1) % MOVE_QUEUE_SIZE;
     }
@@ -530,7 +553,8 @@ command_phase_stepper_start(uint32_t *args)
     ps->cs_active_high = cs_active_high;
     ps->start_clock = args[1];
     ps->phase = args[2];
-    ps->amplitude = args[3] > 255 ? 255 : args[3];
+    ps->amplitude = ps->run_amp = ps->hold_amp = args[3] > 255 ? 255 : args[3];
+    ps->rest_ticks = 0;
     ps->vel = ps->half_accel = ps->count = 0;
     ps->dir = 0;
     ps->last_sent = ~coil_value(ps);
@@ -540,6 +564,24 @@ command_phase_stepper_start(uint32_t *args)
 }
 DECL_COMMAND(command_phase_stepper_start,
              "phase_stepper_start oid=%c clock=%u phase=%u amplitude=%hu");
+
+// Hold current scale and the timing of the step down to it, sent after
+// phase_stepper_start and whenever the driver's currents change
+void
+command_phase_stepper_set_hold(uint32_t *args)
+{
+    struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
+    uint32_t hold_amp = args[1] < ps->run_amp ? args[1] : ps->run_amp;
+    irq_disable();
+    ps->hold_amp = hold_amp;
+    ps->hold_delay = ps->rest_ticks = args[2];
+    ps->hold_ramp = args[3];
+    if (ps->amplitude < hold_amp)
+        ps->amplitude = hold_amp;
+    irq_enable();
+}
+DECL_COMMAND(command_phase_stepper_set_hold,
+             "phase_stepper_set_hold oid=%c amplitude=%hu delay=%u ramp=%u");
 
 void
 command_phase_stepper_stop(uint32_t *args)

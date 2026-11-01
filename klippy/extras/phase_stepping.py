@@ -29,6 +29,7 @@ SEG_BUFFER = 4096
 PG_ERR_FULL = -1
 DRAIN_TIMEOUT = 2.0
 START_DELAY = 0.250
+DEFAULT_TMC_FREQ = 12000000.0
 REVERSE_DWELL = 0.100
 QUERY_INTERVAL = 0.050
 STEP_TEST_SPEED = 10.0
@@ -168,6 +169,24 @@ def with_field(fields, field_name, value, reg_value):
     reg_name = fields.lookup_register(field_name)
     mask = fields.all_fields[reg_name][field_name]
     return (reg_value & ~mask) | ((value << tmc.ffs(mask)) & mask)
+
+
+def hold_settings(
+    irun, ihold, iholddelay, tpowerdown, tmc_freq, tick_freq, amplitude
+):
+    """Return (hold amplitude, ticks at rest before stepping down, ticks per
+    amplitude step down) mirroring a driver's own standstill current
+    reduction: standstill 2^20 driver clocks after the last step, then
+    TPOWERDOWN * 2^18 clocks, then one current step per IHOLDDELAY * 2^18
+    clocks down to IHOLD."""
+    hold_amp = min(amplitude, int(round(amplitude * (ihold + 1) / (irun + 1))))
+    delay = (2**20 + tpowerdown * 2**18) / tmc_freq
+    steps = amplitude - hold_amp
+    ramp = 0
+    if steps:
+        ramp_time = (irun - ihold) * iholddelay * 2**18 / tmc_freq
+        ramp = int(round(ramp_time * tick_freq / steps))
+    return hold_amp, int(round(delay * tick_freq)), ramp
 
 
 def sign9(value):
@@ -372,6 +391,7 @@ class PhaseStepping:
         self.stop_cmd = self.query_cmd = None
         self.mcu.register_config_callback(self._build_config)
         self.queue_wait_cmd = self.set_correction_cmd = None
+        self.set_hold_cmd = None
         self.queue_size = None
         self.auto_enable = config.getboolean("auto_enable", False)
         self.ffi_main, self.ffi_lib = chelper.get_ffi()
@@ -381,6 +401,9 @@ class PhaseStepping:
         self.seg_buf = self.ffi_main.new("struct phasegen_seg[]", SEG_BUFFER)
         self.stepper = None
         self.active = False
+        # The driver is in direct mode (also during PHASE_STEPPING_TEST)
+        self.direct = False
+        self._guard_driver_writes()
         self.resume_after_homing = False
         self.run = None
         for event, handler in (
@@ -454,6 +477,10 @@ class PhaseStepping:
         )
         self.set_correction_cmd = self.mcu.lookup_command(
             "phase_stepper_set_correction oid=%c dir=%c offset=%hu data=%*s",
+            cq=cq,
+        )
+        self.set_hold_cmd = self.mcu.lookup_command(
+            "phase_stepper_set_hold oid=%c amplitude=%hu delay=%u ramp=%u",
             cq=cq,
         )
         self.queue_size = self.mcu.get_constants()["PHASE_STEPPER_QUEUE_SIZE"]
@@ -533,40 +560,81 @@ class PhaseStepping:
 
     # Switching the driver in and out of direct mode
 
+    def _guard_driver_writes(self):
+        """Keep the driver module's own register writes (SET_TMC_CURRENT,
+        homing currents, sensorless homing, SET_TMC_FIELD) from undoing
+        direct mode while it is on: the driver scales direct mode currents
+        by IHOLD, and stealthChop would take over from the coil currents.
+        The driver module's register cache keeps the values it asked for,
+        which return when direct mode ends."""
+        mcu_tmc = self.mcu_tmc
+        fields = mcu_tmc.get_fields()
+        driver_set_register = mcu_tmc.set_register
+
+        def set_register(reg_name, val, print_time=None):
+            if self.direct and reg_name == "IHOLD_IRUN":
+                val = with_field(
+                    fields, "ihold", fields.get_field("irun", val), val
+                )
+            elif self.direct and reg_name == "GCONF":
+                val = with_field(fields, "en_pwm_mode", 0, val)
+                val = with_field(fields, "direct_mode", 1, val)
+            driver_set_register(reg_name, val, print_time)
+            if self.active and reg_name == "IHOLD_IRUN":
+                self._send_hold()
+
+        mcu_tmc.set_register = set_register
+
+    def _send_hold(self):
+        fields = self.mcu_tmc.get_fields()
+
+        def field(name):
+            if fields.lookup_register(name) is None:
+                return 0
+            return fields.get_field(name)
+
+        get_freq = getattr(self.mcu_tmc, "get_tmc_frequency", None)
+        tmc_freq = get_freq() if get_freq is not None else None
+        hold_amp, delay, ramp = hold_settings(
+            field("irun"),
+            field("ihold"),
+            field("iholddelay"),
+            field("tpowerdown"),
+            tmc_freq or DEFAULT_TMC_FREQ,
+            self.tick_freq,
+            self.amplitude,
+        )
+        self.set_hold_cmd.send([self.oid, hold_amp, delay, ramp])
+
     def _enter_direct(self, start_phase, amplitude):
-        """Hand the coils to direct mode at start_phase; returns the driver
-        settings to restore."""
+        """Hand the coils to direct mode at start_phase."""
         mcu_tmc = self.mcu_tmc
         fields = mcu_tmc.get_fields()
         # Use the values the driver module last wrote: IHOLD_IRUN is write
         # only, so reading it back from the driver returns zero.
-        gconf = fields.registers.get("GCONF", 0)
         ihold_irun = fields.registers.get("IHOLD_IRUN")
         if ihold_irun is None or not fields.get_field("irun", ihold_irun):
             raise self.printer.command_error(
                 "No run current known for '%s'" % (self.stepper_name,)
             )
-        # Drivers scale direct mode currents by the hold current
-        run_current = fields.get_field("irun", ihold_irun)
-        mcu_tmc.set_register(
-            "IHOLD_IRUN", with_field(fields, "ihold", run_current, ihold_irun)
-        )
-        mcu_tmc.tmc_spi.reg_write(
-            self.direct_reg,
-            coil_value(start_phase, amplitude, self.swap_coils),
-            mcu_tmc.chain_pos,
-        )
-        # Without step pulses the driver sees standstill, where an enabled
-        # stealthChop would take over from the coil currents.
-        direct_gconf = with_field(fields, "en_pwm_mode", 0, gconf)
-        direct_gconf = with_field(fields, "direct_mode", 1, direct_gconf)
-        mcu_tmc.set_register("GCONF", direct_gconf)
-        return gconf, ihold_irun
+        self.direct = True
+        try:
+            mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
+            mcu_tmc.tmc_spi.reg_write(
+                self.direct_reg,
+                coil_value(start_phase, amplitude, self.swap_coils),
+                mcu_tmc.chain_pos,
+            )
+            mcu_tmc.set_register("GCONF", fields.registers.get("GCONF", 0))
+        except self.printer.command_error:
+            self._leave_direct()
+            raise
 
-    def _leave_direct(self, saved):
-        gconf, ihold_irun = saved
-        self.mcu_tmc.set_register("GCONF", gconf)
-        self.mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
+    def _leave_direct(self):
+        self.direct = False
+        registers = self.mcu_tmc.get_fields().registers
+        self.mcu_tmc.set_register("GCONF", registers.get("GCONF", 0))
+        self.mcu_tmc.set_register("IHOLD_IRUN", registers["IHOLD_IRUN"])
 
     def _check_driver_ready(self):
         error = self.printer.command_error
@@ -613,7 +681,7 @@ class PhaseStepping:
         sign = 1.0 if stepper.get_dir_inverted()[0] else -1.0
         start_phase = mscnt << MSCNT_SHIFT
         self._upload_corrections()
-        saved = self._enter_direct(start_phase, self.amplitude)
+        self._enter_direct(start_phase, self.amplitude)
         mcu = self.mcu
         try:
             est = mcu.estimated_print_time(
@@ -625,7 +693,7 @@ class PhaseStepping:
             )
             state = self.query_cmd.send([self.oid])
         except self.printer.command_error:
-            self._leave_direct(saved)
+            self._leave_direct()
             raise
         grid_clock = mcu.clock32_to_clock64(state["tick_clock"])
         tick_cycles = mcu.get_constants()["CLOCK_FREQ"] // self.tick_freq
@@ -635,7 +703,6 @@ class PhaseStepping:
             mcu.clock_to_print_time(grid_clock + tick_cycles) - grid_time
         )
         self.run = {
-            "saved": saved,
             "grid_clock": grid_clock,
             "tick_cycles": tick_cycles,
             "tick_time": tick_time,
@@ -648,6 +715,7 @@ class PhaseStepping:
             self.pg, grid_time, first_tick - 1, start_phase, self._rest_pos()
         )
         self.active = True
+        self._send_hold()
         # Keep new moves from starting before the MCU takes over
         toolhead.dwell(START_DELAY + 0.050)
 
@@ -721,7 +789,7 @@ class PhaseStepping:
                 reactor.pause(reactor.monotonic() + QUERY_INTERVAL)
         self.active = False
         self.stop_cmd.send([self.oid])
-        self._leave_direct(self.run["saved"])
+        self._leave_direct()
         if not wait:
             return None
         phase = self.ffi_lib.phasegen_get_phase(self.pg)
@@ -748,7 +816,7 @@ class PhaseStepping:
             gcmd.respond_info("WARNING: " + msg)
 
     def _handle_shutdown(self):
-        self.active = False
+        self.active = self.direct = False
 
     def _handle_homing_move_begin(self, hmove):
         if not self.active:
@@ -946,14 +1014,6 @@ class PhaseStepping:
 
         mcu_tmc = self.mcu_tmc
         fields = mcu_tmc.get_fields()
-        # Use the values the driver module last wrote: IHOLD_IRUN is write
-        # only, so reading it back from the driver returns zero.
-        gconf = fields.registers.get("GCONF", 0)
-        ihold_irun = fields.registers.get("IHOLD_IRUN")
-        if ihold_irun is None or not fields.get_field("irun", ihold_irun):
-            raise gcmd.error(
-                "No run current known for '%s'" % (self.stepper_name,)
-            )
         if fields.get_field("direct_mode", mcu_tmc.get_register("GCONF")):
             raise gcmd.error("Driver is already in direct mode")
         mscnt = self._read_field("MSCNT", "mscnt")
@@ -982,24 +1042,10 @@ class PhaseStepping:
         ticks = sum(m[0] for m in moves)
         start_phase = mscnt << MSCNT_SHIFT
 
-        # Drivers scale direct mode currents by the hold current
-        run_current = with_field(
-            fields, "ihold", fields.get_field("irun", ihold_irun), ihold_irun
-        )
         self.query_cmd.send([self.oid])
+        self._enter_direct(start_phase, amplitude)
         completed = False
         try:
-            mcu_tmc.set_register("IHOLD_IRUN", run_current)
-            mcu_tmc.tmc_spi.reg_write(
-                self.direct_reg,
-                coil_value(start_phase, amplitude, self.swap_coils),
-                mcu_tmc.chain_pos,
-            )
-            # Without step pulses the driver sees standstill, where an
-            # enabled stealthChop would take over from the coil currents.
-            direct_gconf = with_field(fields, "en_pwm_mode", 0, gconf)
-            direct_gconf = with_field(fields, "direct_mode", 1, direct_gconf)
-            mcu_tmc.set_register("GCONF", direct_gconf)
             for count, vel, half in moves:
                 self.queue_move_cmd.send([self.oid, count, vel, half])
             est = self.mcu.estimated_print_time(
@@ -1020,8 +1066,7 @@ class PhaseStepping:
             completed = True
         finally:
             self.stop_cmd.send([self.oid])
-            mcu_tmc.set_register("GCONF", gconf)
-            mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
+            self._leave_direct()
             if not completed:
                 # The motor may have stopped anywhere along the test move
                 stepper_enable.motor_off()
@@ -1104,8 +1149,6 @@ class PhaseStepping:
         )
         expected = 1024.0 * distance / period
         force_move = self.printer.lookup_object("force_move")
-        mcu_tmc = self.mcu_tmc
-        fields = mcu_tmc.get_fields()
 
         def mscnt():
             return self._read_field("MSCNT", "mscnt")
@@ -1123,32 +1166,16 @@ class PhaseStepping:
         move(-distance)
         back_step = mscnt()
 
-        gconf = fields.registers.get("GCONF", 0)
-        ihold_irun = fields.registers.get("IHOLD_IRUN", 0)
-        run_current = with_field(
-            fields, "ihold", fields.get_field("irun", ihold_irun), ihold_irun
-        )
-        direct_gconf = with_field(fields, "en_pwm_mode", 0, gconf)
-        direct_gconf = with_field(fields, "direct_mode", 1, direct_gconf)
+        self._enter_direct(back_step << MSCNT_SHIFT, self.amplitude)
         completed = False
         try:
-            mcu_tmc.set_register("IHOLD_IRUN", run_current)
-            mcu_tmc.tmc_spi.reg_write(
-                self.direct_reg,
-                coil_value(
-                    back_step << MSCNT_SHIFT, self.amplitude, self.swap_coils
-                ),
-                mcu_tmc.chain_pos,
-            )
-            mcu_tmc.set_register("GCONF", direct_gconf)
             move(distance)
             after_direct = mscnt()
             move(-distance)
             back_direct = mscnt()
             completed = True
         finally:
-            mcu_tmc.set_register("GCONF", gconf)
-            mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
+            self._leave_direct()
             if not completed:
                 stepper_enable.motor_off()
 
