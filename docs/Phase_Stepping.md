@@ -129,3 +129,6 @@ logged when a motion is queued less than 50 ms before it starts.
 
 The driver module's periodic checks keep running in direct mode: a driver
 error or reset shuts the printer down as it would without phase stepping.
+
+See the [development findings](Phase_Stepping_Findings.md) for what was
+learned while developing phase stepping and what is still open.
