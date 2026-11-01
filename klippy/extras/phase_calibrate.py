@@ -730,36 +730,20 @@ class PhaseCalibrate:
                 d0 = measure(c0)
                 d_real = measure({d: c0[d] + probe for d in DIRECTIONS})
                 d_imag = measure({d: c0[d] + 1j * probe for d in DIRECTIONS})
-                new, gains, weights, best, best_vib, best_cost = (
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                )
+                new, gains, best, best_vib = {}, {}, {}, {}
                 for d in DIRECTIONS:
-                    new[d], gains[d], weights[d] = (
-                        motor_harmonics.multi_speed_correction(
-                            d0[d], d_real[d], d_imag[d], c0[d], probe
-                        )
+                    new[d], gains[d] = motor_harmonics.multi_speed_correction(
+                        d0[d], d_real[d], d_imag[d], c0[d], probe
                     )
                     best[d], best_vib[d] = c0[d], d0[d]
-                    best_cost[d] = motor_harmonics.weighted_cost(
-                        d0[d], weights[d]
-                    )
                 for _ in range(2):
                     vib = measure(new)
                     for d in DIRECTIONS:
-                        cost = motor_harmonics.weighted_cost(vib[d], weights[d])
-                        if cost < best_cost[d]:
-                            best[d], best_vib[d], best_cost[d] = (
-                                new[d],
-                                vib[d],
-                                cost,
-                            )
+                        worst = motor_harmonics.worst_vibration(vib[d])
+                        if worst < motor_harmonics.worst_vibration(best_vib[d]):
+                            best[d], best_vib[d] = new[d], vib[d]
                         new[d] = motor_harmonics.refine_correction(
-                            best[d], best_vib[d], gains[d], weights[d]
+                            best[d], best_vib[d], gains[d]
                         )
                 for d, label in DIRECTIONS.items():
                     phase_stepping.set_harmonic(label, harmonic, best[d])

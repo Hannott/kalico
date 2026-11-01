@@ -327,28 +327,9 @@ def estimate_correction(r0, r_real, r_imag, c0, delta):
     return c0 - r0 / gain, gain, nonlinearity
 
 
-def pick_calibration_speed(rows, harmonic, min_snr=5.0):
-    """Speed where a harmonic vibrates most in both directions, or None."""
-    by_speed = {}
-    for speed, motor_dir, res in rows:
-        if res.harmonic != harmonic or res.disp is None:
-            continue
-        if res.noise_disp is not None and res.disp < min_snr * res.noise_disp:
-            continue
-        by_speed.setdefault(speed, {})[motor_dir] = res.disp
-    best = None
-    for speed, dirs in by_speed.items():
-        if len(dirs) < 2:
-            continue
-        score = min(dirs.values())
-        if best is None or score > best[0]:
-            best = (score, speed)
-    return best[1] if best else None
-
-
 def pick_calibration_speeds(rows, harmonic, count, min_snr=5.0, min_disp=1e-4):
-    """Up to count speeds spread over those where a harmonic clearly
-    vibrates in both directions (min_disp in mm)."""
+    """Up to count speeds where a harmonic vibrates most in both directions
+    (above min_disp in mm), kept apart so that they cover its peaks."""
     by_speed = {}
     for speed, motor_dir, res in rows:
         if res.harmonic != harmonic or res.disp is None:
@@ -357,14 +338,18 @@ def pick_calibration_speeds(rows, harmonic, count, min_snr=5.0, min_disp=1e-4):
         if res.noise_disp is not None:
             floor = max(floor, min_snr * res.noise_disp)
         if res.disp >= floor:
-            by_speed.setdefault(speed, set()).add(motor_dir)
-    usable = sorted(s for s, dirs in by_speed.items() if len(dirs) == 2)
-    if len(usable) <= count:
-        return usable
-    if count == 1:
-        return [pick_calibration_speed(rows, harmonic, min_snr)]
-    step = (len(usable) - 1) / (count - 1)
-    return [usable[int(round(i * step))] for i in range(count)]
+            by_speed.setdefault(speed, {})[motor_dir] = res.disp
+    usable = {s: min(d.values()) for s, d in by_speed.items() if len(d) == 2}
+    if not usable:
+        return []
+    gap = (max(usable) - min(usable)) / (2.0 * count)
+    picked = []
+    for speed in sorted(usable, key=lambda s: (-usable[s], s)):
+        if len(picked) == count:
+            break
+        if all(abs(speed - p) >= gap for p in picked):
+            picked.append(speed)
+    return sorted(picked)
 
 
 def _weighted_step(c, vib, gains, weights):
@@ -373,28 +358,44 @@ def _weighted_step(c, vib, gains, weights):
     return c - num / den if den else c
 
 
+def _minimax_step(c, vib, gains, iterations=100):
+    """Correction that leaves the least worst vibration over all speeds,
+    predicted from vibration vib at correction c (Lawson's algorithm:
+    least squares, reweighted towards the speeds left worst)."""
+    weights = dict.fromkeys(vib, 1.0)
+    step = _weighted_step(c, vib, gains, weights)
+    for _ in range(iterations):
+        left = {
+            s: weights[s] * abs(vib[s] + gains[s] * (step - c)) for s in vib
+        }
+        total = sum(left.values())
+        if not total:
+            break
+        weights = {s: w / total for s, w in left.items()}
+        step = _weighted_step(c, vib, gains, weights)
+    return step
+
+
 def multi_speed_correction(d0, d_real, d_imag, c0, delta):
     """Correction that best cancels a harmonic over several speeds.
 
     Each argument d* maps speed to the complex vibration measured with the
     correction at c0, c0 + delta and c0 + 1j*delta. Every speed responds
-    linearly but differently, so a single correction minimises the sum of
-    squared vibration, each speed weighted by its uncorrected level so that
-    all speeds count alike. Returns (correction, gains, weights).
+    linearly but differently, so a single correction minimises the worst
+    vibration left at any of them. Returns (correction, gains).
     """
     gains = {
         s: 0.5
         * ((d_real[s] - d0[s]) / delta + (d_imag[s] - d0[s]) / (1j * delta))
         for s in d0
     }
-    weights = {s: 1.0 / abs(d0[s]) ** 2 if abs(d0[s]) else 0.0 for s in d0}
-    return _weighted_step(c0, d0, gains, weights), gains, weights
+    return _minimax_step(c0, d0, gains), gains
 
 
-def refine_correction(c, vib, gains, weights):
-    """Gauss-Newton step from correction c, which gave vibration vib."""
-    return _weighted_step(c, vib, gains, weights)
+def refine_correction(c, vib, gains):
+    """Step from correction c, which gave vibration vib."""
+    return _minimax_step(c, vib, gains)
 
 
-def weighted_cost(vib, weights):
-    return sum(weights[s] * abs(v) ** 2 for s, v in vib.items())
+def worst_vibration(vib):
+    return max(abs(v) for v in vib.values())
