@@ -124,9 +124,10 @@ each stepper, `lead_min` (the shortest time between queueing the start of
 a motion and that start; the micro-controller shuts down with "Phase
 stepper move too late" if it reaches zero) and `generate_max` (the longest
 time spent computing coil updates in one batch). One stepper per
-micro-controller also reports its lost and bus locked updates, unfinished
-driver register reads (`pair_timeouts`) and update times. A warning is
-logged when a motion is queued less than 50 ms before it starts.
+micro-controller also reports its lost and bus locked updates, driver
+messages sent again after a coil write (`replays`) and update times. A
+warning is logged when a motion is queued less than 50 ms before it
+starts.
 
 The driver module's periodic checks keep running in direct mode: a driver
 error or reset shuts the printer down as it would without phase stepping.
