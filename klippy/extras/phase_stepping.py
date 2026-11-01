@@ -709,11 +709,15 @@ class PhaseStepping:
         self.direct = True
         try:
             mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
-            mcu_tmc.tmc_spi.reg_write(
-                self.direct_reg,
-                coil_value(start_phase, amplitude, self.swap_coils),
-                mcu_tmc.chain_pos,
-            )
+            # The driver module's periodic register checks run in another
+            # greenlet, and two transfers on one SPI oid at once would
+            # take each other's response
+            with mcu_tmc.mutex:
+                mcu_tmc.tmc_spi.reg_write(
+                    self.direct_reg,
+                    coil_value(start_phase, amplitude, self.swap_coils),
+                    mcu_tmc.chain_pos,
+                )
             mcu_tmc.set_register("GCONF", fields.registers.get("GCONF", 0))
         except self.printer.command_error:
             self._leave_direct()
