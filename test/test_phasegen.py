@@ -86,11 +86,17 @@ def _run(path, motor=b"+", shaper=None, start_phase=517 << 22):
     ffi_lib.phasegen_start(pg, GRID_TIME, 0, start_phase, ref_pos)
     out = ffi_main.new("struct phasegen_seg[]", 16384)
     entries = []
+    # Targets are recorded as they are generated: while idle a target is
+    # the last known position, which depends on the order of evaluation.
+    targets = {}
     flush = GRID_TIME
     while flush < end_time:
         flush += WINDOW
+        first = ffi_lib.phasegen_get_last_tick(pg) + 1
         num = ffi_lib.phasegen_generate(pg, flush, out, 16384)
         assert num >= 0
+        for tick in range(first, ffi_lib.phasegen_get_last_tick(pg) + 1):
+            targets[tick] = ffi_lib.phasegen_target(pg, tick)
         entries.extend(
             (
                 out[i].count,
@@ -127,7 +133,7 @@ def _run(path, motor=b"+", shaper=None, start_phase=517 << 22):
             phase = (phase + vel + half) & MASK
             vel += 2 * half
             count -= 1
-        target = ffi_lib.phasegen_target(pg, tick)
+        target = targets[tick]
         err = (phase - int(round(target))) & MASK
         err = err - (1 << 32) if err >= (1 << 31) else err
         worst = max(worst, abs(err))

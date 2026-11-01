@@ -11,6 +11,8 @@ struct phasegen_seg {
     int64_t wait_tick;
 };
 
+enum { PG_ERR_FULL = -1, PG_ERR_JUMP = -2 };
+
 struct stepper_kinematics;
 struct phasegen *phasegen_alloc(void);
 void phasegen_free(struct phasegen *pg);

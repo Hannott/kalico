@@ -30,6 +30,8 @@ struct phasegen {
     // ref_phase + (position(grid_time + (n+1)*tick_time) - ref_pos) * ppm
     double grid_time, ref_pos;
     int64_t ref_phase;
+    // Position while no planned move covers the time (see stepper_position)
+    double hold_pos;
     // The MCU state after last_tick: phase (unwrapped) and whether queued
     // segments are still moving the motor
     int64_t last_tick, phase;
@@ -66,8 +68,40 @@ phasegen_setup(struct phasegen *pg, struct stepper_kinematics *sk
     pg->tolerance = tolerance;
 }
 
-// Start from the MCU state after start_tick, where the motor holds
-// start_phase at stepper position ref_pos
+// Stepper position at print time t, from the planned moves.
+//
+// Unlike step generation, phase stepping samples idle time too. Finished
+// moves leave the trapq's move list and its head sentinel carries no
+// position, so before the first listed move the motor is at rest where it
+// last was. The same holds early in the stationary filler move trapq puts
+// ahead of it (a second long, much more than any input shaper window),
+// where shaping would blend in the head sentinel; later in the filler move
+// shaping may already start the next motion.
+static double
+stepper_position(struct phasegen *pg, double t)
+{
+    struct move *m = pg->m;
+    struct move *head = list_first_entry(&pg->sk->tq->moves, struct move
+                                         , node);
+    if (!m) {
+        trapq_check_sentinels(pg->sk->tq);
+        m = head;
+    }
+    while (t >= m->print_time + m->move_t)
+        m = list_next_entry(m, node);
+    while (t < m->print_time)
+        m = list_prev_entry(m, node);
+    pg->m = m;
+    if (m == head || (list_prev_entry(m, node) == head && !m->start_v
+                      && !m->half_accel
+                      && t < m->print_time + 0.5 * m->move_t))
+        return pg->hold_pos;
+    pg->hold_pos = pg->sk->calc_position_cb(pg->sk, m, t - m->print_time);
+    return pg->hold_pos;
+}
+
+// Start from the MCU state after start_tick, where the motor rests at
+// stepper position ref_pos and holds start_phase
 void __visible
 phasegen_start(struct phasegen *pg, double grid_time, int64_t start_tick
                , int64_t start_phase, double ref_pos)
@@ -75,34 +109,26 @@ phasegen_start(struct phasegen *pg, double grid_time, int64_t start_tick
     pg->grid_time = grid_time;
     pg->last_tick = start_tick;
     pg->phase = pg->ref_phase = start_phase;
-    pg->ref_pos = ref_pos;
     pg->moving = 0;
+    pg->m = NULL;
+    pg->ref_pos = pg->hold_pos = ref_pos;
 }
 
 // The stepper position was redefined without motion (for example by
-// SET_KINEMATIC_POSITION): keep the current phase at the new position
+// SET_KINEMATIC_POSITION): keep the current phase at the new ref_pos
 void __visible
 phasegen_rebase(struct phasegen *pg, double ref_pos)
 {
+    pg->m = NULL;
     pg->ref_phase = pg->phase;
-    pg->ref_pos = ref_pos;
+    pg->ref_pos = pg->hold_pos = ref_pos;
 }
 
 double __visible
 phasegen_target(struct phasegen *pg, int64_t tick)
 {
     double t = pg->grid_time + (tick + 1) * pg->tick_time;
-    struct move *m = pg->m;
-    if (!m) {
-        trapq_check_sentinels(pg->sk->tq);
-        m = list_first_entry(&pg->sk->tq->moves, struct move, node);
-    }
-    while (t >= m->print_time + m->move_t)
-        m = list_next_entry(m, node);
-    while (t < m->print_time)
-        m = list_prev_entry(m, node);
-    pg->m = m;
-    double pos = pg->sk->calc_position_cb(pg->sk, m, t - m->print_time);
+    double pos = stepper_position(pg, t);
     return pg->ref_phase + (pos - pg->ref_pos) * pg->phase_per_mm;
 }
 
@@ -199,7 +225,7 @@ add_seg(struct phasegen_seg *out, int32_t *pnum, int32_t max_out
         , uint32_t count, int32_t vel, int32_t half, int64_t wait_tick)
 {
     if (*pnum >= max_out)
-        return -1;
+        return PG_ERR_FULL;
     struct phasegen_seg *s = &out[(*pnum)++];
     s->count = count;
     s->start_vel = vel;
@@ -209,8 +235,8 @@ add_seg(struct phasegen_seg *out, int32_t *pnum, int32_t max_out
 }
 
 // Emit segments for every tick whose latch time is at or before flush_time.
-// Returns the number of entries written to out, or -1 if out is too small
-// or a segment cannot be represented.
+// Returns the number of entries written to out, PG_ERR_FULL if out is too
+// small, or PG_ERR_JUMP if the target moves too far in one tick.
 int32_t __visible
 phasegen_generate(struct phasegen *pg, double flush_time
                   , struct phasegen_seg *out, int32_t max_out)
@@ -247,13 +273,13 @@ phasegen_generate(struct phasegen *pg, double flush_time
             }
             if (add_seg(out, &num, max_out, 0, 0, 0
                         , pg->last_tick + done + 1))
-                return -1;
+                return PG_ERR_FULL;
             pg->moving = 1;
         } else if (still >= IDLE_TICKS || done + still == total) {
             if (still) {
                 // A one tick segment at zero velocity leaves the MCU at rest
                 if (add_seg(out, &num, max_out, 1, 0, 0, 0))
-                    return -1;
+                    return PG_ERR_FULL;
                 pg->moving = 0;
                 done++;
                 continue;
@@ -271,9 +297,9 @@ phasegen_generate(struct phasegen *pg, double flush_time
             d[i] += base;
         d[0] = saved;
         if (!count)
-            return -1;
+            return PG_ERR_JUMP;
         if (add_seg(out, &num, max_out, count, vel, half, 0))
-            return -1;
+            return PG_ERR_FULL;
         pg->phase += count * vel + (int64_t)count * count * half;
         done += count;
     }
