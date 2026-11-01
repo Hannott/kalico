@@ -3,8 +3,9 @@
 // The MCU updates the coil currents on a fixed grid of ticks and integrates
 // queued constant acceleration segments in integer phase units (see
 // src/phase_stepper.c). This code samples the stepper position (including
-// kinematics and input shaping) at every tick and fits such segments to it,
-// tracking the MCU's integer state exactly so rounding never accumulates.
+// kinematics and input shaping) at every tick where it may move and fits
+// such segments to it, tracking the MCU's integer state exactly so rounding
+// never accumulates.
 //
 // Copyright (C) 2026  Åsmund Collin <aakjaergaard@gmail.com>
 //
@@ -186,6 +187,38 @@ segment_ok(struct phasegen *pg, const double *d, int count, int64_t vel
     return 1;
 }
 
+static int
+drives_stepper(struct stepper_kinematics *sk, struct move *m)
+{
+    int af = sk->active_flags;
+    return ((af & AF_X && m->axes_r.x != 0.)
+            || (af & AF_Y && m->axes_r.y != 0.)
+            || (af & AF_Z && m->axes_r.z != 0.));
+}
+
+// Earliest time from t on at which the stepper may leave its rest position,
+// or end if it rests until then. Input shaping spreads a move over
+// gen_steps_pre_active before and gen_steps_post_active after it.
+static double
+next_motion_time(struct stepper_kinematics *sk, double t, double end)
+{
+    if (!sk->tq)
+        return end;
+    trapq_check_sentinels(sk->tq);
+    double pre = sk->gen_steps_pre_active, post = sk->gen_steps_post_active;
+    struct move *m = list_first_entry(&sk->tq->moves, struct move, node);
+    while (m->print_time + m->move_t + post < t)
+        m = list_next_entry(m, node);
+    for (;;) {
+        double start = m->print_time - pre;
+        if (start >= end)
+            return end;
+        if (drives_stepper(sk, m))
+            return start > t ? start : t;
+        m = list_next_entry(m, node);
+    }
+}
+
 // Find the longest segment from the current state that stays in tolerance
 static int
 longest_segment(struct phasegen *pg, const double *d, int avail
@@ -243,6 +276,20 @@ phasegen_generate(struct phasegen *pg, double flush_time
 {
     int64_t end_tick = (int64_t)floor(
         (flush_time - pg->grid_time) / pg->tick_time) - 1;
+    if (!pg->moving) {
+        // Sampling every tick of a long rest (a heat-up, a pause) takes long
+        // enough to deliver the following motion to the MCU too late, so
+        // skip the ticks no move can reach. Tick n samples time
+        // grid_time + (n+1)*tick_time.
+        double t = pg->grid_time + (pg->last_tick + 2) * pg->tick_time;
+        double move_time = next_motion_time(pg->sk, t, flush_time);
+        int64_t rest_end = (int64_t)floor(
+            (move_time - pg->grid_time) / pg->tick_time) - 2;
+        if (rest_end > end_tick)
+            rest_end = end_tick;
+        if (rest_end > pg->last_tick)
+            pg->last_tick = rest_end;
+    }
     int64_t total = end_tick - pg->last_tick;
     if (total <= 0)
         return 0;
