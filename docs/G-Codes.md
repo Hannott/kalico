@@ -1506,6 +1506,41 @@ Palette 2 once the loading has been completed. This command is the
 same as pressing **Smart Load** directly on the Palette 2 screen after
 the filament load is complete.
 
+### [phase_stepping]
+
+The following command is available when a
+[phase_stepping config section](Config_Reference.md#phase_stepping)
+is enabled (also see the [phase stepping guide](Phase_Stepping.md)).
+
+#### PHASE_STEPPING_ENABLE
+`PHASE_STEPPING_ENABLE STEPPER=<config_name> [ENABLE=<0|1>]`: Switch
+the stepper to phase stepping (`ENABLE=1`, the default) or back to step
+pulses. The stepper must be enabled and at rest.
+
+#### PHASE_STEPPING_SET_CORRECTION
+`PHASE_STEPPING_SET_CORRECTION STEPPER=<config_name> [HARMONIC=<n>
+MAG=<radians> [PHASE=<radians>]] [DIRECTION=<forward|backward|both>]
+[SAVE=<0|1>]`: Set (or with `MAG=0` remove) the coil angle correction of
+one harmonic and report the corrections in use. `SAVE=1` stores them for
+`SAVE_CONFIG`.
+
+#### PHASE_STEPPING_STEP_TEST
+`PHASE_STEPPING_STEP_TEST STEPPER=<config_name> [DISTANCE=<mm>]`: Moves
+the stepper forward and back with step pulses, first normally and then
+with the driver in direct mode, and reports how the driver's microstep
+counter followed. The motor should only move the first time.
+
+#### PHASE_STEPPING_TEST
+`PHASE_STEPPING_TEST STEPPER=<config_name> [DISTANCE=<mm>]
+[VELOCITY=<mm/s>] [ACCEL=<mm/s^2>] [AMPLITUDE=<16-255>]
+[BUS_LOAD=<0|1>]`: Switches the stepper's driver to direct mode, moves
+the motor forward by DISTANCE (default 10) and back again by setting its
+coil currents from the micro-controller, and switches the driver back.
+It reports the update timing on the micro-controller and whether the
+motor returned to its start phase. `BUS_LOAD=1` reads driver registers
+during the move to test sharing of the SPI bus. Distances and speeds are
+in mm of motor travel. X and Y must be homed and the motor enabled.
+
 ### [pid_calibrate]
 
 The pid_calibrate module is automatically loaded if a heater is defined
