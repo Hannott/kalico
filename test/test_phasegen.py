@@ -4,6 +4,7 @@
 import math
 import os
 import sys
+import time
 
 import pytest
 
@@ -187,3 +188,35 @@ def test_idle_sends_nothing_and_resumes_on_time():
     path = [((100.0, 100.0), (110.0, 100.0), 100.0, 3000.0)]
     worst, _, _ = _run(path)
     assert worst <= TOLERANCE + 1
+
+
+def test_long_rest_is_skipped():
+    # The toolhead flushes nothing while idle (a heat-up), so the next flush
+    # spans the whole rest; it must not sample every tick of it, or the
+    # following motion reaches the MCU too late.
+    shaper = shaper_defs.get_mzv_shaper(50.0, 0.1)
+    first = [((100.0, 100.0), (110.0, 100.0), 100.0, 3000.0)]
+    ffi_main, ffi_lib, pg, ref_pos, end_time, keep = _setup(first, b"+", shaper)
+    resume = end_time + 1800.0
+    _append_move(
+        ffi_lib, keep[0], resume, (110.0, 100.0), (120.0, 100.0), 100.0, 3000.0
+    )
+    ffi_lib.phasegen_start(pg, GRID_TIME, 0, 517 << 22, ref_pos)
+    out = ffi_main.new("struct phasegen_seg[]", 16384)
+    assert ffi_lib.phasegen_generate(pg, end_time, out, 16384) > 0
+    rest_phase = ffi_lib.phasegen_get_phase(pg)
+
+    begin = time.perf_counter()
+    num = ffi_lib.phasegen_generate(pg, resume + 0.2, out, 16384)
+    elapsed = time.perf_counter() - begin
+    assert num > 0
+    assert elapsed < 0.5
+
+    waits = [out[i].wait_tick for i in range(num) if not out[i].count]
+    first_tick = int(math.ceil((resume - 0.1 - GRID_TIME) * TICK_FREQ))
+    expected = next(
+        tick
+        for tick in range(first_tick, first_tick + 8000)
+        if abs(ffi_lib.phasegen_target(pg, tick) - rest_phase) > TOLERANCE
+    )
+    assert waits == [expected]
