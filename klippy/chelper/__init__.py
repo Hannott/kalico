@@ -226,6 +226,7 @@ defs_phasegen = """
         , int64_t start_tick, int64_t start_phase, double ref_pos);
     int32_t phasegen_generate(struct phasegen *pg, double flush_time
         , struct phasegen_seg *out, int32_t max_out);
+    void phasegen_rebase(struct phasegen *pg, double ref_pos);
     double phasegen_target(struct phasegen *pg, int64_t tick);
     int64_t phasegen_get_phase(struct phasegen *pg);
     int64_t phasegen_get_last_tick(struct phasegen *pg);

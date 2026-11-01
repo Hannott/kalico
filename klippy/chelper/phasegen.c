@@ -79,6 +79,15 @@ phasegen_start(struct phasegen *pg, double grid_time, int64_t start_tick
     pg->moving = 0;
 }
 
+// The stepper position was redefined without motion (for example by
+// SET_KINEMATIC_POSITION): keep the current phase at the new position
+void __visible
+phasegen_rebase(struct phasegen *pg, double ref_pos)
+{
+    pg->ref_phase = pg->phase;
+    pg->ref_pos = ref_pos;
+}
+
 double __visible
 phasegen_target(struct phasegen *pg, int64_t tick)
 {

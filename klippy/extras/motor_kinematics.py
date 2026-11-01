@@ -23,13 +23,18 @@ def electrical_period(rotation_distance, full_steps):
     return FULL_STEPS_PER_ELECTRICAL_PERIOD * rotation_distance / full_steps
 
 
+def stepper_microsteps(printer, stepper):
+    """The configured microsteps of a stepper, or None if not found."""
+    configfile = printer.lookup_object("configfile")
+    settings = configfile.get_status(None)["settings"]
+    return settings.get(stepper.get_name(), {}).get("microsteps")
+
+
 def stepper_electrical_period(printer, stepper):
     """Electrical period (mm) of a configured stepper, or None if its
     microsteps setting cannot be found."""
     rotation_dist, steps_per_rotation = stepper.get_rotation_distance()
-    configfile = printer.lookup_object("configfile")
-    settings = configfile.get_status(None)["settings"]
-    microsteps = settings.get(stepper.get_name(), {}).get("microsteps")
+    microsteps = stepper_microsteps(printer, stepper)
     if not microsteps:
         return None
     return electrical_period(rotation_dist, steps_per_rotation / microsteps)

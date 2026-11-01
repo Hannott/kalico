@@ -3,7 +3,11 @@
 # Copyright (C) 2026  Åsmund Collin <aakjaergaard@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import collections
+import logging
 import math
+
+from klippy import chelper
 
 from . import motor_kinematics, tmc
 
@@ -17,6 +21,11 @@ DIRECT_REGISTER_NAMES = ("XDIRECT", "XTARGET", "DIRECT_MODE")
 REQUIRED_FIELDS = ("direct_mode", "en_pwm_mode", "mscnt", "cur_a", "cur_b")
 # Matches MCU flag PC_SWAP_COILS
 SWAP_COILS = 1
+MASK32 = 0xFFFFFFFF
+# Half the resolution of the MCU's sine table (1024 entries per period)
+TOLERANCE = float(1 << 21)
+SEG_BUFFER = 4096
+DRAIN_TIMEOUT = 2.0
 START_DELAY = 0.250
 REVERSE_DWELL = 0.100
 QUERY_INTERVAL = 0.050
@@ -217,6 +226,34 @@ def summarize_samples(samples, fields, swap_coils):
     return lines, warnings
 
 
+class FlowControl:
+    """Place queued entries on the MCU's tick grid.
+
+    The MCU queue holds queue_size entries and an entry leaves it when the
+    MCU starts on it, so entry i may only be sent once entry i - queue_size
+    has started.
+    """
+
+    def __init__(self, queue_size, first_tick):
+        self.queue_size = queue_size
+        self.cursor = first_tick
+        self.starts = collections.deque()
+
+    def place(self, count, wait_tick):
+        """Return (start tick, tick to send after or None) for an entry."""
+        if not count:
+            self.cursor = wait_tick
+            start = wait_tick
+        else:
+            start = self.cursor
+            self.cursor += count
+        send_after = None
+        if len(self.starts) >= self.queue_size:
+            send_after = self.starts.popleft()
+        self.starts.append(start)
+        return start, send_after
+
+
 def find_tmc_section(config, stepper_name):
     for section in config.get_prefix_sections("tmc"):
         name = section.get_name()
@@ -272,7 +309,36 @@ class PhaseStepping:
         self.queue_move_cmd = self.start_cmd = None
         self.stop_cmd = self.query_cmd = None
         self.mcu.register_config_callback(self._build_config)
+        self.queue_wait_cmd = None
+        self.queue_size = None
+        self.auto_enable = config.getboolean("auto_enable", False)
+        self.ffi_main, self.ffi_lib = chelper.get_ffi()
+        self.pg = self.ffi_main.gc(
+            self.ffi_lib.phasegen_alloc(), self.ffi_lib.phasegen_free
+        )
+        self.seg_buf = self.ffi_main.new("struct phasegen_seg[]", SEG_BUFFER)
+        self.stepper = None
+        self.active = False
+        self.resume_after_homing = False
+        self.run = None
+        for event, handler in (
+            ("klippy:connect", self._handle_connect),
+            ("klippy:shutdown", self._handle_shutdown),
+            ("homing:homing_move_begin", self._handle_homing_move_begin),
+            ("homing:home_rails_end", self._handle_home_rails_end),
+            ("stepper_enable:motor_off", self._handle_motor_off),
+            ("toolhead:set_position", self._handle_set_position),
+            ("stepper:set_dir_inverted", self._handle_dir_inverted),
+        ):
+            self.printer.register_event_handler(event, handler)
         self.gcode = self.printer.lookup_object("gcode")
+        self.gcode.register_mux_command(
+            "PHASE_STEPPING_ENABLE",
+            "STEPPER",
+            self.stepper_name,
+            self.cmd_PHASE_STEPPING_ENABLE,
+            desc=self.cmd_PHASE_STEPPING_ENABLE_help,
+        )
         self.gcode.register_mux_command(
             "PHASE_STEPPING_TEST",
             "STEPPER",
@@ -314,6 +380,10 @@ class PhaseStepping:
             "phase_stepper_start oid=%c clock=%u phase=%u amplitude=%hu",
             cq=cq,
         )
+        self.queue_wait_cmd = self.mcu.lookup_command(
+            "phase_stepper_queue_wait oid=%c clock=%u", cq=cq
+        )
+        self.queue_size = self.mcu.get_constants()["PHASE_STEPPER_QUEUE_SIZE"]
         self.stop_cmd = self.mcu.lookup_command(
             "phase_stepper_stop oid=%c", cq=cq
         )
@@ -324,6 +394,279 @@ class PhaseStepping:
             " max_cycles=%u avg_cycles=%u tick_clock=%u",
             oid=self.oid,
             cq=cq,
+        )
+
+    def _handle_connect(self):
+        toolhead = self.printer.lookup_object("toolhead")
+        for stepper in toolhead.get_kinematics().get_steppers():
+            if stepper.get_name() == self.stepper_name:
+                self.stepper = stepper
+        toolhead.register_step_generator(self._generate)
+
+    def get_status(self, eventtime):
+        return {"enabled": self.active}
+
+    # Switching the driver in and out of direct mode
+
+    def _enter_direct(self, start_phase, amplitude):
+        """Hand the coils to direct mode at start_phase; returns the driver
+        settings to restore."""
+        mcu_tmc = self.mcu_tmc
+        fields = mcu_tmc.get_fields()
+        # Use the values the driver module last wrote: IHOLD_IRUN is write
+        # only, so reading it back from the driver returns zero.
+        gconf = fields.registers.get("GCONF", 0)
+        ihold_irun = fields.registers.get("IHOLD_IRUN")
+        if ihold_irun is None or not fields.get_field("irun", ihold_irun):
+            raise self.printer.command_error(
+                "No run current known for '%s'" % (self.stepper_name,)
+            )
+        # Drivers scale direct mode currents by the hold current
+        run_current = fields.get_field("irun", ihold_irun)
+        mcu_tmc.set_register(
+            "IHOLD_IRUN", with_field(fields, "ihold", run_current, ihold_irun)
+        )
+        mcu_tmc.tmc_spi.reg_write(
+            self.direct_reg,
+            coil_value(start_phase, amplitude, self.swap_coils),
+            mcu_tmc.chain_pos,
+        )
+        # Without step pulses the driver sees standstill, where an enabled
+        # stealthChop would take over from the coil currents.
+        direct_gconf = with_field(fields, "en_pwm_mode", 0, gconf)
+        direct_gconf = with_field(fields, "direct_mode", 1, direct_gconf)
+        mcu_tmc.set_register("GCONF", direct_gconf)
+        return gconf, ihold_irun
+
+    def _leave_direct(self, saved):
+        gconf, ihold_irun = saved
+        self.mcu_tmc.set_register("GCONF", gconf)
+        self.mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
+
+    def _check_driver_ready(self):
+        error = self.printer.command_error
+        stepper_enable = self.printer.lookup_object("stepper_enable")
+        enable_line = stepper_enable.lookup_enable(self.stepper_name)
+        if not enable_line.is_motor_enabled():
+            raise error("'%s' is not enabled" % (self.stepper_name,))
+        mcu_tmc = self.mcu_tmc
+        fields = mcu_tmc.get_fields()
+        if fields.get_field("direct_mode", mcu_tmc.get_register("GCONF")):
+            raise error("Driver is already in direct mode")
+        mscnt = self._read_field("MSCNT", "mscnt")
+        mscuract = mcu_tmc.get_register("MSCURACT")
+        mismatch = check_coil_mapping(
+            mscnt,
+            fields.get_field("cur_a", mscuract),
+            fields.get_field("cur_b", mscuract),
+        )
+        if mismatch is not None:
+            raise error(
+                "Driver microstep table is not a plain sine: %s" % (mismatch,)
+            )
+        return mscnt
+
+    # Phase stepping during normal motion
+
+    def _enable(self):
+        if self.active:
+            return
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.wait_moves()
+        stepper = self.stepper
+        mscnt = self._check_driver_ready()
+        period = motor_kinematics.stepper_electrical_period(
+            self.printer, stepper
+        )
+        if period is None:
+            raise self.printer.command_error(
+                "Cannot find microsteps for '%s'" % (self.stepper_name,)
+            )
+        # The driver's microstep counter keeps counting the step pulses,
+        # which run on unchanged; it counts up with the stepper position
+        # when the direction pin is inverted (as tmc.py also assumes).
+        sign = 1.0 if stepper.get_dir_inverted()[0] else -1.0
+        start_phase = mscnt << MSCNT_SHIFT
+        saved = self._enter_direct(start_phase, self.amplitude)
+        mcu = self.mcu
+        try:
+            est = mcu.estimated_print_time(
+                self.printer.get_reactor().monotonic()
+            )
+            start_clock = mcu.print_time_to_clock(est + START_DELAY)
+            self.start_cmd.send(
+                [self.oid, start_clock & MASK32, start_phase, self.amplitude]
+            )
+            state = self.query_cmd.send([self.oid])
+        except self.printer.command_error:
+            self._leave_direct(saved)
+            raise
+        grid_clock = mcu.clock32_to_clock64(state["tick_clock"])
+        tick_cycles = mcu.get_constants()["CLOCK_FREQ"] // self.tick_freq
+        first_tick = -(-(start_clock - grid_clock) // tick_cycles)
+        grid_time = mcu.clock_to_print_time(grid_clock)
+        tick_time = (
+            mcu.clock_to_print_time(grid_clock + tick_cycles) - grid_time
+        )
+        self.run = {
+            "saved": saved,
+            "grid_clock": grid_clock,
+            "tick_cycles": tick_cycles,
+            "tick_time": tick_time,
+            "phase_per_mm": sign * PHASE_PER_PERIOD / period,
+            "sk": None,
+            "flow": FlowControl(self.queue_size, first_tick),
+        }
+        self._update_sk()
+        self.ffi_lib.phasegen_start(
+            self.pg,
+            grid_time,
+            first_tick - 1,
+            start_phase,
+            stepper.get_commanded_position(),
+        )
+        self.active = True
+        # Keep new moves from starting before the MCU takes over
+        toolhead.dwell(START_DELAY + 0.050)
+
+    def _update_sk(self):
+        sk = self.stepper.get_stepper_kinematics()
+        run = self.run
+        if sk != run["sk"]:
+            self.ffi_lib.phasegen_setup(
+                self.pg, sk, run["tick_time"], run["phase_per_mm"], TOLERANCE
+            )
+            run["sk"] = sk
+
+    def _generate(self, flush_time):
+        if not self.active:
+            return
+        self._update_sk()
+        num = self.ffi_lib.phasegen_generate(
+            self.pg, flush_time, self.seg_buf, SEG_BUFFER
+        )
+        if num < 0:
+            self.active = False
+            self.printer.invoke_shutdown(
+                "Phase stepping could not follow '%s'" % (self.stepper_name,)
+            )
+            return
+        run = self.run
+        grid_clock, tick_cycles = run["grid_clock"], run["tick_cycles"]
+        for i in range(num):
+            entry = self.seg_buf[i]
+            start, send_after = run["flow"].place(entry.count, entry.wait_tick)
+            reqclock = grid_clock + start * tick_cycles
+            minclock = 0
+            if send_after is not None:
+                minclock = grid_clock + (send_after + 1) * tick_cycles
+            if entry.count:
+                self.queue_move_cmd.send(
+                    [self.oid, entry.count, entry.start_vel, entry.half_accel],
+                    minclock=minclock,
+                    reqclock=reqclock,
+                )
+            else:
+                self.queue_wait_cmd.send(
+                    [self.oid, reqclock & MASK32],
+                    minclock=minclock,
+                    reqclock=reqclock,
+                )
+
+    def _disable(self, wait=True):
+        """Return the driver to step mode. Returns how far (in microstep
+        counter units) the driver's counter ended from the phase, or None
+        when not checked."""
+        if not self.active:
+            return None
+        if wait:
+            self.printer.lookup_object("toolhead").wait_moves()
+            reactor = self.printer.get_reactor()
+            end = reactor.monotonic() + DRAIN_TIMEOUT
+            while self.query_cmd.send([self.oid])["pending"]:
+                if reactor.monotonic() > end:
+                    break
+                reactor.pause(reactor.monotonic() + QUERY_INTERVAL)
+        self.active = False
+        self.stop_cmd.send([self.oid])
+        self._leave_direct(self.run["saved"])
+        if not wait:
+            return None
+        phase = self.ffi_lib.phasegen_get_phase(self.pg)
+        phase_index = (phase >> MSCNT_SHIFT) & 1023
+        mscnt = self._read_field("MSCNT", "mscnt")
+        return (mscnt - phase_index + 512) % 1024 - 512
+
+    def _report_disagreement(self, diff, gcmd=None):
+        if diff is None:
+            return
+        # Step pulses stop on the nearest microstep, the phase does not
+        microsteps = motor_kinematics.stepper_microsteps(
+            self.printer, self.stepper
+        )
+        allowed = 1024 // (4 * microsteps) // 2 + 1 if microsteps else 2
+        if abs(diff) <= allowed:
+            return
+        msg = (
+            "Phase stepping on '%s' ended %d microstep counter units away"
+            " from the driver's step position" % (self.stepper_name, diff)
+        )
+        logging.warning(msg)
+        if gcmd is not None:
+            gcmd.respond_info("WARNING: " + msg)
+
+    def _handle_shutdown(self):
+        self.active = False
+
+    def _handle_homing_move_begin(self, hmove):
+        if not self.active:
+            return
+        for mcu_endstop in hmove.get_mcu_endstops():
+            if self.stepper in mcu_endstop.get_steppers():
+                self._report_disagreement(self._disable())
+                self.resume_after_homing = True
+                return
+
+    def _handle_home_rails_end(self, homing_state, rails):
+        if self.active:
+            return
+        if not (self.resume_after_homing or self.auto_enable):
+            return
+        for rail in rails:
+            if self.stepper in rail.get_steppers():
+                self.resume_after_homing = False
+                self._enable()
+                return
+
+    def _handle_motor_off(self, print_time):
+        self.resume_after_homing = False
+        self._disable(wait=False)
+
+    def _handle_set_position(self):
+        if self.active:
+            self.ffi_lib.phasegen_rebase(
+                self.pg, self.stepper.get_commanded_position()
+            )
+
+    def _handle_dir_inverted(self, stepper):
+        if self.active and stepper is self.stepper:
+            self._report_disagreement(self._disable())
+
+    cmd_PHASE_STEPPING_ENABLE_help = (
+        "Enable or disable phase stepping for a stepper"
+    )
+
+    def cmd_PHASE_STEPPING_ENABLE(self, gcmd):
+        if gcmd.get_int("ENABLE", 1, minval=0, maxval=1):
+            self._enable()
+            gcmd.respond_info(
+                "Phase stepping enabled on %s" % (self.stepper_name,)
+            )
+            return
+        self.resume_after_homing = False
+        self._report_disagreement(self._disable(), gcmd)
+        gcmd.respond_info(
+            "Phase stepping disabled on %s" % (self.stepper_name,)
         )
 
     def _lookup_stepper(self, gcmd):
@@ -405,6 +748,8 @@ class PhaseStepping:
     )
 
     def cmd_PHASE_STEPPING_TEST(self, gcmd):
+        if self.active:
+            raise gcmd.error("Disable phase stepping first")
         distance = gcmd.get_float("DISTANCE", 10.0, above=0.0, maxval=100.0)
         velocity = gcmd.get_float("VELOCITY", 20.0, above=0.0, maxval=1000.0)
         accel = gcmd.get_float("ACCEL", 500.0, above=0.0)
@@ -565,6 +910,8 @@ class PhaseStepping:
     )
 
     def cmd_PHASE_STEPPING_STEP_TEST(self, gcmd):
+        if self.active:
+            raise gcmd.error("Disable phase stepping first")
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.wait_moves()
         kin, stepper = self._lookup_stepper(gcmd)
