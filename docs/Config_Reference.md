@@ -2509,8 +2509,12 @@ accel_chip:
 #   On a CoreXY printer, a motor speed of v moves the toolhead at
 #   v*0.707 mm/s. The defaults are 10, 160 and 5.
 #accel: 2000
-#   The acceleration used to reach each test speed, in mm/s^2 of motor
-#   travel. The default is 2000.
+#   The acceleration used to reach each test speed or speed ramp, in
+#   mm/s^2 of motor travel. The default is 2000.
+#ramp_accel: 50
+#   The highest acceleration (in mm/s^2 of motor travel) along a speed
+#   ramp. Ramps through low speeds are slower, so that the vibration can
+#   be followed as its frequency changes. The default is 50.
 #settle_time: 0.1
 #   Time (in seconds) after reaching a test speed before measuring
 #   starts, to let the acceleration ring down. The default is 0.1.

@@ -13,6 +13,8 @@ import time
 from . import motor_kinematics, resonance_tester
 
 REPOSITION_DWELL = 0.3
+# Speed resolution when the speed search ramps through the range
+SEARCH_STEP = 2.5
 GRAPH_SCRIPT = os.path.normpath(
     os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -42,6 +44,7 @@ class PhaseCalibrate:
         )
         self.speed_step = config.getfloat("speed_step", 5.0, above=0.0)
         self.accel = config.getfloat("accel", 2000.0, above=0.0)
+        self.ramp_accel = config.getfloat("ramp_accel", 50.0, above=0.0)
         self.settle_time = config.getfloat("settle_time", 0.1, minval=0.0)
         self.measure_time = config.getfloat("measure_time", 0.5, minval=0.1)
         self.max_distance = config.getfloat("max_distance", 150.0, above=0.0)
@@ -143,7 +146,7 @@ class PhaseCalibrate:
         return resonance_tester.suspend_limits(
             self.printer,
             test["accel"] * scale,
-            max(p[0] for p in test["plan"]) * scale,
+            test["max_speed"] * scale,
             False,
         )
 
@@ -171,10 +174,8 @@ class PhaseCalibrate:
             aclient.finish_measurements()
         return aclient, windows
 
-    def _setup_test(self, gcmd, kin, stepper, point, speeds, accel):
-        """Plan constant speed passes of one motor around point."""
-        from . import motor_harmonics
-
+    def _motor_geometry(self, gcmd, kin, stepper, point):
+        """(toolhead move per mm of motor travel, electrical period)"""
         try:
             direction = motor_kinematics.stepper_move_direction(
                 kin, stepper, point
@@ -188,6 +189,23 @@ class PhaseCalibrate:
             raise gcmd.error(
                 "Cannot find microsteps for '%s'" % (stepper.get_name(),)
             )
+        return direction, period
+
+    def _ends(self, point, direction, half):
+        return {
+            sign: [
+                point[0] + sign * half * direction[0],
+                point[1] + sign * half * direction[1],
+                point[2],
+            ]
+            for sign in (-1, 1)
+        }
+
+    def _setup_test(self, gcmd, kin, stepper, point, speeds, accel):
+        """Plan constant speed passes of one motor around point."""
+        from . import motor_harmonics
+
+        direction, period = self._motor_geometry(gcmd, kin, stepper, point)
         cruise_time = self.settle_time + self.measure_time
         travel = motor_harmonics.motor_travel(max(speeds), accel, cruise_time)
         if travel > self.max_distance:
@@ -217,7 +235,143 @@ class PhaseCalibrate:
             "period": period,
             "plan": plan,
             "accel": accel,
+            "max_speed": max(speeds),
         }
+
+    def _setup_ramps(self, gcmd, kin, stepper, point, speed_range, accels):
+        """Plan speed ramps of one motor around point covering speed_range;
+        accels are (to reach and leave a ramp, along the ramp)."""
+        from . import motor_harmonics
+
+        direction, period = self._motor_geometry(gcmd, kin, stepper, point)
+        accel = accels[0]
+        try:
+            segments = motor_harmonics.plan_ramps(
+                speed_range[0],
+                speed_range[1],
+                period,
+                accels,
+                self.max_distance,
+                self.settle_time,
+            )
+        except ValueError as e:
+            raise gcmd.error("%s: %s" % (gcmd.get_command(), e))
+        travel = max(
+            motor_harmonics.ramp_travel(v1, v2, ramp_accel, accel)
+            for v1, v2, ramp_accel in segments
+        )
+        toolhead = self.printer.lookup_object("toolhead")
+        self._check_travel(
+            gcmd, toolhead, self._ends(point, direction, 0.5 * travel).values()
+        )
+        return {
+            "point": point,
+            "direction": direction,
+            "scale": math.hypot(*direction),
+            "period": period,
+            "segments": segments,
+            "accel": accel,
+            "max_speed": segments[-1][1],
+        }
+
+    def _run_ramps(self, gcmd, test):
+        """Ramp up and down through each segment in both directions and
+        return (times, accel along the motion, ramps)."""
+        from . import motor_harmonics
+
+        toolhead = self.printer.lookup_object("toolhead")
+        point, direction = test["point"], test["direction"]
+        scale, accel = test["scale"], test["accel"]
+
+        def set_accel(value):
+            # A move keeps the acceleration limit it was queued with
+            self.gcode.run_script_from_command(
+                "SET_VELOCITY_LIMIT ACCEL=%.3f" % (value * scale,)
+            )
+
+        ramps = []
+        toolhead.manual_move(point, self.move_speed)
+        toolhead.wait_moves()
+        aclient = self.accel_chip.start_internal_client()
+        try:
+            for v1, v2, ramp_accel in test["segments"]:
+                ramp_d = abs(v2 * v2 - v1 * v1) / (2.0 * ramp_accel)
+                travel = motor_harmonics.ramp_travel(v1, v2, ramp_accel, accel)
+                ends = self._ends(point, direction, 0.5 * travel)
+                toolhead.manual_move(ends[-1], self.move_speed)
+                for motor_dir, up in ((1, 1), (-1, 1), (1, 0), (-1, 0)):
+                    first, last = (v1, v2) if up else (v2, v1)
+                    # Reach the ramp's first speed, ramp, then stop; the
+                    # move junctions keep the speed between the parts.
+                    legs = (
+                        (first * first / (2.0 * accel), first, accel),
+                        (ramp_d, v2, ramp_accel),
+                        (last * last / (2.0 * accel), last, accel),
+                    )
+                    toolhead.dwell(REPOSITION_DWELL)
+                    start_time = toolhead.get_last_move_time()
+                    start = ends[-motor_dir]
+                    done = 0.0
+                    for length, speed, leg_accel in legs:
+                        if length < 1e-6:
+                            continue
+                        done += length
+                        set_accel(leg_accel)
+                        toolhead.manual_move(
+                            [
+                                start[i] + motor_dir * done * direction[i]
+                                for i in (0, 1)
+                            ]
+                            + [point[2]],
+                            speed * scale,
+                        )
+                    set_accel(accel)
+                    # Skip the ringing from reaching the ramp's first speed
+                    sign = 1.0 if up else -1.0
+                    duration = (v2 - v1) / ramp_accel - self.settle_time
+                    if duration > 0.0:
+                        ramps.append(
+                            motor_harmonics.Ramp(
+                                motor_dir,
+                                start_time + first / accel + self.settle_time,
+                                first + sign * ramp_accel * self.settle_time,
+                                sign * ramp_accel,
+                                duration,
+                            )
+                        )
+            toolhead.manual_move(point, self.move_speed)
+        finally:
+            aclient.finish_measurements()
+        if not aclient.has_valid_samples():
+            raise gcmd.error(
+                "accelerometer '%s' measured no data" % (self.accel_chip_name,)
+            )
+        times, values = motor_harmonics.project_samples(
+            aclient.get_samples(), direction[0] / scale, direction[1] / scale
+        )
+        return times, values, ramps
+
+    def _measure_ramp_rows(self, gcmd, test, harmonics, speeds, speed_step):
+        from . import motor_harmonics
+
+        times, values, ramps = self._run_ramps(gcmd, test)
+        rows = []
+        for ramp in ramps:
+            rows.extend(
+                motor_harmonics.analyze_ramp(
+                    times,
+                    values,
+                    ramp,
+                    test["period"],
+                    harmonics,
+                    speeds,
+                    speed_step,
+                )
+            )
+        # Each speed lies in one or two (overlapping) segments
+        rows = motor_harmonics.merge_rows(rows)
+        rows.sort(key=lambda row: (row[0], -row[1], row[2].harmonic))
+        return rows
 
     def _run_test(self, gcmd, test, plan=None):
         """Run passes and return (times, accel along the motion, windows)."""
@@ -385,20 +539,39 @@ class PhaseCalibrate:
         )
         speed_step = gcmd.get_float("SPEED_STEP", self.speed_step, above=0.0)
         accel = gcmd.get_float("ACCEL", self.accel, above=0.0)
+        ramp = gcmd.get_int("RAMP", 1, minval=0, maxval=1)
+        ramp_accel = gcmd.get_float("RAMP_ACCEL", self.ramp_accel, above=0.0)
         harmonics = self._get_harmonics(gcmd)
         name = self._get_name(gcmd)
         graph = gcmd.get_int("GRAPH", int(self.graph), minval=0, maxval=1)
         point = self._get_point(gcmd, toolhead)
         speeds = motor_harmonics.plan_speeds(speed_min, speed_max, speed_step)
-        test = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
+        if ramp:
+            test = self._setup_ramps(
+                gcmd,
+                kin,
+                stepper,
+                point,
+                (speeds[0], speeds[-1]),
+                (accel, ramp_accel),
+            )
+            how = "%d speed ramps" % (len(test["segments"]),)
+        else:
+            test = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
+            how = "%d speeds" % (len(speeds),)
         period = test["period"]
         gcmd.respond_info(
-            "Measuring %s: electrical period %.4f mm, %d speeds from %.0f to"
+            "Measuring %s: electrical period %.4f mm, %s from %.0f to"
             " %.0f mm/s"
-            % (stepper.get_name(), period, len(speeds), speeds[0], speeds[-1])
+            % (stepper.get_name(), period, how, speeds[0], speeds[-1])
         )
         with self._suspend_limits(test):
-            rows = self._measure_rows(gcmd, test, harmonics)
+            if ramp:
+                rows = self._measure_ramp_rows(
+                    gcmd, test, harmonics, speeds, speed_step
+                )
+            else:
+                rows = self._measure_rows(gcmd, test, harmonics)
 
         filename = self._csv_path(stepper.get_name(), name)
         self._write_csv(filename, stepper.get_name(), period, rows)
@@ -453,6 +626,8 @@ class PhaseCalibrate:
             "SPEED_MAX", max(self.speed_max, speed_min), minval=speed_min
         )
         speed_count = gcmd.get_int("SPEED_COUNT", 5, minval=1, maxval=10)
+        ramp = gcmd.get_int("RAMP", 1, minval=0, maxval=1)
+        ramp_accel = gcmd.get_float("RAMP_ACCEL", self.ramp_accel, above=0.0)
         graph = gcmd.get_int("GRAPH", int(self.graph), minval=0, maxval=1)
         graph_name = self._get_name(gcmd)
         point = self._get_point(gcmd, toolhead)
@@ -460,12 +635,33 @@ class PhaseCalibrate:
         # A motor's error changes with speed (its load angle grows), so each
         # harmonic is measured at several speeds where it is clearly seen
         # and gets the one correction that does best across all of them.
-        speeds = motor_harmonics.plan_speeds(speed_min, speed_max, 5.0)
-        test = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
-        with self._suspend_limits(test):
+        # Search with speed ramps (or constant speed passes), then measure at
+        # constant speed where each harmonic shows.
+        speeds = motor_harmonics.plan_speeds(speed_min, speed_max, SEARCH_STEP)
+        if ramp:
+            search = self._setup_ramps(
+                gcmd,
+                kin,
+                stepper,
+                point,
+                (speed_min, speed_max),
+                (accel, ramp_accel),
+            )
+        else:
+            speeds = motor_harmonics.plan_speeds(speed_min, speed_max, 5.0)
+            search = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
+
+        def sweep():
+            if ramp:
+                return self._measure_ramp_rows(
+                    gcmd, search, harmonics, speeds, SEARCH_STEP
+                )
+            return self._measure_rows(gcmd, search, harmonics)
+
+        with self._suspend_limits(search):
             gcmd.respond_info("Finding calibration speeds for %s" % (name,))
-            rows = self._measure_rows(gcmd, test, harmonics)
-            period = test["period"]
+            rows = sweep()
+            period = search["period"]
             csv_files = []
             if graph:
                 csv_files.append(self._csv_path(name, graph_name))
@@ -481,6 +677,9 @@ class PhaseCalibrate:
                         "H%d: not measurably above noise" % (harmonic,)
                     )
                     continue
+                test = self._setup_test(
+                    gcmd, kin, stepper, point, cal_speeds, accel
+                )
 
                 def measure(corr):
                     for d, label in directions.items():
@@ -560,12 +759,7 @@ class PhaseCalibrate:
                 csv_files.append(
                     self._csv_path(name, graph_name + "_calibrated")
                 )
-                self._write_csv(
-                    csv_files[1],
-                    name,
-                    period,
-                    self._measure_rows(gcmd, test, harmonics),
-                )
+                self._write_csv(csv_files[1], name, period, sweep())
         if gcmd.get_int("SAVE", 1, minval=0, maxval=1):
             phase_stepping.save_corrections()
             lines.append(
