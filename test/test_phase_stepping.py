@@ -158,3 +158,57 @@ def test_coil_value_applies_the_shift():
     assert ps.coil_value(phase, 248, True, 4) == ps.coil_value(
         301 << ps.MSCNT_SHIFT, 248, True
     )
+
+
+class _Rail:
+    def __init__(self, steppers):
+        self.steppers = steppers
+
+    def get_steppers(self):
+        return self.steppers
+
+
+class _HomingMove:
+    def __init__(self, steppers):
+        self.endstop = _Rail(steppers)
+
+    def get_mcu_endstops(self):
+        return [self.endstop]
+
+
+def _bare_phase_stepping(stepper, auto_enable):
+    obj = ps.PhaseStepping.__new__(ps.PhaseStepping)
+    obj.stepper = stepper
+    obj.auto_enable = auto_enable
+    obj.active = False
+    obj.resume_after_homing = False
+
+    def enable():
+        obj.active = True
+
+    def disable(wait=True):
+        obj.active = False
+
+    obj._enable = enable
+    obj._disable = disable
+    obj._report_disagreement = lambda diff, gcmd=None: None
+    return obj
+
+
+@pytest.mark.parametrize("auto_enable", [True, False])
+def test_corexy_homing_leaves_both_motors_phase_stepping(auto_enable):
+    a, b = object(), object()
+    motors = [
+        _bare_phase_stepping(a, auto_enable),
+        _bare_phase_stepping(b, auto_enable),
+    ]
+    if not auto_enable:
+        for m in motors:
+            m.active = True
+    # G28: X then Y; on CoreXY both motors move when homing either axis
+    for rail in (_Rail([a]), _Rail([b])):
+        for m in motors:
+            m._handle_homing_move_begin(_HomingMove([a, b]))
+        for m in motors:
+            m._handle_home_rails_end(None, [rail])
+    assert all(m.active for m in motors)

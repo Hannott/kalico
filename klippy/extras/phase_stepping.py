@@ -762,13 +762,12 @@ class PhaseStepping:
     def _handle_home_rails_end(self, homing_state, rails):
         if self.active:
             return
-        if not (self.resume_after_homing or self.auto_enable):
-            return
-        for rail in rails:
-            if self.stepper in rail.get_steppers():
-                self.resume_after_homing = False
-                self._enable()
-                return
+        # A stepper switched off for another rail's homing moves (both
+        # CoreXY motors move when homing either axis) returns after it.
+        homed_here = any(self.stepper in r.get_steppers() for r in rails)
+        if self.resume_after_homing or (self.auto_enable and homed_here):
+            self.resume_after_homing = False
+            self._enable()
 
     def _handle_motor_off(self, print_time):
         self.resume_after_homing = False
@@ -814,9 +813,10 @@ class PhaseStepping:
         if gcmd.get_int("SAVE", 0, minval=0, maxval=1):
             self.save_corrections()
         gcmd.respond_info(
-            "%s correction forward: %s\nbackward: %s"
+            "%s phase stepping %s\ncorrection forward: %s\nbackward: %s"
             % (
                 self.stepper_name,
+                "enabled" if self.active else "disabled",
                 format_correction(self.corrections["forward"]) or "none",
                 format_correction(self.corrections["backward"]) or "none",
             )
