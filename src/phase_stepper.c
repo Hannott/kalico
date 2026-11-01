@@ -18,11 +18,12 @@
 
 #define TICK_CYCLES (CONFIG_CLOCK_FREQ / CONFIG_PHASE_STEPPING_FREQ)
 #define MAX_PHASE_STEPPERS 4
-#define MOVE_QUEUE_SIZE 32
+#define MOVE_QUEUE_SIZE 128
 #define SPI_WRITE 0x80
 #define PAIR_TIMEOUT_US 250
 
 DECL_CONSTANT("PHASE_STEPPER_TICK_FREQ", CONFIG_PHASE_STEPPING_FREQ);
+DECL_CONSTANT("PHASE_STEPPER_QUEUE_SIZE", MOVE_QUEUE_SIZE - 1);
 
 // round(32767 * sin(i * pi / 512)) for one quarter of an electrical period
 static const uint16_t sine_quarter[257] = {
@@ -64,6 +65,8 @@ static const uint16_t sine_quarter[257] = {
 // A constant acceleration segment. Each tick the phase advances by
 // vel + half_accel and vel by 2*half_accel, so the integer phase path is
 // exactly reversed by a segment with negated start_vel and half_accel.
+// An entry with a count of zero is a wait: the following segment starts on
+// the tick at the clock stored in start_vel.
 struct phase_move {
     uint32_t count;
     int32_t start_vel, half_accel;
@@ -212,17 +215,33 @@ phase_stepper_spi_release(struct spidev_s *spi)
  * Updates
  ****************************************************************/
 
+// Advance by the tick at clock now
 static void
-stepper_tick(struct phase_stepper *ps)
+stepper_tick(struct phase_stepper *ps, uint32_t now)
 {
-    if (!ps->count) {
+    while (!ps->count) {
         uint8_t tail = ps->queue_tail;
-        if (tail == ps->queue_head)
+        // Motion always ends at rest, so running out of segments or
+        // reaching a wait while moving means the host fell behind.
+        if (tail == ps->queue_head) {
+            if (ps->vel)
+                shutdown("Phase stepper queue underrun");
             return;
+        }
         struct phase_move *m = &ps->queue[tail];
-        ps->count = m->count;
-        ps->vel = m->start_vel;
-        ps->half_accel = m->half_accel;
+        if (!m->count) {
+            if (ps->vel)
+                shutdown("Phase stepper queue underrun");
+            uint32_t clock = m->start_vel;
+            if (timer_is_before(now, clock))
+                return;
+            if (!timer_is_before(now, clock + TICK_CYCLES))
+                shutdown("Phase stepper move too late");
+        } else {
+            ps->count = m->count;
+            ps->vel = m->start_vel;
+            ps->half_accel = m->half_accel;
+        }
         ps->queue_tail = (tail + 1) % MOVE_QUEUE_SIZE;
     }
     ps->phase += ps->vel + ps->half_accel;
@@ -252,7 +271,7 @@ phase_stepper_update(void)
         if (!(ps->flags & PF_RUNNING))
             continue;
         for (t = 0; t < ticks; t++)
-            stepper_tick(ps);
+            stepper_tick(ps, now - (ticks - 1 - t) * TICK_CYCLES);
     }
 
     if (pair_spi && !task_spi_active && timer_is_before(
@@ -336,25 +355,41 @@ phase_stepper_oid_lookup(uint8_t oid)
     return oid_lookup(oid, command_config_phase_stepper);
 }
 
+static void
+queue_push(struct phase_stepper *ps, uint32_t count, int32_t start_vel
+           , int32_t half_accel)
+{
+    uint8_t head = ps->queue_head, next = (head + 1) % MOVE_QUEUE_SIZE;
+    if (next == ps->queue_tail)
+        shutdown("Phase stepper move queue overflow");
+    struct phase_move *m = &ps->queue[head];
+    m->count = count;
+    m->start_vel = start_vel;
+    m->half_accel = half_accel;
+    barrier();
+    ps->queue_head = next;
+}
+
 void
 command_phase_stepper_queue_move(uint32_t *args)
 {
     struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
-    uint8_t head = ps->queue_head, next = (head + 1) % MOVE_QUEUE_SIZE;
-    if (next == ps->queue_tail)
-        shutdown("Phase stepper move queue overflow");
     if (!args[1])
         shutdown("Invalid phase stepper move count");
-    struct phase_move *m = &ps->queue[head];
-    m->count = args[1];
-    m->start_vel = args[2];
-    m->half_accel = args[3];
-    barrier();
-    ps->queue_head = next;
+    queue_push(ps, args[1], args[2], args[3]);
 }
 DECL_COMMAND(command_phase_stepper_queue_move,
              "phase_stepper_queue_move oid=%c count=%u start_vel=%i"
              " half_accel=%i");
+
+void
+command_phase_stepper_queue_wait(uint32_t *args)
+{
+    struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
+    queue_push(ps, 0, args[1], 0);
+}
+DECL_COMMAND(command_phase_stepper_queue_wait,
+             "phase_stepper_queue_wait oid=%c clock=%u");
 
 void
 command_phase_stepper_start(uint32_t *args)
@@ -410,6 +445,7 @@ command_phase_stepper_query(uint32_t *args)
     struct phase_stepper *ps = phase_stepper_oid_lookup(oid);
     irq_disable();
     uint32_t phase = ps->phase, flags = ps->flags;
+    uint32_t tick_clock = next_tick_clock;
     uint32_t pending = ps->count || ps->queue_tail != ps->queue_head;
     uint32_t ticks = stats.ticks, lost = stats.lost_ticks;
     uint32_t locked = stats.locked_ticks, max_cycles = stats.max_cycles;
@@ -420,8 +456,9 @@ command_phase_stepper_query(uint32_t *args)
     uint32_t avg_cycles = ticks ? total_cycles / ticks : 0;
     sendf("phase_stepper_state oid=%c phase=%u flags=%c pending=%c ticks=%u"
           " lost_ticks=%u locked_ticks=%u pair_timeouts=%u xfers=%u"
-          " max_cycles=%u avg_cycles=%u", oid, phase, flags, pending, ticks
-          , lost, locked, pair_timeouts, xfers, max_cycles, avg_cycles);
+          " max_cycles=%u avg_cycles=%u tick_clock=%u", oid, phase, flags
+          , pending, ticks, lost, locked, pair_timeouts, xfers, max_cycles
+          , avg_cycles, tick_clock);
 }
 DECL_COMMAND(command_phase_stepper_query, "phase_stepper_query oid=%c");
 

@@ -321,7 +321,7 @@ class PhaseStepping:
             "phase_stepper_query oid=%c",
             "phase_stepper_state oid=%c phase=%u flags=%c pending=%c"
             " ticks=%u lost_ticks=%u locked_ticks=%u pair_timeouts=%u xfers=%u"
-            " max_cycles=%u avg_cycles=%u",
+            " max_cycles=%u avg_cycles=%u tick_clock=%u",
             oid=self.oid,
             cq=cq,
         )
