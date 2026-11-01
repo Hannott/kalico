@@ -5,12 +5,23 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
 import os
+import subprocess
+import sys
 import tempfile
 import time
 
 from . import motor_kinematics, resonance_tester
 
 REPOSITION_DWELL = 0.3
+GRAPH_SCRIPT = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "..",
+        "scripts",
+        "graph_motor_harmonics.py",
+    )
+)
 # Matches phase_stepping.CORRECTION_MAX
 CORRECTION_LIMIT_RAD = 127 * 2.0 * math.pi / 4096.0
 HARMONIC_NAMES = {
@@ -40,6 +51,15 @@ class PhaseCalibrate:
             raise config.error(
                 "Option 'harmonics' in section '%s' must list positive"
                 " integers" % (config.get_name(),)
+            )
+        self.graph = config.getboolean("graph", False)
+        self.output_dir = os.path.expanduser(
+            config.get("output_dir", tempfile.gettempdir())
+        )
+        if not os.path.isdir(self.output_dir):
+            raise config.error(
+                "Option 'output_dir' in section '%s' is not a directory"
+                % (config.get_name(),)
             )
         self.accel_chip = None
         self.printer.register_event_handler(
@@ -291,6 +311,45 @@ class PhaseCalibrate:
                     )
                 )
 
+    def _get_name(self, gcmd):
+        name = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
+        if not name.replace("-", "").replace("_", "").isalnum():
+            raise gcmd.error("Invalid NAME parameter")
+        return name
+
+    def _csv_path(self, stepper_name, name):
+        return os.path.join(
+            self.output_dir,
+            "motor_harmonics_%s_%s.csv" % (stepper_name, name),
+        )
+
+    def _graph(self, csv_files):
+        """Plot each CSV to a PNG beside it with the standalone graph
+        script, in a child process so matplotlib neither loads into nor
+        blocks klippy. Returns the lines to report."""
+        reactor = self.printer.get_reactor()
+        lines = []
+        for csv_file in csv_files:
+            png = os.path.splitext(csv_file)[0] + ".png"
+            proc = subprocess.Popen(
+                [sys.executable, GRAPH_SCRIPT, csv_file, "-o", png],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            eventtime = reactor.monotonic()
+            while proc.poll() is None:
+                eventtime = reactor.pause(eventtime + 0.1)
+            err = proc.stderr.read().decode(errors="replace").strip()
+            proc.stderr.close()
+            if proc.returncode:
+                lines.append(
+                    "Graph of %s failed: %s"
+                    % (csv_file, err.splitlines()[-1] if err else "unknown")
+                )
+            else:
+                lines.append("Graph written to %s" % (png,))
+        return lines
+
     def _format_peak(self, row):
         if row is None:
             return "not above noise"
@@ -327,9 +386,8 @@ class PhaseCalibrate:
         speed_step = gcmd.get_float("SPEED_STEP", self.speed_step, above=0.0)
         accel = gcmd.get_float("ACCEL", self.accel, above=0.0)
         harmonics = self._get_harmonics(gcmd)
-        name = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
-        if not name.replace("-", "").replace("_", "").isalnum():
-            raise gcmd.error("Invalid NAME parameter")
+        name = self._get_name(gcmd)
+        graph = gcmd.get_int("GRAPH", int(self.graph), minval=0, maxval=1)
         point = self._get_point(gcmd, toolhead)
         speeds = motor_harmonics.plan_speeds(speed_min, speed_max, speed_step)
         test = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
@@ -342,10 +400,7 @@ class PhaseCalibrate:
         with self._suspend_limits(test):
             rows = self._measure_rows(gcmd, test, harmonics)
 
-        filename = os.path.join(
-            tempfile.gettempdir(),
-            "motor_harmonics_%s_%s.csv" % (stepper.get_name(), name),
-        )
+        filename = self._csv_path(stepper.get_name(), name)
         self._write_csv(filename, stepper.get_name(), period, rows)
         peaks = motor_harmonics.peak_per_harmonic(rows)
         lines = ["Peak vibration per harmonic of %s:" % (stepper.get_name(),)]
@@ -361,6 +416,8 @@ class PhaseCalibrate:
                 )
             )
         lines.append("Data written to %s" % (filename,))
+        if graph:
+            lines.extend(self._graph([filename]))
         gcmd.respond_info("\n".join(lines))
 
     cmd_PHASE_STEPPING_CALIBRATE_help = (
@@ -396,6 +453,8 @@ class PhaseCalibrate:
             "SPEED_MAX", max(self.speed_max, speed_min), minval=speed_min
         )
         speed_count = gcmd.get_int("SPEED_COUNT", 5, minval=1, maxval=10)
+        graph = gcmd.get_int("GRAPH", int(self.graph), minval=0, maxval=1)
+        graph_name = self._get_name(gcmd)
         point = self._get_point(gcmd, toolhead)
 
         # A motor's error changes with speed (its load angle grows), so each
@@ -407,6 +466,10 @@ class PhaseCalibrate:
             gcmd.respond_info("Finding calibration speeds for %s" % (name,))
             rows = self._measure_rows(gcmd, test, harmonics)
             period = test["period"]
+            csv_files = []
+            if graph:
+                csv_files.append(self._csv_path(name, graph_name))
+                self._write_csv(csv_files[0], name, period, rows)
             directions = {1: "forward", -1: "backward"}
             lines = ["Phase stepping calibration of %s:" % (name,)]
             for harmonic in harmonics:
@@ -492,12 +555,25 @@ class PhaseCalibrate:
                             math.atan2(best[d].imag, best[d].real),
                         )
                     )
+            if graph:
+                gcmd.respond_info("Measuring %s after calibration" % (name,))
+                csv_files.append(
+                    self._csv_path(name, graph_name + "_calibrated")
+                )
+                self._write_csv(
+                    csv_files[1],
+                    name,
+                    period,
+                    self._measure_rows(gcmd, test, harmonics),
+                )
         if gcmd.get_int("SAVE", 1, minval=0, maxval=1):
             phase_stepping.save_corrections()
             lines.append(
                 "Corrections stored; run SAVE_CONFIG to keep them across"
                 " restarts"
             )
+        if graph:
+            lines.extend(self._graph(csv_files))
         gcmd.respond_info("\n".join(lines))
 
 

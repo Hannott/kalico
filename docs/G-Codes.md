@@ -1274,7 +1274,8 @@ is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
 #### PHASE_STEPPING_CALIBRATE
 `PHASE_STEPPING_CALIBRATE STEPPER=<config_name> [HARMONICS=<h1,h2,...>]
 [SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [SPEED_COUNT=<n>] [PASSES=<n>]
-[PROBE=<radians>] [ACCEL=<mm/s^2>] [POINT=x,y,z] [SAVE=<0|1>]`: Find the
+[PROBE=<radians>] [ACCEL=<mm/s^2>] [POINT=x,y,z] [SAVE=<0|1>]
+[GRAPH=<0|1>] [NAME=<name>]`: Find the
 coil angle corrections that cancel the given harmonics (default 2, 4 and
 1) of a phase stepped motor, per direction of motion. A motor's error
 changes somewhat with speed, so each harmonic is measured at up to
@@ -1284,18 +1285,25 @@ and gets the single correction that leaves the least vibration across
 those speeds relative to where it started. Limit the speed range to the
 speeds you print at to favour them. The results are stored for
 `SAVE_CONFIG` unless `SAVE=0`. Phase stepping must be enabled on the
-stepper.
+stepper. With `GRAPH=1` (default from the `graph` config option) it also
+measures all speeds again after calibrating, and writes the sweeps before
+and after to `motor_harmonics_<stepper>_<name>.csv` and
+`motor_harmonics_<stepper>_<name>_calibrated.csv` in `output_dir`, each
+with a PNG graph.
 
 #### MEASURE_MOTOR_HARMONICS
 `MEASURE_MOTOR_HARMONICS STEPPER=<config_name> [SPEED_MIN=<mm/s>]
 [SPEED_MAX=<mm/s>] [SPEED_STEP=<mm/s>] [ACCEL=<mm/s^2>]
-[HARMONICS=<h1,h2,...>] [POINT=x,y,z] [NAME=<name>]`: Moves only the
+[HARMONICS=<h1,h2,...>] [POINT=x,y,z] [NAME=<name>] [GRAPH=<0|1>]`:
+Moves only the
 given X/Y stepper (diagonally on a CoreXY printer) at a series of
 constant speeds in both directions, and measures the toolhead vibration
 at each harmonic of the motor's electrical frequency. It reports the
 strongest vibration per harmonic and direction, and writes all
-measurements to `/tmp/motor_harmonics_<stepper>_<name>.csv`. Speeds and
-acceleration are in mm/s of motor travel. X and Y must be homed.
+measurements to `motor_harmonics_<stepper>_<name>.csv` in `output_dir`
+(default `/tmp`). With `GRAPH=1` (default from the `graph` config option)
+it also saves a PNG graph next to it. Speeds and acceleration are in mm/s
+of motor travel. X and Y must be homed.
 
 ### [phase_stepping]
 
