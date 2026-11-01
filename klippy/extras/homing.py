@@ -121,19 +121,28 @@ class HomingMove:
         # Start endstop checking
         print_time = self.toolhead.get_last_move_time()
         endstop_triggers = []
-        for mcu_endstop, name in self.endstops:
-            rest_time = self._calc_endstop_rate(mcu_endstop, movepos, speed)
-            wait = mcu_endstop.home_start(
-                print_time,
-                ENDSTOP_SAMPLE_TIME,
-                ENDSTOP_SAMPLE_COUNT,
-                rest_time,
-                triggered=triggered,
-            )
-            endstop_triggers.append(wait)
-        all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
-
-        self.toolhead.dwell(HOMING_START_DELAY)
+        try:
+            for mcu_endstop, name in self.endstops:
+                rest_time = self._calc_endstop_rate(mcu_endstop, movepos, speed)
+                wait = mcu_endstop.home_start(
+                    print_time,
+                    ENDSTOP_SAMPLE_TIME,
+                    ENDSTOP_SAMPLE_COUNT,
+                    rest_time,
+                    triggered=triggered,
+                )
+                endstop_triggers.append(wait)
+            all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
+            self.toolhead.dwell(HOMING_START_DELAY)
+        except Exception:
+            # Stop endstops already started so they release their resources
+            end_time = self.toolhead.get_last_move_time()
+            for mcu_endstop, name in self.endstops[: len(endstop_triggers)]:
+                try:
+                    mcu_endstop.home_wait(end_time)
+                except self.printer.command_error:
+                    pass
+            raise
         # Issue move
         error = None
         try:
@@ -280,8 +289,7 @@ class Homing:
         print_time = self.toolhead.get_last_move_time()
         affected_rails = set()
         for axis in homing_axes:
-            axis_name = "xyz"[axis]  # only works for cartesian
-            partial_rails = self.toolhead.get_active_rails_for_axis(axis_name)
+            partial_rails = self.toolhead.get_active_rails_for_axis(axis)
             affected_rails = affected_rails | set(partial_rails)
 
         dwell_time = 0.0
@@ -308,8 +316,9 @@ class Homing:
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation
         self.printer.send_event("homing:home_rails_begin", self, rails)
-        # Alter kinematics class to think printer is at forcepo
-        homing_axes = [axis for axis in range(3) if forcepos[axis] is not None]
+        # Alter kinematics class to think printer is at forcepos
+        force_axes = [axis for axis in range(3) if forcepos[axis] is not None]
+        homing_axes = "".join(["xyz"[i] for i in force_axes])
         startpos = self._fill_coord(forcepos)
         homepos = self._fill_coord(movepos)
         self.toolhead.set_position(startpos, homing_axes=homing_axes)
@@ -329,7 +338,7 @@ class Homing:
 
         needs_rehome = False
         retract_dist = hi.retract_dist
-        if hmove.moved_less_than_dist(hi.min_home_dist, homing_axes):
+        if hmove.moved_less_than_dist(hi.min_home_dist, force_axes):
             needs_rehome = True
             retract_dist = hi.min_home_dist
 
@@ -354,6 +363,8 @@ class Homing:
                         for rp, ad in zip(retractpos, axes_d)
                     ]
                     self.toolhead.set_position(startpos)
+                    self._set_homing_accel(hi.accel, pre_homing=True)
+                    self._set_homing_current(homing_axes, pre_homing=True)
                     self._reset_endstop_states(endstops)
 
                     hmove = HomingMove(self.printer, endstops)
@@ -368,7 +379,7 @@ class Homing:
                         hi.use_sensorless_homing
                         and needs_rehome
                         and hmove.moved_less_than_dist(
-                            hi.min_home_dist, homing_axes
+                            hi.min_home_dist, force_axes
                         )
                     ):
                         raise self.printer.command_error(
@@ -411,7 +422,7 @@ class Homing:
                 for s in kin.get_steppers()
             }
             newpos = kin.calc_position(kin_spos)
-            for axis in homing_axes:
+            for axis in force_axes:
                 homepos[axis] = newpos[axis]
             self.toolhead.set_position(homepos)
 
