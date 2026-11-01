@@ -777,18 +777,51 @@ state; issue a G28 afterwards to reset the kinematics. This command is
 intended for low-level diagnostics and debugging.
 
 #### SET_KINEMATIC_POSITION
+
 `SET_KINEMATIC_POSITION [X=<value>] [Y=<value>] [Z=<value>]
-[CLEAR=<[X][Y][Z]>]`: Force the low-level kinematic code to believe the
-toolhead is at the given cartesian position. This is a diagnostic and
-debugging command; use SET_GCODE_OFFSET and/or G92 for regular axis
-transformations. If an axis is not specified then it will default to the
-position that the head was last commanded to. Setting an incorrect or
-invalid position may lead to internal software errors. Use the CLEAR
-parameter to forget the homing state for the given axes. Note that CLEAR
-will not override the previous functionality; if an axis is not specified
-to CLEAR it will have its kinematic position set as per above. This
-command may invalidate future boundary checks; issue a G28 afterwards to
-reset the kinematics.
+[SET_HOMED=<[X][Y][Z]>] [CLEAR_HOMED=<[X][Y][Z]>]`: Force the
+low-level kinematic code to believe the toolhead is at the given
+cartesian position and set/clear homed status. This is a diagnostic
+and debugging command; use SET_GCODE_OFFSET and/or G92 for regular
+axis transformations. Setting an incorrect or invalid position may
+lead to internal software errors.
+
+The `X`, `Y`, and `Z` parameters are used to alter the low-level
+kinematic position tracking. If any of these parameters are not set
+then the position is not changed - for example `SET_KINEMATIC_POSITION
+Z=10` would set all axes as homed, set the internal Z position to 10,
+and leave the X and Y positions unchanged. Changing the internal
+position tracking is not dependent on the internal homing state - one
+may alter the position for both homed and not homed axes, and
+similarly one may set or clear the homing state of an axis without
+altering its internal position.
+
+The `SET_HOMED` parameter defaults to `XYZ` which instructs the
+kinematics to consider all axes as homed. A bare
+`SET_KINEMATIC_POSITION` command will result in all axes being
+considered homed (and not change its current position). If it is not
+desired to change the state of homed axes then assign `SET_HOMED` to
+an empty string - for example:
+`SET_KINEMATIC_POSITION SET_HOMED= X=10`. It is also possible to
+request an individual axis be considered homed (eg, `SET_HOMED=X`),
+but note that non-cartesian style kinematics (such as delta
+kinematics) may not support setting an individual axis as homed.
+
+The `CLEAR_HOMED` parameter instructs the kinematics to consider the
+given axes as not homed. For example, `CLEAR_HOMED=XYZ` would request
+all axes to be considered not homed (and thus require homing prior to
+movement on those axes). The default is `SET_HOMED=XYZ` even if
+`CLEAR_HOMED` is present, so the command `SET_KINEMATIC_POSITION
+CLEAR_HOMED=Z` will set X and Y as homed and clear the homing state
+for Z.  Use `SET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=Z` if the
+goal is to clear only the Z homing state. If an axis is specified in
+neither `SET_HOMED` nor `CLEAR_HOMED` then its homing state is not
+changed and if it is specified in both then `CLEAR_HOMED` has
+precedence. It is possible to request clearing of an individual axis,
+but on non-cartesian style kinematics (such as delta kinematics) doing
+so may result in clearing the homing state of additional axes. Note
+the `CLEAR` parameter is currently an alias for the `CLEAR_HOMED`
+parameter, but this alias will be removed in the future.
 
 ### [gcode]
 
@@ -1299,6 +1332,11 @@ HEATER generally takes the short name (so for `heater_generic chamber` you would
 only write `chamber`)
 
 #### PID_PROFILE
+Despite the name, profiles are not limited to PID control: a profile
+carries a control algorithm (`pid`, `pid_v`, `dual_loop_pid`,
+`watermark` or `mpc`) along with its settings, and loading a profile
+switches the heater to that algorithm.
+
 `PID_PROFILE LOAD=<profile_name> HEATER=<heater_name> [DEFAULT=<profile_name>]
 [VERBOSE=<verbosity>] [KEEP_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Loads the given PID_PROFILE for the specified heater. If DEFAULT is specified,
@@ -1317,7 +1355,9 @@ if you encounter weird behaviour while switching profiles.
 
 `PID_PROFILE SAVE=<profile_name> HEATER=<heater_name>`:
 Saves the currently loaded profile of the specified heater to the config under
-the given name.
+the given name. Supported for the PID control types and `watermark`;
+`mpc` profiles cannot be saved this way (use the
+[MPC calibration flow](MPC.md) and SAVE_CONFIG instead).
 
 `PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
 Removes the given profile from the profiles List for the current session and
@@ -1338,8 +1378,11 @@ started up, if set to 0, the profile will retain previous heating information.
 By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.
 
-`PID_PROFILE GET_VALUES HEATER=<heater_name>`:
-Outputs the values of the current loaded pid_profile of the given heater to the console.
+`PID_PROFILE GET_VALUES=<profile_name> HEATER=<heater_name>`:
+Outputs the values of the currently loaded profile of the given heater to the
+console (the `GET_VALUES` value is required by the command syntax but
+ignored; the active profile is always shown). For non-PID control types
+(`watermark`, `mpc`) the profile fields are listed generically.
 
 ### [pause_resume]
 
