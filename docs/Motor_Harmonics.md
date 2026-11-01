@@ -35,8 +35,13 @@ MEASURE_MOTOR_HARMONICS STEPPER=stepper_y
 ```
 
 The test moves only the requested motor. On a CoreXY printer that is a
-diagonal move. It runs at each speed between `speed_min` and
-`speed_max`, in both directions, and takes about 1-2 minutes per motor.
+diagonal move. The motor ramps smoothly up and down through the speeds
+between `speed_min` and `speed_max` in both directions, like the sweep of
+a resonance test, which takes about a minute per motor. Ramping up and
+down both counts, so that the slight lag of the vibration behind the
+changing speed cancels out. `RAMP=0` measures at constant speeds in
+steps of `speed_step` instead, which takes longer but holds each speed
+until the vibration is steady.
 Turn off fans that are not needed, as their vibration raises the noise
 level.
 

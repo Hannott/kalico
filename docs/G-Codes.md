@@ -1274,13 +1274,16 @@ is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
 #### PHASE_STEPPING_CALIBRATE
 `PHASE_STEPPING_CALIBRATE STEPPER=<config_name> [HARMONICS=<h1,h2,...>]
 [SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [SPEED_COUNT=<n>] [PASSES=<n>]
-[PROBE=<radians>] [ACCEL=<mm/s^2>] [POINT=x,y,z] [SAVE=<0|1>]
-[GRAPH=<0|1>] [NAME=<name>]`: Find the
+[PROBE=<radians>] [ACCEL=<mm/s^2>] [RAMP=<0|1>] [RAMP_ACCEL=<mm/s^2>]
+[POINT=x,y,z] [SAVE=<0|1>] [GRAPH=<0|1>] [NAME=<name>]`: Find the
 coil angle corrections that cancel the given harmonics (default 2, 4 and
-1) of a phase stepped motor, per direction of motion. A motor's error
-changes somewhat with speed, so each harmonic is measured at up to
-SPEED_COUNT (default 5) speeds between SPEED_MIN and SPEED_MAX where it is
-clearly measurable, with no correction and two small probe corrections,
+1) of a phase stepped motor, per direction of motion. It first ramps the
+motor through the speed range as `MEASURE_MOTOR_HARMONICS` does (or with
+`RAMP=0` steps through constant speeds) to find where each harmonic is
+clearly measurable. A motor's error changes somewhat with speed, so each
+harmonic is then measured at constant speed at up to SPEED_COUNT
+(default 5) of those speeds between SPEED_MIN and SPEED_MAX, with no
+correction and two small probe corrections,
 and gets the single correction that leaves the least vibration across
 those speeds relative to where it started. Limit the speed range to the
 speeds you print at to favour them. The results are stored for
@@ -1293,12 +1296,17 @@ with a PNG graph.
 
 #### MEASURE_MOTOR_HARMONICS
 `MEASURE_MOTOR_HARMONICS STEPPER=<config_name> [SPEED_MIN=<mm/s>]
-[SPEED_MAX=<mm/s>] [SPEED_STEP=<mm/s>] [ACCEL=<mm/s^2>]
-[HARMONICS=<h1,h2,...>] [POINT=x,y,z] [NAME=<name>] [GRAPH=<0|1>]`:
-Moves only the
-given X/Y stepper (diagonally on a CoreXY printer) at a series of
-constant speeds in both directions, and measures the toolhead vibration
-at each harmonic of the motor's electrical frequency. It reports the
+[SPEED_MAX=<mm/s>] [SPEED_STEP=<mm/s>] [ACCEL=<mm/s^2>] [RAMP=<0|1>]
+[RAMP_ACCEL=<mm/s^2>] [HARMONICS=<h1,h2,...>] [POINT=x,y,z]
+[NAME=<name>] [GRAPH=<0|1>]`: Moves only the given X/Y stepper
+(diagonally on a CoreXY printer) and measures the toolhead vibration at
+each harmonic of the motor's electrical frequency. By default the motor
+ramps smoothly up and down through the speed range in both directions,
+like a resonance sweep, and each harmonic is followed as its frequency
+changes; results are given every SPEED_STEP. The ramp is gentle at low
+speeds and at most RAMP_ACCEL (mm/s^2 of motor travel) at high speeds,
+and the range is split into several ramps that fit in `max_distance`.
+`RAMP=0` measures at a series of constant speeds instead. It reports the
 strongest vibration per harmonic and direction, and writes all
 measurements to `motor_harmonics_<stepper>_<name>.csv` in `output_dir`
 (default `/tmp`). With `GRAPH=1` (default from the `graph` config option)

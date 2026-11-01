@@ -240,3 +240,89 @@ def test_pick_calibration_speeds_spreads_over_the_usable_range():
         float(s) for s in range(10, 71, 5)
     ]
     assert mh.pick_calibration_speeds(rows, 2, 4) == []
+
+
+def _synthetic_ramp(ramp, disp_by_harmonic, noise=0.0):
+    rng = np.random.default_rng(2)
+    times = ramp.start_time + np.arange(0.0, ramp.duration, 1.0 / SAMPLE_RATE)
+    times = times + rng.uniform(-5e-5, 5e-5, len(times))
+    t = times - ramp.start_time
+    speed = ramp.start_speed + ramp.accel * t
+    angle = 2.0 * math.pi * (ramp.start_speed * t + 0.5 * ramp.accel * t * t)
+    angle /= PERIOD
+    rate = 2.0 * math.pi * speed / PERIOD
+    rate_change = 2.0 * math.pi * ramp.accel / PERIOD
+    accel = rng.normal(0.0, noise, len(times))
+    for harmonic, disp in disp_by_harmonic.items():
+        phase = harmonic * angle + 0.7 * harmonic
+        # Second derivative of disp * cos(phase) with a changing rate
+        accel -= disp * (
+            np.cos(phase) * (harmonic * rate) ** 2
+            + np.sin(phase) * harmonic * rate_change
+        )
+    return times, accel
+
+
+@pytest.mark.parametrize("direction", [1, -1])
+def test_analyze_ramp_follows_the_changing_frequency(direction):
+    up = direction > 0
+    ramp = mh.Ramp(1, 100.0, 20.0 if up else 120.0, 50.0 * direction, 2.0)
+    times, accel = _synthetic_ramp(ramp, {2: 2e-3, 4: 5e-4}, noise=50.0)
+    speeds = [40.0, 70.0, 100.0]
+    rows = mh.analyze_ramp(times, accel, ramp, PERIOD, (1, 2, 4), speeds, 2.5)
+    by_key = {(s, r.harmonic): r for s, d, r in rows}
+    assert {s for s, h in by_key} == set(speeds)
+    for speed in speeds:
+        assert by_key[speed, 2].disp == pytest.approx(2e-3, rel=0.05)
+        assert by_key[speed, 4].disp == pytest.approx(5e-4, rel=0.05)
+        assert by_key[speed, 2].disp > 20.0 * by_key[speed, 2].noise_disp
+        assert by_key[speed, 1].disp < 5.0 * by_key[speed, 1].noise_disp
+
+
+def test_analyze_ramp_skips_speeds_it_cannot_resolve():
+    ramp = mh.Ramp(-1, 100.0, 20.0, 50.0, 2.0)
+    times, accel = _synthetic_ramp(ramp, {2: 2e-3})
+    rows = mh.analyze_ramp(
+        times, accel, ramp, PERIOD, (1, 2), [10.0, 21.0, 60.0, 119.0], 2.5
+    )
+    by_key = {(s, r.harmonic): r for s, d, r in rows}
+    # Outside the ramp, or a window reaching past either end
+    assert (10.0, 2) not in by_key
+    assert by_key[21.0, 2].disp is None and by_key[119.0, 2].disp is None
+    assert by_key[60.0, 2].disp is not None
+    assert all(d == -1 for s, d, r in rows)
+
+
+def test_merge_rows_averages_ramps_up_and_down():
+    a = mh.HarmonicResult(2, 75.0, 10.0, 2e-3, 1e-5)
+    b = mh.HarmonicResult(2, 75.0, 20.0, 4e-3, 3e-5)
+    none = mh.HarmonicResult(4, 150.0, None, None, None)
+    unmeasured = mh.HarmonicResult(2, 75.0, None, None, None)
+    rows = [
+        (30.0, 1, a),
+        (30.0, 1, b),
+        (30.0, 1, unmeasured),
+        (30.0, -1, a),
+        (30.0, 1, none),
+    ]
+    merged = mh.merge_rows(rows)
+    assert merged[0] == (30.0, 1, mh.HarmonicResult(2, 75.0, 15.0, 3e-3, 2e-5))
+    assert merged[1] == (30.0, -1, a)
+    assert merged[2][2].disp is None
+
+
+def test_plan_ramps_covers_the_range_within_the_travel():
+    segments = mh.plan_ramps(10.0, 160.0, PERIOD, (2000.0, 50.0), 150.0, 0.1)
+    assert segments[0][0] < 10.0 and segments[-1][1] > 160.0
+    for (v1, v2, ramp_accel), nxt in zip(segments, segments[1:] + [None]):
+        assert mh.ramp_travel(v1, v2, ramp_accel, 2000.0) <= 150.0 + 1e-6
+        assert ramp_accel <= 50.0
+        # A window of RAMP_WINDOW_PERIODS spans at most a quarter of v1
+        window = mh.RAMP_WINDOW_PERIODS * PERIOD / v1
+        assert ramp_accel * window <= 0.25 * v1 * 1.0001
+        if nxt is not None:
+            assert nxt[0] < v2
+    # Slow speeds ramp more gently than fast ones
+    assert segments[0][2] < segments[-1][2]
+    with pytest.raises(ValueError):
+        mh.plan_ramps(10.0, 160.0, PERIOD, (2000.0, 50.0), 5.0, 0.1)
