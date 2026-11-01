@@ -363,6 +363,28 @@ config HIGH_PREC_STEP
     bool "High-precision stepping support (slow)"
     default n
 
+config WANT_PHASE_STEPPING
+    depends on LOW_LEVEL_OPTIONS && WANT_GPIO_SPI
+    bool "Phase stepping support (experimental)"
+    default n
+    help
+        Drive stepper driver coil currents directly over hardware SPI
+        instead of with step pulses. Boards without a dedicated
+        implementation update the coils at a lower rate.
+config PHASE_STEPPING_TIMER
+    bool
+    depends on WANT_PHASE_STEPPING && HAVE_PHASE_STEPPING_TIMER
+    default y
+config PHASE_STEPPING_POLL
+    bool
+    depends on WANT_PHASE_STEPPING && !PHASE_STEPPING_TIMER
+    default y
+config PHASE_STEPPING_FREQ
+    int
+    depends on WANT_PHASE_STEPPING
+    default 40000 if PHASE_STEPPING_TIMER
+    default 10000
+
 # The HAVE_x options allow boards to disable support for some commands
 # if the hardware does not support the feature.
 config HAVE_GPIO
@@ -372,6 +394,8 @@ config HAVE_GPIO_ADC
 config HAVE_GPIO_SPI
     bool
 config HAVE_GPIO_SDIO
+    bool
+config HAVE_PHASE_STEPPING_TIMER
     bool
 config HAVE_GPIO_I2C
     bool
