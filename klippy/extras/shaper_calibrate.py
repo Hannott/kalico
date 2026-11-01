@@ -30,6 +30,11 @@ AUTOTUNE_SHAPERS = [
     "2hump_ei",
 ]
 
+# Largest number of resonance peaks extract_resonance_peaks reports. More
+# than a handful of distinct, well-separated, significant resonances per
+# axis is rare on real printers.
+MAX_RESONANCE_PEAKS = 4
+
 ######################################################################
 # Frequency response calculation and shaper auto-tuning
 ######################################################################
@@ -748,6 +753,153 @@ class ShaperCalibrate:
             # Unreachable for physical smoothers/shapers (b180 > 0)
             return 0.0
         return 2.0 * half_accel
+
+    def _detect_resonance_peaks(
+        self,
+        freq_bins,
+        psd,
+        min_freq,
+        max_freq,
+        min_prominence=0.12,
+        min_separation=8.0,
+        max_peaks=2,
+    ):
+        # Well-separated local maxima in the PSD, at most `max_peaks` of
+        # them, sorted by descending PSD magnitude (most significant first).
+        np = self.numpy
+        mask = (freq_bins >= min_freq) & (freq_bins <= max_freq)
+        freqs = freq_bins[mask]
+        vals = psd[mask]
+        if freqs.shape[0] < 3:
+            return []
+        is_peak = (vals[1:-1] > vals[:-2]) & (vals[1:-1] > vals[2:])
+        idx = np.nonzero(is_peak)[0] + 1
+        if idx.shape[0] == 0:
+            return []
+        peak_freqs = freqs[idx]
+        peak_vals = vals[idx]
+        order = np.argsort(peak_vals)[::-1]
+        top_val = peak_vals[order[0]]
+        selected = []
+        for i in order:
+            v = peak_vals[i]
+            if v < min_prominence * top_val:
+                break
+            f = float(peak_freqs[i])
+            if any(abs(f - sf) < min_separation for sf in selected):
+                continue
+            selected.append(f)
+            if len(selected) >= max_peaks:
+                break
+        return selected
+
+    def _estimate_damping_ratio(
+        self, freq_bins, psd, f0, max_span_lo=None, max_span_hi=None
+    ):
+        # Half-power (-3 dB) bandwidth method: for a lightly damped 2nd
+        # order resonance, the two frequencies either side of the peak
+        # where the PSD drops to half its peak value bracket a bandwidth
+        # of approximately 2 * zeta * f0. Only meaningful for an isolated,
+        # reasonably narrow peak, hence the search span limits (to avoid
+        # running into a neighboring peak) and the sanity-clipped result.
+        #
+        # The two directions are bounded independently: a real resonance
+        # can decay asymmetrically (steep on one side, a gradual shoulder
+        # on the other), so a single symmetric span tight enough to
+        # protect against a neighboring peak on one side can cut the
+        # search short on the other side. Callers that know of a nearby
+        # second peak should tighten max_span_lo/max_span_hi only on the
+        # side that peak is actually on.
+        np = self.numpy
+        if f0 <= 0.0 or freq_bins.shape[0] < 3:
+            return None
+        i0 = int(np.argmin(np.abs(freq_bins - f0)))
+        p0 = psd[i0]
+        if p0 <= 0.0:
+            return None
+        half = 0.5 * p0
+        default_span = max(15.0, 0.3 * f0)
+        span_lo = max_span_lo if max_span_lo is not None else default_span
+        span_hi = max_span_hi if max_span_hi is not None else default_span
+        n = freq_bins.shape[0]
+
+        def find_crossing(step, span):
+            i = i0
+            while (
+                0 <= i + step < n
+                and psd[i + step] > half
+                and abs(freq_bins[i + step] - f0) <= span
+            ):
+                i += step
+            j = i + step
+            if not (0 <= j < n) or abs(freq_bins[j] - f0) > span:
+                return None
+            f_i, p_i = freq_bins[i], psd[i]
+            f_j, p_j = freq_bins[j], psd[j]
+            if p_i == p_j:
+                return float(f_j)
+            t = (half - p_i) / (p_j - p_i)
+            return float(f_i + t * (f_j - f_i))
+
+        f_lo = find_crossing(-1, span_lo)
+        f_hi = find_crossing(1, span_hi)
+        if f_lo is None or f_hi is None or f_hi <= f_lo:
+            return None
+        zeta = (f_hi - f_lo) / (2.0 * f0)
+        if zeta < 0.005 or zeta > 0.5:
+            return None
+        return zeta
+
+    def extract_resonance_peaks(
+        self,
+        calibration_data,
+        max_peaks=MAX_RESONANCE_PEAKS,
+        min_freq=None,
+        max_freq=None,
+    ):
+        """A compact (freq, damping_ratio, weight) description of the real
+        resonance peaks in `calibration_data`, for resonance_model.py to
+        persist (like a bed_mesh profile) so resonance_ramp.py's notch-pair
+        search has real measured data at print time.
+
+        `weight` is each peak's PSD magnitude relative to the tallest peak
+        found (so it is always in (0, 1], with no absolute PSD units
+        reaching the caller).
+        """
+        np = self.numpy
+        freq_bins = calibration_data.freq_bins
+        psd = calibration_data.psd_sum
+        lo = min_freq if min_freq is not None else MIN_FREQ
+        hi = max_freq if max_freq is not None else float(freq_bins[-1])
+        freqs = self._detect_resonance_peaks(
+            freq_bins, psd, lo, hi, max_peaks=max_peaks
+        )
+        if not freqs:
+            return []
+        vals = np.interp(freqs, freq_bins, psd)
+        top = float(max(vals))
+        if top <= 0.0:
+            return []
+        peaks = []
+        for i, (f0, v) in enumerate(zip(freqs, vals)):
+            # Bound the half-power search short of any neighbouring peak on
+            # that side. Without this a peak sitting on the flank of a taller
+            # one measures the NEIGHBOUR's slope as its own width: on a real
+            # capture with a 48.5 Hz shoulder beside a dominant 57.5 Hz mode,
+            # the unbounded estimate returned 0.165 -- around three times a
+            # plausible printer damping ratio, and persisted straight into
+            # the config.
+            lower = [pf for j, pf in enumerate(freqs) if j != i and pf < f0]
+            upper = [pf for j, pf in enumerate(freqs) if j != i and pf > f0]
+            span_lo = max(5.0, (f0 - max(lower)) * 0.4) if lower else None
+            span_hi = max(5.0, (min(upper) - f0) * 0.4) if upper else None
+            damping = self._estimate_damping_ratio(
+                freq_bins, psd, f0, max_span_lo=span_lo, max_span_hi=span_hi
+            )
+            if damping is None:
+                damping = shaper_defs.DEFAULT_DAMPING_RATIO
+            peaks.append((float(f0), float(damping), float(v) / top))
+        return peaks
 
     def find_best_shaper(
         self,
