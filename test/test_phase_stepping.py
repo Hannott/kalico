@@ -20,9 +20,9 @@ def _integrate(moves, phase=0):
 
 
 def test_scaled_sine_matches_a_sine():
-    for idx in range(0, 1024, 7):
-        expected = 248 * math.sin(2 * math.pi * idx / 1024)
-        assert ps.scaled_sine(idx, 248) == pytest.approx(expected, abs=1.0)
+    for angle in range(0, 4096, 7):
+        expected = 248 * math.sin(2 * math.pi * angle / 4096)
+        assert ps.scaled_sine(angle, 248) == pytest.approx(expected, abs=1.0)
 
 
 def test_coil_value_packs_9_bit_currents():
@@ -132,3 +132,29 @@ def test_with_field_leaves_the_register_cache_alone():
     assert fields.get_field("ihold", value) == 20
     assert fields.get_field("irun", value) == 20
     assert fields.registers["IHOLD_IRUN"] == cached
+
+
+def test_correction_parse_format_round_trip():
+    corr = ps.parse_correction("2:0.0123:1.5708, 4:0.004:-0.3")
+    assert corr == {2: (0.0123, 1.5708), 4: (0.004, -0.3)}
+    assert ps.parse_correction(ps.format_correction(corr)) == corr
+    assert ps.parse_correction("") == {}
+    with pytest.raises(ValueError):
+        ps.parse_correction("2:0.01")
+
+
+def test_correction_table_follows_the_harmonics():
+    table = ps.correction_table({2: (0.02, 0.0)})
+    scale = 4096.0 / (2.0 * math.pi)
+    for i in (0, 64, 128, 300, 1000):
+        theta = 2.0 * math.pi * i / 1024
+        assert table[i] == round(0.02 * math.sin(2 * theta) * scale)
+    # Corrections are limited to what a signed byte holds on the MCU
+    assert max(ps.correction_table({1: (1.0, 0.0)})) == ps.CORRECTION_LIMIT
+
+
+def test_coil_value_applies_the_shift():
+    phase = 300 << ps.MSCNT_SHIFT
+    assert ps.coil_value(phase, 248, True, 4) == ps.coil_value(
+        301 << ps.MSCNT_SHIFT, 248, True
+    )
