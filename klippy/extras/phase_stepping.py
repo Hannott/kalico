@@ -25,6 +25,8 @@ MASK32 = 0xFFFFFFFF
 # Half the resolution of the MCU's sine table (1024 entries per period)
 TOLERANCE = float(1 << 21)
 SEG_BUFFER = 4096
+# Matches PG_ERR_FULL in klippy/chelper/phasegen.h
+PG_ERR_FULL = -1
 DRAIN_TIMEOUT = 2.0
 START_DELAY = 0.250
 REVERSE_DWELL = 0.100
@@ -519,11 +521,7 @@ class PhaseStepping:
         }
         self._update_sk()
         self.ffi_lib.phasegen_start(
-            self.pg,
-            grid_time,
-            first_tick - 1,
-            start_phase,
-            stepper.get_commanded_position(),
+            self.pg, grid_time, first_tick - 1, start_phase, self._rest_pos()
         )
         self.active = True
         # Keep new moves from starting before the MCU takes over
@@ -548,7 +546,8 @@ class PhaseStepping:
         if num < 0:
             self.active = False
             self.printer.invoke_shutdown(
-                "Phase stepping could not follow '%s'" % (self.stepper_name,)
+                "Phase stepping could not follow '%s': %s"
+                % (self.stepper_name, self._describe_failure(num))
             )
             return
         run = self.run
@@ -572,6 +571,15 @@ class PhaseStepping:
                     minclock=minclock,
                     reqclock=reqclock,
                 )
+
+    def _describe_failure(self, code):
+        if code == PG_ERR_FULL:
+            return "more than %d segments in one flush" % (SEG_BUFFER,)
+        tick = self.ffi_lib.phasegen_get_last_tick(self.pg) + 1
+        target = self.ffi_lib.phasegen_target(self.pg, tick)
+        phase = self.ffi_lib.phasegen_get_phase(self.pg)
+        jump = (target - phase) / self.run["phase_per_mm"]
+        return "target %.3f mm from the motor near tick %d" % (jump, tick)
 
     def _disable(self, wait=True):
         """Return the driver to step mode. Returns how far (in microstep
@@ -642,11 +650,17 @@ class PhaseStepping:
         self.resume_after_homing = False
         self._disable(wait=False)
 
+    def _rest_pos(self):
+        """Stepper position (in the frame of its kinematics, including any
+        input shaper wrapper) at the toolhead's current resting position."""
+        toolhead = self.printer.lookup_object("toolhead")
+        return self.stepper.calc_position_from_coord(
+            toolhead.get_position()[:3]
+        )
+
     def _handle_set_position(self):
         if self.active:
-            self.ffi_lib.phasegen_rebase(
-                self.pg, self.stepper.get_commanded_position()
-            )
+            self.ffi_lib.phasegen_rebase(self.pg, self._rest_pos())
 
     def _handle_dir_inverted(self, stepper):
         if self.active and stepper is self.stepper:

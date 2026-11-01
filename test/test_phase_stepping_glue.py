@@ -177,10 +177,17 @@ class Stepper:
         return self.sk
 
     def get_commanded_position(self):
-        return self.ffi_lib.itersolve_get_commanded_pos(self.sk)
+        # A freshly wrapped input shaper kinematics reports positions in
+        # its own frame; phase stepping must not depend on this value.
+        return 0.0
 
     def get_dir_inverted(self):
         return True, True
+
+    def calc_position_from_coord(self, coord):
+        return self.ffi_lib.itersolve_calc_position_from_coord(
+            self.sk, coord[0], coord[1], coord[2]
+        )
 
     def get_rotation_distance(self):
         return 40.0, 200 * 16
@@ -199,8 +206,17 @@ class Toolhead:
         self.kin = Kin(stepper)
         self.generators = []
 
+        self.last_move_time = 0.0
+        self.position = [100.0, 100.0, 0.0, 0.0]
+
+    def get_position(self):
+        return list(self.position)
+
     def wait_moves(self):
         pass
+
+    def get_last_move_time(self):
+        return self.last_move_time
 
     def dwell(self, delay):
         pass
@@ -307,7 +323,7 @@ def _append(ffi_lib, tq, t, start, end, speed, accel):
     return t + 2 * accel_t + cruise_t
 
 
-def _replay(mcu, ps, start_phase):
+def _replay(mcu, ps, start_phase, targets):
     """Execute the sent commands like the MCU; return the worst error and
     the most entries queued at once."""
     starts = [s for s in mcu.sent if s[0] == "phase_stepper_start"]
@@ -348,7 +364,7 @@ def _replay(mcu, ps, start_phase):
             count -= 1
         else:
             assert vel == 0
-        target = ps.ffi_lib.phasegen_target(ps.pg, tick)
+        target = targets[tick]
         err = (phase - int(round(target))) & MASK
         err = err - (1 << 32) if err >= 1 << 31 else err
         worst = max(worst, abs(err))
@@ -387,17 +403,39 @@ def test_glue_follows_planned_motion(shaped):
     # Moves start after the MCU takes over; a long pause in between makes
     # the second burst start from an idle queue.
     t = reactor.t + 0.5
+    targets = {}
+    state = {"flush": reactor.t}
+
+    def generate_until(end):
+        while state["flush"] < end:
+            state["flush"] += 0.05
+            first = ffi_lib.phasegen_get_last_tick(ps.pg) + 1
+            for gen in toolhead.generators:
+                gen(state["flush"])
+            last = ffi_lib.phasegen_get_last_tick(ps.pg)
+            # Targets as seen at generation time, before any later reset
+            for tick in range(first, last + 1):
+                targets[tick] = ffi_lib.phasegen_target(ps.pg, tick)
+
     t = _append(ffi_lib, tq, t, (100.0, 100.0), (180.0, 140.0), 400.0, 8000.0)
+    # SET_KINEMATIC_POSITION at rest: the same spot becomes (0, 0)
+    reset_time = t + 0.5
+    generate_until(reset_time)
+    ffi_lib.trapq_set_position(tq, reset_time, 0.0, 0.0, 0.0)
+    toolhead.last_move_time = reset_time
+    toolhead.position = [0.0, 0.0, 0.0, 0.0]
+    ps._handle_set_position()
     t = _append(
-        ffi_lib, tq, t + 1.0, (180.0, 140.0), (100.0, 100.0), 600.0, 20000.0
+        ffi_lib,
+        tq,
+        reset_time + 0.5,
+        (0.0, 0.0),
+        (-80.0, -40.0),
+        600.0,
+        20000.0,
     )
-    end = t + 0.3
-    flush = reactor.t
-    while flush < end:
-        flush += 0.05
-        for gen in toolhead.generators:
-            gen(flush)
-    worst, peak = _replay(mcu, ps, (MSCNT << 22) & MASK)
+    generate_until(t + 0.3)
+    worst, peak = _replay(mcu, ps, (MSCNT << 22) & MASK, targets)
     assert worst <= phase_stepping.TOLERANCE + 1
     assert peak <= QUEUE_SIZE
 
