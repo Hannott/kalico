@@ -285,9 +285,7 @@ class PhaseCalibrate:
 
         def set_accel(value):
             # A move keeps the acceleration limit it was queued with
-            self.gcode.run_script_from_command(
-                "SET_VELOCITY_LIMIT ACCEL=%.3f" % (value * scale,)
-            )
+            toolhead.set_accel(value * scale)
 
         ramps = []
         toolhead.manual_move(point, self.move_speed)
