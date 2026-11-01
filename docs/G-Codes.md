@@ -1518,16 +1518,17 @@ is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
 [PROBE=<radians>] [ACCEL=<mm/s^2>] [RAMP=<0|1>] [RAMP_ACCEL=<mm/s^2>]
 [POINT=x,y,z] [SAVE=<0|1>] [GRAPH=<0|1>] [NAME=<name>]`: Find the
 coil angle corrections that cancel the given harmonics (default 2, 4 and
-1) of a phase stepped motor, per direction of motion. It first ramps the
-motor through the speed range as `MEASURE_MOTOR_HARMONICS` does (or with
-`RAMP=0` steps through constant speeds) to find where each harmonic is
-clearly measurable. A motor's error changes somewhat with speed, so each
+1) of a phase stepped motor, per direction of motion. The corrections of
+those harmonics are cleared first, so the result does not depend on an
+earlier calibration. It then ramps the motor through the speed range as
+`MEASURE_MOTOR_HARMONICS` does (or with `RAMP=0` steps through constant
+speeds) to find where each harmonic is clearly measurable. A motor's error changes somewhat with speed, so each
 harmonic is then measured at constant speed at up to SPEED_COUNT
 (default 5) of those speeds between SPEED_MIN and SPEED_MAX, with no
 correction and two small probe corrections,
 and gets the single correction that leaves the least vibration across
-those speeds relative to where it started. Limit the speed range to the
-speeds you print at to favour them. The results are stored for
+those speeds relative to the uncorrected motor. Limit the speed range to
+the speeds you print at to favour them. The results are stored for
 `SAVE_CONFIG` unless `SAVE=0`. Phase stepping must be enabled on the
 stepper. With `GRAPH=1` (default from the `graph` config option) it also
 measures all speeds again after calibrating, and writes the sweeps before
