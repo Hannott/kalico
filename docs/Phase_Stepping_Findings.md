@@ -143,6 +143,15 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
   while 55-100 mm/s fell). The result also depended on which
   calibration came before. Calibration now clears the harmonic's
   correction first.
+- From no correction, stepper_y H2 fell from 4.52 to 0.17 um on average
+  over 40-100 mm/s, close to the earlier calibrations, but 0.26-0.34 um
+  was left at 50-60 mm/s where the motor's H2 peaks at about 10 um (a
+  resonance near 145 Hz). Weighting each speed by its uncorrected level
+  asks for the same relative reduction everywhere, so the largest peak
+  keeps the largest absolute vibration, and the evenly spread
+  calibration speeds missed the peak. Calibration speeds are now picked
+  around the largest peaks, and the correction minimises the worst
+  vibration left (Lawson's algorithm on the measured linear response).
 - With phase stepping and corrections the motors are much quieter. Input
   shaper measurements before and after showed unchanged resonance
   frequencies; differences in peak height and damping were within run to

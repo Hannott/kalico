@@ -84,8 +84,9 @@ SAVE_CONFIG
 The correction shifts the coil current angle so that the rotor lands
 where it should; it is measured and stored separately for each motor and
 direction. A motor's error changes somewhat with speed, so each harmonic
-is calibrated over several speeds; use `SPEED_MIN` and `SPEED_MAX` to
-favour the speeds you print walls at. Compare with `MEASURE_MOTOR_HARMONICS` before and after.
+is calibrated over several speeds around its largest peaks; use
+`SPEED_MIN` and `SPEED_MAX` to limit it to the speeds you print walls at.
+Compare with `MEASURE_MOTOR_HARMONICS` before and after.
 
 ## Test move
 
