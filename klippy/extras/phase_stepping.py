@@ -177,6 +177,19 @@ def summarize_samples(samples, fields, swap_coils):
             sum(drv("olb")),
         )
     )
+    if fields.lookup_register("sg_result"):
+        # StallGuard load readings in time order, to see whether they
+        # stay usable for slip detection while the coils are driven directly
+        sg = drv("sg_result")
+        lines.append(
+            "StallGuard sg_result %d-%d, median %d, in order %s"
+            % (
+                min(sg),
+                max(sg),
+                sorted(sg)[len(sg) // 2],
+                " ".join(str(v) for v in sg[:16]),
+            )
+        )
     act = [
         (
             fields.get_field("cur_a", smp["MSCURACT"]),
