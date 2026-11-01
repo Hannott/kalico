@@ -26,6 +26,7 @@
 ## New Kalico Modules
 
 - [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Kalico
+- [phase_stepping](./Phase_Stepping.md) - Experimental: drive stepper coil currents directly over SPI and correct the motor's position errors
 
 ## Sensorless Homing
 

@@ -2414,6 +2414,35 @@ section of the measuring resonances guide for more information on
 #   choice. Set it to 0 do disable it. The default is 0.
 ```
 
+### [phase_stepping]
+
+Experimental: drive a stepper's coil currents directly over SPI instead
+of with step pulses. Requires micro-controller firmware built with
+phase stepping support and a TMC driver on hardware SPI that supports
+direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
+[phase stepping guide](Phase_Stepping.md) for details.
+
+```
+[phase_stepping stepper_x]
+#amplitude: 248
+#   The peak coil current as a value from 16 to 255, where 255 is the
+#   driver's full scale. The default is 248, which matches the
+#   drivers' own sine table.
+#swap_coils: True
+#   Swap the two coil currents when writing them in direct mode, as
+#   Trinamic drivers expect. The default is True.
+#auto_enable: False
+#   Enable phase stepping after each homing of this stepper. The
+#   default is False.
+#correction_forward:
+#correction_backward:
+#   Coil angle corrections that cancel the motor's own position error,
+#   as space separated harmonic:magnitude:phase entries (magnitude and
+#   phase in radians of electrical angle), one set per direction of
+#   motion. PHASE_STEPPING_SET_CORRECTION sets and saves them. The
+#   default is no correction.
+```
+
 ## Config file helpers
 
 ### [board_pins]
