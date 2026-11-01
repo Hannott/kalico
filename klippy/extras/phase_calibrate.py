@@ -3,6 +3,8 @@
 # Copyright (C) 2026  Åsmund Collin <aakjaergaard@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import contextlib
+import logging
 import math
 import os
 import subprocess
@@ -26,6 +28,7 @@ GRAPH_SCRIPT = os.path.normpath(
 )
 # Matches phase_stepping.CORRECTION_MAX
 CORRECTION_LIMIT_RAD = 127 * 2.0 * math.pi / 4096.0
+DIRECTIONS = {1: "forward", -1: "backward"}
 HARMONIC_NAMES = {
     1: "1 per electrical period",
     2: "1 per 2 full steps",
@@ -149,6 +152,31 @@ class PhaseCalibrate:
             test["max_speed"] * scale,
             False,
         )
+
+    @contextlib.contextmanager
+    def _uncorrected(self, phase_stepping, harmonics):
+        """Clear the corrections of the given harmonics, and restore them
+        if calibration fails."""
+        previous = {
+            (label, h): phase_stepping.get_harmonic(label, h)
+            for label in DIRECTIONS.values()
+            for h in harmonics
+        }
+        for label, h in previous:
+            phase_stepping.set_harmonic(label, h, 0j)
+        phase_stepping.apply_corrections()
+        try:
+            yield
+        except BaseException:
+            for (label, h), value in previous.items():
+                phase_stepping.set_harmonic(label, h, value)
+            try:
+                phase_stepping.apply_corrections()
+            except Exception:
+                logging.exception(
+                    "Unable to restore phase stepping corrections"
+                )
+            raise
 
     def _run_moves(self, toolhead, point, plan, scale, accel):
         windows = []
@@ -656,7 +684,12 @@ class PhaseCalibrate:
                 )
             return self._measure_rows(gcmd, search, harmonics)
 
-        with self._suspend_limits(search):
+        # Calibrate from no correction so that the speeds are picked and
+        # weighed by the motor's own error. Starting from an earlier
+        # correction would leave out the speeds it already cancels, and the
+        # new correction could then make them worse.
+        uncorrected = self._uncorrected(phase_stepping, harmonics)
+        with uncorrected, self._suspend_limits(search):
             gcmd.respond_info("Finding calibration speeds for %s" % (name,))
             rows = sweep()
             period = search["period"]
@@ -664,7 +697,6 @@ class PhaseCalibrate:
             if graph:
                 csv_files.append(self._csv_path(name, graph_name))
                 self._write_csv(csv_files[0], name, period, rows)
-            directions = {1: "forward", -1: "backward"}
             lines = ["Phase stepping calibration of %s:" % (name,)]
             for harmonic in harmonics:
                 cal_speeds = motor_harmonics.pick_calibration_speeds(
@@ -680,7 +712,7 @@ class PhaseCalibrate:
                 )
 
                 def measure(corr):
-                    for d, label in directions.items():
+                    for d, label in DIRECTIONS.items():
                         phase_stepping.set_harmonic(label, harmonic, corr[d])
                     phase_stepping.apply_corrections()
                     return self._measure_coherent(
@@ -693,11 +725,11 @@ class PhaseCalibrate:
                 )
                 c0 = {
                     d: phase_stepping.get_harmonic(label, harmonic)
-                    for d, label in directions.items()
+                    for d, label in DIRECTIONS.items()
                 }
                 d0 = measure(c0)
-                d_real = measure({d: c0[d] + probe for d in directions})
-                d_imag = measure({d: c0[d] + 1j * probe for d in directions})
+                d_real = measure({d: c0[d] + probe for d in DIRECTIONS})
+                d_imag = measure({d: c0[d] + 1j * probe for d in DIRECTIONS})
                 new, gains, weights, best, best_vib, best_cost = (
                     {},
                     {},
@@ -706,7 +738,7 @@ class PhaseCalibrate:
                     {},
                     {},
                 )
-                for d in directions:
+                for d in DIRECTIONS:
                     new[d], gains[d], weights[d] = (
                         motor_harmonics.multi_speed_correction(
                             d0[d], d_real[d], d_imag[d], c0[d], probe
@@ -718,7 +750,7 @@ class PhaseCalibrate:
                     )
                 for _ in range(2):
                     vib = measure(new)
-                    for d in directions:
+                    for d in DIRECTIONS:
                         cost = motor_harmonics.weighted_cost(vib[d], weights[d])
                         if cost < best_cost[d]:
                             best[d], best_vib[d], best_cost[d] = (
@@ -729,10 +761,10 @@ class PhaseCalibrate:
                         new[d] = motor_harmonics.refine_correction(
                             best[d], best_vib[d], gains[d], weights[d]
                         )
-                for d, label in directions.items():
+                for d, label in DIRECTIONS.items():
                     phase_stepping.set_harmonic(label, harmonic, best[d])
                 phase_stepping.apply_corrections()
-                for d, label in directions.items():
+                for d, label in DIRECTIONS.items():
                     before = [abs(v) * 1000.0 for v in d0[d].values()]
                     after = [abs(v) * 1000.0 for v in best_vib[d].values()]
                     lines.append(
