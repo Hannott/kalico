@@ -6,8 +6,9 @@
 // Hardware SPI users call these around each transfer so they do not
 // collide with the phase stepper's coil current updates on a shared bus.
 struct spidev_s;
-void phase_stepper_spi_acquire(void);
-void phase_stepper_spi_release(struct spidev_s *spi);
+void phase_stepper_spi_acquire(struct spidev_s *spi, uint8_t receive_data
+                               , uint8_t data_len, uint8_t *data);
+void phase_stepper_spi_release(void);
 
 // Called by the board timer CONFIG_PHASE_STEPPING_FREQ times a second
 void phase_stepper_update(void);

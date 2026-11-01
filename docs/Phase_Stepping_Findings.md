@@ -52,15 +52,23 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
 - Other micro-controllers fall back to 10 kHz updates from the scheduler
   with blocking transfers, which is too coarse for fast travel.
 - At 40 kHz an update takes about 2 us on an STM32F446 with DMA.
-- Trinamic drivers answer a read in the following message, and the host
-  sends each register access as a pair. A coil write between the two
-  made the second answer return the coil register, which decoded as a
-  driver error (a corrupted GSTAT read). The bus now stays locked from
-  the first to the second message of a pair to a phase stepped driver,
-  and `tmc2130.py` sends both messages of a read in one block.
-- Waiting 2 ms for the second message of a pair stopped coil updates
-  long enough for the motor to slip at 200 mm/s under heavy SPI traffic.
-  The lock now times out after 250 us, and such timeouts are counted.
+- Trinamic drivers answer each message with the register that the
+  message before it addressed, so the host reads a register with two
+  messages. A coil write between the two made the second answer return
+  the coil register, which decoded as a driver error (a corrupted GSTAT
+  read).
+- Locking the bus from the first to the second message did not hold up.
+  Waiting 2 ms for the second message stopped coil updates long enough
+  for the motor to slip at 200 mm/s under heavy SPI traffic, so the lock
+  timed out after 250 us. The host sends the two messages one at a time,
+  however, and they can arrive further apart than that: a print was shut
+  down by "GSTAT: 010a01df reset=1 drv_err=1 uv_cp=1", which is a coil
+  value (two 9 bit currents of length 248), not a driver error.
+- The MCU now keeps the host's last message to each phase stepped driver
+  and, when a coil write went to the driver after it, sends it again
+  before a host transfer that reads an answer. The answer is then right
+  however far apart the host's messages are, and the bus is no longer
+  locked between them. Such resends are counted as `replays`.
 - Verified on hardware: test moves from 5 to 850 mm/s and back with no
   jump or slip, also under heavy SPI load; `swap_coils: True` is right
   for the TMC5160.
