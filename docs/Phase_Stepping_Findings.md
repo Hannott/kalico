@@ -87,6 +87,11 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
   TPOWERDOWN * 2^18, then one step per IHOLDDELAY * 2^18 clocks.
 - A driver reset or error is caught by the driver module's periodic
   GSTAT and DRV_STATUS checks, which shut down as without phase stepping.
+- Register transfers that bypass the driver module must hold its SPI
+  mutex. The write of the starting coil currents did not, and at the end
+  of homing it overlapped a transfer from another greenlet on the same
+  SPI oid; the two took each other's response and Klipper stopped with
+  `KeyError: ('spi_transfer_response', 0)`.
 
 ## Host integration
 
