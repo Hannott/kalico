@@ -122,8 +122,22 @@ class FakeMCU:
         return clock + (1 << 32) if clock < base - (1 << 31) else clock
 
 
+class FakeMutex:
+    held = False
+
+    def __enter__(self):
+        assert not self.held
+        self.held = True
+
+    def __exit__(self, *exc):
+        self.held = False
+
+
 class FakeTMCSPI:
     chain_len = 1
+
+    def __init__(self):
+        self.mutex = FakeMutex()
 
     class spi:
         config_fmt_ticks = None
@@ -133,6 +147,7 @@ class FakeTMCSPI:
             return 1
 
     def reg_write(self, reg, val, chain_pos, print_time=None):
+        assert self.mutex.held, "SPI transfer without the driver's mutex"
         return val
 
 
@@ -143,6 +158,7 @@ class FakeMCUTMC:
         )
         self.name_to_reg = tmc5160.Registers
         self.tmc_spi = FakeTMCSPI()
+        self.mutex = self.tmc_spi.mutex
         self.chain_pos = 1
         self.mcu = mcu
         f = self.fields
