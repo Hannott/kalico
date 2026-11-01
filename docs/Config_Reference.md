@@ -2525,6 +2525,14 @@ accel_chip:
 #harmonics: 1, 2, 3, 4
 #   The harmonics of the electrical frequency to measure. The default
 #   is 1, 2, 3, 4.
+#graph: False
+#   Whether MEASURE_MOTOR_HARMONICS and PHASE_STEPPING_CALIBRATE also
+#   save a PNG graph of their measurements. Requires matplotlib in the
+#   klippy environment. The GRAPH command parameter overrides it. The
+#   default is False.
+#output_dir: /tmp
+#   The directory the CSV files and graphs are written to. The default
+#   is the system temporary directory (usually /tmp).
 ```
 
 ### [phase_stepping]

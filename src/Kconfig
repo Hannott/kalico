@@ -383,18 +383,18 @@ config WANT_PHASE_STEPPING
         Drive stepper driver coil currents directly over hardware SPI
         instead of with step pulses. Boards without a dedicated
         implementation update the coils at a lower rate.
-config PHASE_STEPPING_DMA
+config PHASE_STEPPING_TIMER
     bool
-    depends on WANT_PHASE_STEPPING && HAVE_PHASE_STEPPING_DMA
+    depends on WANT_PHASE_STEPPING && HAVE_PHASE_STEPPING_TIMER
     default y
 config PHASE_STEPPING_POLL
     bool
-    depends on WANT_PHASE_STEPPING && !PHASE_STEPPING_DMA
+    depends on WANT_PHASE_STEPPING && !PHASE_STEPPING_TIMER
     default y
 config PHASE_STEPPING_FREQ
     int
     depends on WANT_PHASE_STEPPING
-    default 40000 if PHASE_STEPPING_DMA
+    default 40000 if PHASE_STEPPING_TIMER
     default 10000
 
 # The HAVE_x options allow boards to disable support for some commands
@@ -407,7 +407,7 @@ config HAVE_GPIO_SPI
     bool
 config HAVE_GPIO_SDIO
     bool
-config HAVE_PHASE_STEPPING_DMA
+config HAVE_PHASE_STEPPING_TIMER
     bool
 config HAVE_GPIO_I2C
     bool

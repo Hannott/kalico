@@ -68,3 +68,10 @@ All measurements are written to a CSV file. Graph it with:
 ```
 ~/klippy-env/bin/python ~/klipper/scripts/graph_motor_harmonics.py /tmp/motor_harmonics_stepper_x_<name>.csv -o /tmp/motor_harmonics.png
 ```
+
+To have the graph made automatically next to the CSV, add `GRAPH=1` to
+the command or set `graph: True` in
+[phase_calibrate](Config_Reference.md#phase_calibrate). Matplotlib must
+be installed in the klippy environment. Setting `output_dir` to a
+directory the web interface shows, such as `~/printer_data/config`,
+makes the files easy to open.

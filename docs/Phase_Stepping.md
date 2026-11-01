@@ -37,8 +37,11 @@ and `driver_IHOLDDELAY`, and returns to the run current when the motor
 moves again.
 
 The micro-controller updates the coil currents 40000 times a second on
-STM32F405, F407, F427, F429 and F446, using a dedicated timer and DMA.
-Other micro-controllers with hardware SPI use 10000 updates a second.
+STM32F405, F407, F427, F429 and F446 (using a dedicated timer and DMA)
+and on STM32H723, H743 and H750 (using a dedicated timer and the SPI
+FIFO; not yet tested on hardware). Other micro-controllers with hardware
+SPI use 10000 updates a second, which is too coarse for fast travel
+moves.
 
 ## Configuration
 
