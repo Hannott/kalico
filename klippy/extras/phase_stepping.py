@@ -36,25 +36,73 @@ STEP_TEST_SPEED = 10.0
 # a fraction of the current amplitude.
 MAPPING_TOL = 0.08
 
-SINE_QUARTER = [round(32767 * math.sin(i * math.pi / 512)) for i in range(257)]
+SINE_QUARTER = [
+    round(32767 * math.sin(i * math.pi / 2048)) for i in range(1025)
+]
+# The MCU computes the current angle in 1/4096 of an electrical period and
+# corrects it by a table of 1024 signed bytes per direction.
+ANGLE_SHIFT = 20
+CORRECTION_SIZE = 1024
+CORRECTION_LIMIT = 127
+CORRECTION_CHUNK = 40
+# Largest correction magnitude (radians) that fits the MCU's signed bytes
+CORRECTION_MAX = CORRECTION_LIMIT * 2.0 * math.pi / 4096.0
+DIRECTIONS = ("forward", "backward")
 
 
-def scaled_sine(idx, amp):
-    """Signed sine of a 1024 per period index, as computed by the MCU."""
-    idx &= 1023
-    off = idx & 255
-    mag = SINE_QUARTER[256 - off if idx & 256 else off]
+def scaled_sine(angle, amp):
+    """Signed sine of a 4096 per period angle, as computed by the MCU."""
+    angle &= 4095
+    off = angle & 1023
+    mag = SINE_QUARTER[1024 - off if angle & 1024 else off]
     val = (mag * amp + (1 << 14)) >> 15
-    return -val if idx & 512 else val
+    return -val if angle & 2048 else val
 
 
-def coil_value(phase, amplitude, swap_coils):
-    idx = (phase & 0xFFFFFFFF) >> MSCNT_SHIFT
-    sin_val = scaled_sine(idx, amplitude)
-    cos_val = scaled_sine(idx + 256, amplitude)
+def coil_value(phase, amplitude, swap_coils, shift=0):
+    angle = ((phase & 0xFFFFFFFF) >> ANGLE_SHIFT) + shift
+    sin_val = scaled_sine(angle, amplitude)
+    cos_val = scaled_sine(angle + 1024, amplitude)
     if swap_coils:
         return (cos_val & 0x1FF) | ((sin_val & 0x1FF) << 16)
     return (sin_val & 0x1FF) | ((cos_val & 0x1FF) << 16)
+
+
+def parse_correction(text):
+    """Parse "harmonic:magnitude:phase" entries (radians of electrical
+    angle) into {harmonic: (magnitude, phase)}."""
+    corr = {}
+    for item in text.replace(",", " ").split():
+        parts = item.split(":")
+        if len(parts) != 3:
+            raise ValueError("expected harmonic:magnitude:phase, got %r" % item)
+        harmonic = int(parts[0])
+        if harmonic < 1:
+            raise ValueError("harmonic must be at least 1")
+        corr[harmonic] = (float(parts[1]), float(parts[2]))
+    return corr
+
+
+def format_correction(corr):
+    return " ".join(
+        "%d:%.5f:%.4f" % (h, mag, pha)
+        for h, (mag, pha) in sorted(corr.items())
+        if mag
+    )
+
+
+def correction_table(corr):
+    """Angle shift per microstep counter position, in 1/4096 period."""
+    scale = 4096.0 / (2.0 * math.pi)
+    table = []
+    for i in range(CORRECTION_SIZE):
+        theta = 2.0 * math.pi * i / CORRECTION_SIZE
+        shift = sum(
+            mag * math.sin(h * theta + pha) for h, (mag, pha) in corr.items()
+        )
+        units = int(round(shift * scale))
+        table.append(max(-CORRECTION_LIMIT, min(CORRECTION_LIMIT, units)))
+    return table
 
 
 def check_coil_mapping(mscnt, cur_a, cur_b):
@@ -270,6 +318,18 @@ class PhaseStepping:
         self.stepper_name = config.get_name().split()[-1]
         self.amplitude = config.getint("amplitude", 248, minval=16, maxval=255)
         self.swap_coils = config.getboolean("swap_coils", True)
+        self.corrections = {}
+        for direction in DIRECTIONS:
+            option = "correction_" + direction
+            try:
+                self.corrections[direction] = parse_correction(
+                    config.get(option, "")
+                )
+            except ValueError as e:
+                raise config.error(
+                    "Option '%s' in section '%s': %s"
+                    % (option, config.get_name(), e)
+                )
         tmc_section = find_tmc_section(config, self.stepper_name)
         if tmc_section is None:
             raise config.error(
@@ -311,7 +371,7 @@ class PhaseStepping:
         self.queue_move_cmd = self.start_cmd = None
         self.stop_cmd = self.query_cmd = None
         self.mcu.register_config_callback(self._build_config)
-        self.queue_wait_cmd = None
+        self.queue_wait_cmd = self.set_correction_cmd = None
         self.queue_size = None
         self.auto_enable = config.getboolean("auto_enable", False)
         self.ffi_main, self.ffi_lib = chelper.get_ffi()
@@ -334,6 +394,13 @@ class PhaseStepping:
         ):
             self.printer.register_event_handler(event, handler)
         self.gcode = self.printer.lookup_object("gcode")
+        self.gcode.register_mux_command(
+            "PHASE_STEPPING_SET_CORRECTION",
+            "STEPPER",
+            self.stepper_name,
+            self.cmd_PHASE_STEPPING_SET_CORRECTION,
+            desc=self.cmd_PHASE_STEPPING_SET_CORRECTION_help,
+        )
         self.gcode.register_mux_command(
             "PHASE_STEPPING_ENABLE",
             "STEPPER",
@@ -385,6 +452,10 @@ class PhaseStepping:
         self.queue_wait_cmd = self.mcu.lookup_command(
             "phase_stepper_queue_wait oid=%c clock=%u", cq=cq
         )
+        self.set_correction_cmd = self.mcu.lookup_command(
+            "phase_stepper_set_correction oid=%c dir=%c offset=%hu data=%*s",
+            cq=cq,
+        )
         self.queue_size = self.mcu.get_constants()["PHASE_STEPPER_QUEUE_SIZE"]
         self.stop_cmd = self.mcu.lookup_command(
             "phase_stepper_stop oid=%c", cq=cq
@@ -406,7 +477,59 @@ class PhaseStepping:
         toolhead.register_step_generator(self._generate)
 
     def get_status(self, eventtime):
-        return {"enabled": self.active}
+        return {
+            "enabled": self.active,
+            "correction_forward": format_correction(
+                self.corrections["forward"]
+            ),
+            "correction_backward": format_correction(
+                self.corrections["backward"]
+            ),
+        }
+
+    def get_harmonic(self, direction, harmonic):
+        mag, pha = self.corrections[direction].get(harmonic, (0.0, 0.0))
+        return complex(mag * math.cos(pha), mag * math.sin(pha))
+
+    def set_harmonic(self, direction, harmonic, value):
+        mag = min(abs(value), CORRECTION_MAX)
+        if mag:
+            self.corrections[direction][harmonic] = (
+                mag,
+                math.atan2(value.imag, value.real),
+            )
+        else:
+            self.corrections[direction].pop(harmonic, None)
+
+    def apply_corrections(self):
+        """Send changed corrections to the MCU (the motor must be at rest)."""
+        if self.active:
+            self.printer.lookup_object("toolhead").wait_moves()
+            self._upload_corrections()
+
+    def save_corrections(self):
+        configfile = self.printer.lookup_object("configfile")
+        section = "phase_stepping %s" % (self.stepper_name,)
+        for d in DIRECTIONS:
+            configfile.set(
+                section,
+                "correction_" + d,
+                format_correction(self.corrections[d]),
+            )
+
+    def _upload_corrections(self):
+        for index, direction in enumerate(DIRECTIONS):
+            table = correction_table(self.corrections[direction])
+            data = bytes(v & 0xFF for v in table)
+            for offset in range(0, CORRECTION_SIZE, CORRECTION_CHUNK):
+                self.set_correction_cmd.send(
+                    [
+                        self.oid,
+                        index,
+                        offset,
+                        data[offset : offset + CORRECTION_CHUNK],
+                    ]
+                )
 
     # Switching the driver in and out of direct mode
 
@@ -489,6 +612,7 @@ class PhaseStepping:
         # when the direction pin is inverted (as tmc.py also assumes).
         sign = 1.0 if stepper.get_dir_inverted()[0] else -1.0
         start_phase = mscnt << MSCNT_SHIFT
+        self._upload_corrections()
         saved = self._enter_direct(start_phase, self.amplitude)
         mcu = self.mcu
         try:
@@ -665,6 +789,38 @@ class PhaseStepping:
     def _handle_dir_inverted(self, stepper):
         if self.active and stepper is self.stepper:
             self._report_disagreement(self._disable())
+
+    cmd_PHASE_STEPPING_SET_CORRECTION_help = (
+        "Set the angle correction of one harmonic of a phase stepped motor"
+    )
+
+    def cmd_PHASE_STEPPING_SET_CORRECTION(self, gcmd):
+        harmonic = gcmd.get_int("HARMONIC", None, minval=1, maxval=16)
+        direction = gcmd.get("DIRECTION", "both").lower()
+        if direction not in DIRECTIONS + ("both",):
+            raise gcmd.error("DIRECTION must be forward, backward or both")
+        if harmonic is not None:
+            mag = gcmd.get_float("MAG", minval=0.0, maxval=0.19)
+            pha = gcmd.get_float("PHASE", 0.0)
+            for d in DIRECTIONS:
+                if direction in (d, "both"):
+                    if mag:
+                        self.corrections[d][harmonic] = (mag, pha)
+                    else:
+                        self.corrections[d].pop(harmonic, None)
+            if self.active:
+                self.printer.lookup_object("toolhead").wait_moves()
+                self._upload_corrections()
+        if gcmd.get_int("SAVE", 0, minval=0, maxval=1):
+            self.save_corrections()
+        gcmd.respond_info(
+            "%s correction forward: %s\nbackward: %s"
+            % (
+                self.stepper_name,
+                format_correction(self.corrections["forward"]) or "none",
+                format_correction(self.corrections["backward"]) or "none",
+            )
+        )
 
     cmd_PHASE_STEPPING_ENABLE_help = (
         "Enable or disable phase stepping for a stepper"

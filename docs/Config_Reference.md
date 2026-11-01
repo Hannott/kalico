@@ -2547,6 +2547,13 @@ direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
 #auto_enable: False
 #   Enable phase stepping after each homing of this stepper. The
 #   default is False.
+#correction_forward:
+#correction_backward:
+#   Coil angle corrections that cancel the motor's own position error,
+#   as space separated harmonic:magnitude:phase entries (magnitude and
+#   phase in radians of electrical angle), one set per direction of
+#   motion. PHASE_STEPPING_CALIBRATE finds and stores them. The default
+#   is no correction.
 ```
 
 ## Config file helpers

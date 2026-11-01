@@ -286,6 +286,9 @@ class Config:
     def get_name(self):
         return "phase_stepping stepper_x"
 
+    def get(self, k, default=None):
+        return default
+
     def getint(self, k, default, **kw):
         return default
 
