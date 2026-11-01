@@ -431,6 +431,28 @@ somewhere in the range of ~1-100). Too high axes noise (e.g. 1000 and more)
 can be indicative of the sensor issues, problems with its power, or too
 noisy imbalanced fans on a 3D printer.
 
+### Accelerometer cross-axis leakage
+
+Before the sweep for an axis, `TEST_RESONANCES` and `SHAPER_CALIBRATE` run a
+few slow, deliberately sub-resonance back-and-forth moves along that axis
+alone and check how much of that motion registers on the perpendicular
+accelerometer channel. Since the moves are too slow to excite any real
+mechanical resonance, any signal seen on the other axis is attributable to
+the accelerometer not being mounted exactly orthogonally to the frame, and
+it is subtracted out for the rest of the run so it doesn't skew shaper
+calibration. You'll see a line like:
+```
+Accelerometer 'adxl345': 3.2% of X-axis motion registers on the
+perpendicular axis; compensating for calibration.
+```
+A small percentage (a few %) is normal and expected. If it warns about an
+unusually high value, re-check that the accelerometer is screwed down
+firmly and its X/Y axes are aligned with the printer frame, not just eyeballed.
+This behavior can be disabled with `[resonance_tester] crosstalk_calibration:
+False`, or per-command with `CROSSTALK_CALIBRATE=0`; see
+[resonance_tester](Config_Reference.md#resonance_tester) for the tunable
+parameters.
+
 ### Measuring the resonances
 
 Now you can run some real-life tests. Run the following command:
