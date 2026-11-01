@@ -157,6 +157,14 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
   calibration speeds missed the peak. Calibration speeds are now picked
   around the largest peaks, and the correction minimises the worst
   vibration left (Lawson's algorithm on the measured linear response).
+- With that and SPEED_MIN=50, the worst H4 over 50-100 mm/s fell to
+  0.058 um on stepper_x and 0.032 um on stepper_y, about half of the best
+  earlier calibration, and stepper_x H2 peaked at 0.18 um. Stepper_y H2
+  stayed at 0.17 um on average with a 0.32 um worst case: its
+  uncorrected H2 peaks near 9.5 um at both 57.5 and 70 mm/s, and the
+  residue is spread evenly over 50-95 mm/s, as minimax does. All of
+  these are ramp sweeps; repeated uncorrected sweeps differ by about
+  10-15 %.
 - With phase stepping and corrections the motors are much quieter. Input
   shaper measurements before and after showed unchanged resonance
   frequencies; differences in peak height and damping were within run to
