@@ -212,3 +212,74 @@ def test_corexy_homing_leaves_both_motors_phase_stepping(auto_enable):
         for m in motors:
             m._handle_home_rails_end(None, [rail])
     assert all(m.active for m in motors)
+
+
+def test_hold_settings_mirror_the_driver_standstill_reduction():
+    # hold_current unset: the driver module sets IHOLD to IRUN
+    assert ps.hold_settings(31, 31, 8, 10, 12e6, 40000, 248)[0] == 248
+    hold_amp, delay, ramp = ps.hold_settings(31, 15, 8, 10, 12e6, 40000, 248)
+    assert hold_amp == 124
+    # 2^20 clocks to standstill plus TPOWERDOWN * 2^18
+    assert delay == round((2**20 + 10 * 2**18) / 12e6 * 40000)
+    # 16 IHOLDDELAY steps of 2^18 clocks spread over 124 amplitude steps
+    assert ramp == round(16 * 8 * 2**18 / 12e6 * 40000 / 124)
+    assert ps.hold_settings(31, 15, 0, 0, 12e6, 40000, 248)[2] == 0
+
+
+class _DriverModule:
+    def __init__(self):
+        from klippy.extras import tmc, tmc5160
+
+        self.fields = tmc.FieldHelper(tmc5160.Fields, tmc5160.SignedFields)
+        self.fields.set_field("irun", 20)
+        self.fields.set_field("ihold", 10)
+        self.fields.set_field("en_pwm_mode", 1)
+        self.writes = []
+
+    def get_fields(self):
+        return self.fields
+
+    def set_register(self, reg_name, val, print_time=None):
+        self.writes.append((reg_name, val))
+
+
+def _guarded():
+    obj = ps.PhaseStepping.__new__(ps.PhaseStepping)
+    obj.mcu_tmc = _DriverModule()
+    obj.active = obj.direct = False
+    obj.holds = 0
+
+    def send_hold():
+        obj.holds += 1
+
+    obj._send_hold = send_hold
+    obj._guard_driver_writes()
+    return obj
+
+
+def test_driver_writes_keep_direct_mode_and_its_current():
+    obj = _guarded()
+    tmc_mod = obj.mcu_tmc
+    fields = tmc_mod.fields
+    obj.direct = obj.active = True
+    # SET_TMC_CURRENT while phase stepping: the driver module writes its
+    # usual IHOLD_IRUN and GCONF values
+    value = fields.set_field("irun", 16)
+    tmc_mod.set_register("IHOLD_IRUN", value)
+    tmc_mod.set_register("GCONF", fields.registers["GCONF"])
+    (_, ihold_irun), (_, gconf) = tmc_mod.writes
+    assert fields.get_field("ihold", ihold_irun) == 16
+    assert fields.get_field("irun", ihold_irun) == 16
+    assert fields.get_field("direct_mode", gconf) == 1
+    assert fields.get_field("en_pwm_mode", gconf) == 0
+    assert obj.holds == 1
+    # The module's own values return when direct mode ends
+    tmc_mod.writes.clear()
+    obj.active = False
+    obj._leave_direct()
+    assert dict(tmc_mod.writes) == {
+        "GCONF": fields.registers["GCONF"],
+        "IHOLD_IRUN": fields.registers["IHOLD_IRUN"],
+    }
+    assert fields.get_field("ihold", fields.registers["IHOLD_IRUN"]) == 10
+    assert fields.get_field("en_pwm_mode", fields.registers["GCONF"]) == 1

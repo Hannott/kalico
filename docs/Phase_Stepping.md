@@ -21,6 +21,13 @@ position errors, which cause vertical fine artifacts (VFA). See
 
 While the coils are driven directly, the driver runs in spreadCycle even
 if `stealthchop_threshold` is set; its own setting returns afterwards.
+The driver's `run_current` applies while the motor moves, and changes
+made with `SET_TMC_CURRENT` or by homing currents take effect as usual.
+If a `hold_current` lower than the run current is configured, the
+micro-controller lowers the current at standstill the way the driver
+would, after the delay and in the steps set by its `driver_TPOWERDOWN`
+and `driver_IHOLDDELAY`, and returns to the run current when the motor
+moves again.
 
 The micro-controller updates the coil currents 40000 times a second on
 STM32F405, F407, F427, F429 and F446, using a dedicated timer and DMA.
