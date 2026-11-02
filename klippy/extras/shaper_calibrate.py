@@ -260,6 +260,7 @@ def _prepare_smoother_estimate(np, smoother, test_freqs):
         "test_freqs": test_freqs,
         "time": time,
         "omega": omega,
+        "dt": dt,
         "wl": wp - wm,
         "w_dt_rev": w_dt[:, ::-1],
     }
@@ -1005,9 +1006,15 @@ class ShaperCalibrate:
             self.save_params(configfile, "x", shaper_name, shaper_freq)
             self.save_params(configfile, "y", shaper_name, shaper_freq)
         else:
+            # Save under the name that takes precedence for this type, so
+            # the result replaces any frequency already in the config
+            is_smoother = any(
+                s.name == shaper_name for s in shaper_defs.INPUT_SMOOTHERS
+            )
+            freq_option = "smoother_freq_" if is_smoother else "shaper_freq_"
             configfile.set("input_shaper", "shaper_type_" + axis, shaper_name)
             configfile.set(
-                "input_shaper", "shaper_freq_" + axis, "%.1f" % (shaper_freq,)
+                "input_shaper", freq_option + axis, "%.1f" % (shaper_freq,)
             )
 
     def apply_params(self, input_shaper, axis, shaper_name, shaper_freq):

@@ -171,6 +171,9 @@ configuration between multiple sections. References take the form of
 `${section.option}` to look up a value elsewhere in your configuration. Note,
 that constants must always be lower case.
 
+References are a plain text substitution: the referenced value is copied
+as-is. Expressions and Python-like functions are not evaluated.
+
 Optionally, a `[constants]` section can be used specifically to store
 these values. Unused constants will display a warning. However, `[constants]`
 will display an error if none of the constants are used.
@@ -241,8 +244,6 @@ max_accel:
 #   decelerate to zero at each corner. The value specified here may be
 #   changed at runtime using the SET_VELOCITY_LIMIT command. The
 #   default is 5mm/s.
-#max_accel_to_decel:
-#   This parameter is deprecated and should no longer be used.
 #resonance_shaping: False
 #   Enable experimental resonance-weighted acceleration shaping for
 #   ordinary moves. When enabled, this reshapes a move's acceleration into
@@ -798,6 +799,12 @@ max_z_accel:
 # stepper controlling the X-Y movement.
 [stepper_x]
 
+# Additional steppers may be added to the X rail as [stepper_x1],
+# [stepper_x2], etc. Each additional X stepper is driven with the
+# mirrored belt direction. Combined with additional Y steppers
+# ([stepper_y1]) this supports four motor hybrid machines such as the
+# RatRig V-Core hybrid.
+
 # The stepper_y section is used to describe the stepper controlling
 # the Y axis.
 [stepper_y]
@@ -834,6 +841,10 @@ max_z_accel:
 # The stepper_x section is used to describe the X axis as well as the
 # stepper controlling the X-Z movement.
 [stepper_x]
+
+# Additional steppers may be added to the X rail as [stepper_x1],
+# [stepper_x2], etc. Each additional X stepper is driven with the
+# mirrored belt direction.
 
 # The stepper_y section is used to describe the stepper controlling
 # the Y axis.
@@ -2502,7 +2513,7 @@ accel_chip:
 #   must be provided.
 #point:
 #   An X, Y, Z position to run the test around. The default is the
-#   current toolhead position.
+#   middle of the bed at the current height.
 #speed_min: 30
 #speed_max: 160
 #speed_step: 5
@@ -2528,8 +2539,14 @@ accel_chip:
 #move_speed: 50
 #   The speed (in mm/s) of moves between tests. The default is 50.
 #harmonics: 1, 2, 3, 4
-#   The harmonics of the electrical frequency to measure. The default
-#   is 1, 2, 3, 4.
+#   The harmonics of the electrical frequency to measure and calibrate.
+#   The default is 1, 2, 3, 4.
+#belt_pitch: 2.0
+#   The tooth pitch of the belt the motor drives, in mm. The belt's
+#   tooth meshing vibrates at a frequency near the motor's harmonics,
+#   and is fitted out of the measurements so that it does not count as
+#   motor vibration. Set to 0 for a motor without a belt. The default
+#   is 2.0 (GT2).
 #graph: False
 #   Whether MEASURE_MOTOR_HARMONICS and PHASE_STEPPING_CALIBRATE also
 #   save a PNG graph of their measurements. Requires matplotlib in the
@@ -2565,32 +2582,12 @@ direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
 #   Coil angle corrections that cancel the motor's own position error,
 #   as space separated harmonic:magnitude:phase entries (magnitude and
 #   phase in radians of electrical angle), one set per direction of
-#   motion. PHASE_STEPPING_CALIBRATE finds and stores them. The default
-#   is no correction.
-#adaptive_current: False
-#   Let the coil current follow the motor's planned acceleration
-#   (TMC5160 only): current_min at constant speed and more while
-#   accelerating. The driver's run_current becomes the limit for the
-#   average current. See "Adaptive current" in Phase_Stepping.md. The
-#   default is False.
-#current_limit:
-#   Optional hard upper limit for the coil current (amps RMS), set by
-#   lowering the driver's own current setting (CS) so that nothing the
-#   micro-controller writes can exceed it. Lowering CS makes the coil
-#   currents coarser, which can be heard as motor noise. The default is
-#   no limit: CS stays at 31 and the micro-controller alone keeps the
-#   current at or below current_max.
-#current_min:
-#   Current (amps RMS) at constant speed and at rest. This parameter must
-#   be provided when adaptive_current is True.
-#current_max:
-#   Highest current (amps RMS) used while accelerating; at most the hard
-#   limit that current_limit gives. The default is the driver's
-#   run_current, so the current is only ever lowered.
-#accel_reference:
-#   The motor acceleration (mm/s^2) that gets the driver's run_current;
-#   the current rises in a straight line from current_min at rest. The
-#   default is max_accel from the [printer] section.
+#   motion. A harmonic may instead have two entries with a fourth part,
+#   the motor speed in mm/s each applies at: between the two speeds the
+#   correction follows the speed linearly, outside them it holds the
+#   nearer entry. All such entries of a stepper must use the same two
+#   speeds. PHASE_STEPPING_CALIBRATE finds and stores the corrections.
+#   The default is no correction.
 ```
 
 ## Config file helpers
@@ -2681,12 +2678,13 @@ pins:
 Z height probe. One may define this section to enable Z height probing
 hardware. When this section is enabled, PROBE and QUERY_PROBE extended
 [g-code commands](G-Codes.md#probe) become available. Also, see the
-[probe calibrate guide](Probe_Calibrate.md). The probe section also
-creates a virtual "probe:z_virtual_endstop" pin. One may set the
-stepper_z endstop_pin to this virtual pin on cartesian style printers
-that use the probe in place of a z endstop. If using
-"probe:z_virtual_endstop" then do not define a position_endstop in the
-stepper_z config section.
+[probe calibrate guide](Probe_Calibrate.md). The probe section, and all
+other probe types, also create virtual endstops by the name of
+`<probe name>:z_virtual_endstop`. The default probe additionally registers
+itself as `probe:z_virtual_endstop`. One may set the stepper_z endstop_pin
+to such a virtual pin on cartesian style printers that use the probe in
+place of a z endstop. If using "probe:z_virtual_endstop" then do not define
+a position_endstop in the stepper_z config section.
 
 ```
 [probe]
@@ -2734,6 +2732,11 @@ z_offset:
 #   not obtained in the given number of retries then an error is
 #   reported. The default is zero which causes an error to be reported
 #   on the first sample that exceeds samples_tolerance.
+#register_as_probe: True
+#   If this probe should be automatically registered as the default one.
+#   Defaults to true. When using multiple probes, only a single probe is
+#   allowed to register as the default, and all other probe configuration
+#   blocks must set this to false.
 #activate_gcode:
 #   A list of G-Code commands to execute prior to each probe attempt.
 #   See docs/Command_Templates.md for G-Code format. This may be
@@ -2781,6 +2784,14 @@ z_offset:
 #   0 will disable scrubbing. The default is 0.
 ```
 
+It is also possible to create named probes.
+```
+[probe named_probe]
+# All options from [probe] are accepted.
+```
+At most one probe may set `register_as_probe: True`. If an unnamed `[probe]`
+is present, no other probe may set `register_as_probe: True`.
+
 ### [nozzle_cleanup]
 
 Enables the [NOZZLE_CLEANUP](G-Codes.md#nozzle_cleanup) gcode command. This 
@@ -2797,7 +2808,8 @@ quality detection, such as the [load_cell_probe](#load_cell_probe).
 #   Number of probe locations along the X axis. Can be negative. Default is 10.
 #pattern_y: 4
 #   Number of probe locations along the Y axis. Can be negative. Default is 4.
-#
+#probe:
+#   Probe to use, if not the default probe.
 #These config values are inherited from [probe] if not specified:
 #speed:
 #lift_speed:
@@ -2863,6 +2875,7 @@ control_pin:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #   See the "probe" section for information on these parameters.
 ```
 
@@ -2973,6 +2986,7 @@ detach_position: 0,0,0
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #   See the "probe" section for information on these parameters.
@@ -3026,6 +3040,7 @@ z_offset:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #deactivate_on_each_sample:
@@ -3049,6 +3064,10 @@ sensor_type: ldc1612
 #intb_pin:
 #   MCU gpio pin connected to the ldc1612 sensor's INTB pin (if
 #   available). The default is to not use the INTB pin.
+#amplitude_errors: both
+#   Controls the amplitude related errors that will register as sensor failure.
+#   Valid options are: none, low, high, both. Defaults to both, meaning
+#   any amplitude related errors register as sensor failure.
 #z_offset:
 #   The nominal distance (in mm) between the nozzle and bed that a
 #   probing attempt should stop at. This parameter must be provided.
@@ -3069,6 +3088,7 @@ sensor_type: ldc1612
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #   See the "probe" section for information on these parameters.
 ```
 
@@ -3387,6 +3407,13 @@ printer kinematics.
 #   Endstop switch detection pin. If specified, then one may perform
 #   "homing moves" by adding a STOP_ON_ENDSTOP parameter to
 #   MANUAL_STEPPER movement commands.
+#position_min:
+#position_max:
+#   The minimum and maximum position the stepper can be commanded to
+#   move to. If specified then one may not command the stepper to move
+#   past the given position. Note that these limits do not prevent
+#   setting an arbitrary position with the `MANUAL_STEPPER
+#   SET_POSITION=x` command. The default is to not enforce a limit.
 ```
 
 ### [mixing_extruder]
@@ -3938,6 +3965,23 @@ max_temp: 325
 #   Ignore the temp limits (if set to true, the min and max temp can be omitted)
 #echo_limits_to_console: False
 #   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
+```
+
+### INDX temperature sensor
+
+Temperature reported by a [Bondtech INDX toolboard](#indx). The
+default "heater" kind reports the nozzle temperature and is the one
+to use for the extruder; the other kinds are mainly diagnostic.
+
+```
+sensor_type: indx
+#indx_sensor: heater
+#   The temperature to report. Available kinds are "heater" (nozzle
+#   temperature), "sensor" (IR sensor die temperature), "board"
+#   (toolboard temperature), "bracket" (sensor bracket temperature),
+#   "ldc_coil" (eddy current probe coil temperature), "check_model"
+#   (thermal model prediction) and "check_model_delta" (difference
+#   between the model prediction and the measured temperature).
 ```
 
 
@@ -4714,6 +4758,9 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc2208]
@@ -5096,6 +5143,9 @@ run_current:
 #   "sensorless homing". (Be sure to also set driver_SGT OR driver_SG4_THRS
 #   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc5160]
@@ -5250,7 +5300,92 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
+
+### [tmc5262]
+
+Configure a TMC5262 stepper motor driver via SPI. Define a section with a
+"tmc5262" prefix followed by the name of the corresponding stepper
+(for example, "[tmc5262 stepper_x]").
+
+This implementation supports SpreadCycle with a physical endstop.
+
+```
+[tmc5262 stepper_x]
+cs_pin:
+#   The pin connected to the driver's chip select input. This parameter
+#   must be provided.
+#spi_speed:
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section.
+#chain_position:
+#chain_length:
+#   See the tmc5160 section for SPI daisy chain settings.
+#interpolate: True
+#   Enable interpolation to 256 microsteps. The default is True.
+run_current:
+#   Motor current in amps RMS. This parameter must be provided.
+#   Klipper selects the smallest hardware current range that fits this
+#   value. SET_TMC_CURRENT is limited to that range; configure a higher
+#   run_current and restart to select a larger range if needed.
+#hold_current:
+#   Current in amps RMS when the motor is not moving. The default is
+#   run_current. Setting a separate hold_current is not recommended;
+#   see TMC_Drivers.md.
+#home_current:
+#   The amount of current (in amps RMS) to configure the driver to use
+#   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
+#rref: 12000
+#   Resistance in ohms of the reference resistor between REF and GND.
+#   Obtain this value from the driver board documentation or schematic.
+#   The default is 12000. The driver uses integrated current sensing,
+#   not an external sense resistor.
+#driver_MSLUT0: 2863314260
+#driver_MSLUT1: 1251300522
+#driver_MSLUT2: 608774441
+#driver_MSLUT3: 269500962
+#driver_MSLUT4: 4227858431
+#driver_MSLUT5: 3048961917
+#driver_MSLUT6: 1227445590
+#driver_MSLUT7: 4211234
+#driver_W0: 2
+#driver_W1: 1
+#driver_W2: 1
+#driver_W3: 1
+#driver_X1: 128
+#driver_X2: 255
+#driver_X3: 255
+#driver_START_SIN: 0
+#driver_START_SIN90: 247
+#driver_OFFSET_SIN90: 0
+#   See the tmc2240 section for Microstep Table settings.
+#driver_MULTISTEP_FILT: True
+#driver_IHOLDDELAY: 7
+#driver_IRUNDELAY: 4
+#driver_TPOWERDOWN: 10
+#driver_TBL: 2
+#driver_TOFF: 3
+#driver_HEND: 2
+#driver_HSTRT: 5
+#driver_FD3: 0
+#driver_DISFDCC: 0
+#driver_TPFD: 4
+#driver_CHM: 0
+#driver_SLOPE_CONTROL: 3
+#   Set the corresponding register field during driver configuration.
+#   See the TMC5262 datasheet for field definitions. The defaults are
+#   shown above.
+```
+
 
 ## Run-time stepper motor current configuration
 
@@ -6128,6 +6263,31 @@ sensor_type:
 #   decreasing force value when placed under load.
 ```
 
+#### CS1237
+
+The CS1237 sensor backend supports both `[load_cell]` and
+`[load_cell_probe]`.
+
+```
+[load_cell my_cs1237]
+sensor_type: cs1237
+sclk_pin:
+#   The pin connected to the CS1237 clock line. This parameter must be
+#   provided.
+dout_pin:
+#   The pin connected to the bidirectional CS1237 DOUT line. This parameter
+#   must be provided.
+#sample_rate: 640
+#   Valid values for sample_rate are 10, 40, 640, or 1280. The default is 640.
+#gain: 128
+#   Valid values for gain are 1, 2, 64, or 128. The default is 128.
+#reference_output: True
+#   Enable the CS1237 REFO reference output. The default is True.
+```
+
+Both pins must be on the same MCU. DOUT is bidirectional during
+configuration.
+
 #### HX711
 This is a 24 bit low sample rate chip using "bit-bang" communications. It is
 suitable for filament scales.
@@ -6315,7 +6475,10 @@ sensor_type:
 #drift_filter_cutoff_frequency: 0.8
 #   Enable optional continuous taring while homing & probing to reject drift.
 #   The value is a frequency, in Hz, below which drift will be ignored. This
-#   option requires the SciPy library. Default: None
+#   option requires the SciPy library. Can be automatically calibrated using 
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`. 
+#   See [Drift Filter Calibration](Load_Cell.md#drift-filter-calibration).
+#   Default: None
 #drift_filter_delay: 2
 #   The delay, or 'order', of the drift filter. This controls the number of
 #   samples required to make a trigger detection. Can be 1 or 2, the default
@@ -6349,8 +6512,10 @@ sensor_type:
 #   The distance in mm to slowly raise the probe to perform precise Z=0
 #   measurments. This move occurs immediately after the probe detects contact.
 #   The distance needs to be approximatly 2x the distance required for the probe
-#   to break contact with the bed. Valid range is 0.01 to 2.0 mm.
-#   The default is 0.2 mm.
+#   to break contact with the bed. Can be automatically calibrated using
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=TAP_PERFORMANCE`.
+#   See [Tap Performance Calibration](Load_Cell.md#tap-performance-calibration).
+#   Valid range is 0.01 to 2.0 mm. The default is 0.2 mm.
 #pullback_speed:
 #   The speed in mm/s for the pullback move after probe trigger. Valid range is
 #   0.1 to 1.0 mm/s. The default is set to 1 micron (0.001mm) per sensor sample.
@@ -6364,7 +6529,9 @@ sensor_type:
 #   The average angle of the decompression line for clean taps. The further the
 #   measured decompression angle is from this angle, the worse its tap quality score.
 #   There is no default, this must be measured. It is a number in degrees
-#   between 0 and 90.
+#   between 0 and 90. This will be automatically calibrated using
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=TAP_PERFORMANCE`.
+#   See [Decompression Angle Calibration](Load_Cell.md#decompression-angle-calibration).
 #max_approach_force: 50
 #max_departure_force: 25
 #max_baseline_force_delta: 25
@@ -6378,6 +6545,7 @@ sensor_type:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #   See the "[probe]" section for a description of the above parameters.
@@ -6386,6 +6554,93 @@ sensor_type:
 See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more details on maximum for tap quality.
 
 ## Board specific hardware support
+
+### [indx]
+
+Support for the Bondtech INDX toolboard with its inductive nozzle
+heater, contactless IR temperature sensor and on-board PID
+controller. The toolboard must run Kalico firmware built with the
+"Bondtech INDX Heater" option enabled. See the
+[INDX document](INDX.md) for setup and calibration instructions and
+[G-Codes](G-Codes.md#indx) for the available commands.
+
+The module registers named aliases for the toolboard pins (e.g.
+`<mcu>:motor_step`, `<mcu>:part_cooling`, `<mcu>:endstop`), exposes
+the nozzle heater as the virtual pin `indx:heater`, the nozzle
+temperature as `sensor_type: indx`, and automatically manages the
+heatsink fan. The heater will not heat until INDX_CALIBRATE has been
+run.
+
+```
+[indx]
+mcu:
+#   The name of the mcu config section for the INDX toolboard (e.g.
+#   "indxmcu" when the toolboard is defined as "[mcu indxmcu]"). This
+#   parameter must be provided.
+#part_cooling_fan: fan
+#   Name of the part cooling fan object on the tool. The fan speed is
+#   used by the thermal model to compensate for part cooling airflow.
+#   Set to an empty string to disable.
+#pid_kp: 4.0
+#pid_ti: 0.2
+#pid_td: 0.0
+#pid_b: 1.0
+#pid_i_window: 0.2
+#pid_i_limit: 0.5
+#   Parameters for the PID controller running on the toolboard. The
+#   defaults should work for most setups.
+#max_temp_nozzle: 305.0
+#max_temp_sensor: 130.0
+#max_temp_bracket: 130.0
+#max_temp_board: 100.0
+#   Maximum allowed temperature for the nozzle, the IR sensor die,
+#   the sensor bracket and the toolboard. Exceeding any of these
+#   triggers a shutdown.
+#max_model_error: 50.0
+#   Maximum allowed difference (in Celsius) between the measured
+#   nozzle temperature and the thermal model prediction before a
+#   shutdown is triggered.
+#coil_time_on:
+#coil_time_off:
+#coil_time_on_first:
+#   Inductive coil drive timings in microseconds. These are measured
+#   by INDX_CALIBRATE and stored by SAVE_CONFIG; they should not
+#   normally be set by hand.
+#max_power:
+#model_max_power_temp_coeff:
+#model_thermal_capacity:
+#model_to_ambient_r:
+#   Thermal model parameters. These are measured by INDX_CALIBRATE
+#   and stored by SAVE_CONFIG; they should not normally be set by
+#   hand.
+#model_filament_diameter: 1.75
+#model_filament_density: 1.20
+#model_filament_heat_capacity: 1.8
+#   Filament parameters used by the thermal model to account for the
+#   energy carried away by extruded filament. The density is in
+#   g/cm^3 and the heat capacity in J/(g*K). These can also be
+#   measured with INDX_LOAD_FILAMENT or changed at runtime with
+#   INDX_SET_MODEL_PARAMS.
+#model_part_cooling_fan_a: 0.0
+#model_part_cooling_fan_k: 0.0
+#   Part cooling fan compensation for the thermal model, measured by
+#   INDX_FAN_CALIBRATE and stored by SAVE_CONFIG.
+#model_ambient_blend_board: 0.0
+#model_ambient_blend_bracket: 1.0
+#model_ambient_blend_sensor: 1.0
+#   Relative weights of the toolboard, sensor bracket and IR sensor
+#   die temperatures when estimating the ambient temperature for the
+#   thermal model.
+#model_error_application: 1.0
+#   Fraction of the observed model error fed back into the thermal
+#   model on each update.
+#ir_sensor_exponent:
+#ir_sensor_obj_gain:
+#ir_sensor_bracket_gain:
+#   Override the IR sensor tuning parameters stored in the sensor
+#   EEPROM. All three must be provided if any is given. These should
+#   not normally be set.
+```
 
 ### [sx1509]
 

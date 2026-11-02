@@ -25,6 +25,7 @@ SOURCE_FILES = [
     "pyhelper.c",
     "serialqueue.c",
     "stepcompress.c",
+    "steppersync.c",
     "stepcompress_hp.c",
     "itersolve.c",
     "trapq.c",
@@ -50,6 +51,7 @@ OTHER_FILES = [
     "list.h",
     "serialqueue.h",
     "stepcompress.h",
+    "steppersync.h",
     "itersolve.h",
     "pyhelper.h",
     "trapq.h",
@@ -67,49 +69,58 @@ defs_stepcompress = """
         int step_count, interval, add, add2, shift;
     };
 
-    struct stepcompress *stepcompress_alloc(uint32_t oid);
-    struct stepcompress *stepcompress_hp_alloc(uint32_t oid);
-    void stepcompress_fill(struct stepcompress *sc, uint32_t max_error
-        , int32_t queue_step_msgtag, int32_t set_next_step_dir_msgtag);
+    void stepcompress_fill(struct stepcompress *sc, uint32_t oid
+        , uint32_t max_error, int32_t queue_step_msgtag
+        , int32_t set_next_step_dir_msgtag);
+    void stepcompress_hp_enable(struct stepcompress *sc);
     void stepcompress_set_invert_sdir(struct stepcompress *sc
         , uint32_t invert_sdir);
-    void stepcompress_free(struct stepcompress *sc);
     int stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock);
     int stepcompress_set_last_position(struct stepcompress *sc
         , uint64_t clock, int64_t last_position);
     int64_t stepcompress_find_past_position(struct stepcompress *sc
         , uint64_t clock);
-    int stepcompress_queue_msg(struct stepcompress *sc
-        , uint32_t *data, int len);
-    int stepcompress_queue_mq_msg(struct stepcompress *sc, uint64_t req_clock
-        , uint32_t *data, int len);
     int stepcompress_extract_old(struct stepcompress *sc
         , struct pull_history_steps *p, int max
         , uint64_t start_clock, uint64_t end_clock);
+"""
 
-    struct steppersync *steppersync_alloc(struct serialqueue *sq
-        , struct stepcompress **sc_list, int sc_num, int move_num);
-    void steppersync_free(struct steppersync *ss);
+defs_steppersync = """
+    struct stepcompress *syncemitter_get_stepcompress(struct syncemitter *se);
+    void syncemitter_set_stepper_kinematics(struct syncemitter *se
+        , struct stepper_kinematics *sk);
+    struct stepper_kinematics *syncemitter_get_stepper_kinematics(
+        struct syncemitter *se);
+    void syncemitter_queue_msg(struct syncemitter *se, uint64_t req_clock
+        , uint32_t *data, int len);
+    struct syncemitter *steppersync_alloc_syncemitter(struct steppersync *ss
+        , char name[16], int alloc_stepcompress);
+    void steppersync_setup_movequeue(struct steppersync *ss
+        , struct serialqueue *sq, int move_num);
     void steppersync_set_time(struct steppersync *ss
         , double time_offset, double mcu_freq);
-    int steppersync_flush(struct steppersync *ss, uint64_t move_clock
-        , uint64_t clear_history_clock);
+    struct steppersyncmgr *steppersyncmgr_alloc(void);
+    void steppersyncmgr_free(struct steppersyncmgr *ssm);
+    struct steppersync *steppersyncmgr_alloc_steppersync(
+        struct steppersyncmgr *ssm);
+    int32_t steppersyncmgr_gen_steps(struct steppersyncmgr *ssm
+        , double flush_time, double gen_steps_time, double clear_history_time);
 """
 
 defs_itersolve = """
-    int32_t itersolve_generate_steps(struct stepper_kinematics *sk
-        , double flush_time);
     double itersolve_check_active(struct stepper_kinematics *sk
         , double flush_time);
     int32_t itersolve_is_active_axis(struct stepper_kinematics *sk, char axis);
-    void itersolve_set_trapq(struct stepper_kinematics *sk, struct trapq *tq);
-    void itersolve_set_stepcompress(struct stepper_kinematics *sk
-        , struct stepcompress *sc, double step_dist);
+    void itersolve_set_trapq(struct stepper_kinematics *sk, struct trapq *tq
+        , double step_dist);
+    struct trapq *itersolve_get_trapq(struct stepper_kinematics *sk);
     double itersolve_calc_position_from_coord(struct stepper_kinematics *sk
         , double x, double y, double z);
     void itersolve_set_position(struct stepper_kinematics *sk
         , double x, double y, double z);
     double itersolve_get_commanded_pos(struct stepper_kinematics *sk);
+    double itersolve_get_gen_steps_pre_active(struct stepper_kinematics *sk);
+    double itersolve_get_gen_steps_post_active(struct stepper_kinematics *sk);
 """
 
 defs_trapq = """
@@ -190,17 +201,16 @@ defs_kin_extruder = """
         , int n, double a[], double t[]);
     int extruder_set_smoothing_params(struct stepper_kinematics *sk, char axis
         , int n, double a[], double t_sm, double t_offs);
-    double extruder_get_step_gen_window(struct stepper_kinematics *sk);
 """
 
 defs_kin_shaper = """
-    double input_shaper_get_step_gen_window(struct stepper_kinematics *sk);
     int input_shaper_set_shaper_params(struct stepper_kinematics *sk, char axis
         , int n, double a[], double t[]);
     int input_shaper_set_smoother_params(struct stepper_kinematics *sk
         , char axis, int n, double a[], double t_sm);
     int input_shaper_set_sk(struct stepper_kinematics *sk
         , struct stepper_kinematics *orig_sk);
+    void input_shaper_update_sk(struct stepper_kinematics *sk);
     struct stepper_kinematics * input_shaper_alloc(void);
 """
 
@@ -230,19 +240,6 @@ defs_phasegen = """
     double phasegen_target(struct phasegen *pg, int64_t tick);
     int64_t phasegen_get_phase(struct phasegen *pg);
     int64_t phasegen_get_last_tick(struct phasegen *pg);
-    struct phasegen_current {
-        int64_t tick;
-        int32_t scaler;
-    };
-    void phasegen_setup_current(struct phasegen *pg, int32_t block_ticks
-        , int32_t lead_blocks, int32_t lag_blocks, int32_t sample_ticks
-        , double current_min, double current_slope, double current_max
-        , double full_scale, int32_t scaler_min, int32_t scaler_max);
-    void phasegen_start_current(struct phasegen *pg, int64_t first_tick
-        , int32_t scaler);
-    int32_t phasegen_current_scaler(struct phasegen *pg, double accel);
-    int32_t phasegen_current(struct phasegen *pg, int64_t end_tick
-        , struct phasegen_current *out, int32_t max_out);
 """
 
 defs_serialqueue = """
@@ -255,7 +252,7 @@ defs_serialqueue = """
     };
 
     struct serialqueue *serialqueue_alloc(int serial_fd, char serial_fd_type
-        , int client_id);
+        , int client_id, char name[16]);
     void serialqueue_exit(struct serialqueue *sq);
     void serialqueue_free(struct serialqueue *sq);
     struct command_queue *serialqueue_alloc_commandqueue(void);
@@ -294,6 +291,7 @@ defs_trdispatch = """
 defs_pyhelper = """
     void set_python_logging_callback(void (*func)(const char *));
     double get_monotonic(void);
+    int set_thread_name(char name[16]);
 """
 
 defs_std = """
@@ -305,6 +303,7 @@ defs_all = [
     defs_serialqueue,
     defs_std,
     defs_stepcompress,
+    defs_steppersync,
     defs_itersolve,
     defs_trapq,
     defs_trdispatch,

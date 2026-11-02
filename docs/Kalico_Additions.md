@@ -19,6 +19,7 @@
 
 ## Enhanced behavior
 
+- [`SET_NOZZLE_DIAMETER`](./G-Codes.md#set_nozzle_diameter) changes an extruder's nozzle diameter (and optionally its max extrusion cross section) at runtime, e.g. for toolheads with different nozzles or a high-flow purge line.
 - [`canbus_query.py`](./CANBUS.md#finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Kalico devices, even after they've been assigned a node_id.
 - Input shaper calibration now warns about active fans that may affect measurement accuracy.
 - [`BED_MESH_CHECK`](./G-Codes.md#bed_mesh_check) validates the current bed mesh against specified criteria, allowing you to check maximum deviation and slope between adjacent points before printing.
@@ -28,6 +29,7 @@
 ## New Kalico Modules
 
 - [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Kalico
+- [indx](./INDX.md) - Support for the Bondtech INDX toolboard and its inductive nozzle heater
 - [phase_calibrate](./Motor_Harmonics.md) - Measure stepper motor vibration at harmonics of the electrical frequency (the source of VFA)
 - [phase_stepping](./Phase_Stepping.md) - Experimental: drive stepper coil currents directly over SPI and correct the motor's position errors
 
@@ -41,6 +43,7 @@
 ## Probes and Probing
 
 - [`[probe] drop_first_result: True`](./Config_Reference.md#probe) will drop the first result when probing. This can improve probe accuracy for printers that have an outlier for the first sample.
+- [`[probe <name>]`](./Config_Reference.md#probe) adds named probes, so a printer can have more than one. Pick one with `PROBE=<name>` on probing commands and list them with [`LIST_PROBES`](./G-Codes.md#list_probes).
 - [`[dockable_probe]`](./Config_Reference.md#dockable_probe) brings helpful native support for docked probes, such as the Annex Quickdraw, Klicky/Unklicky, and countless others.
 - [`[z_calibration]`](./Config_Reference.md#z_calibration) enables automatic probe Z offset calibration using a reference endstop like the Voron 2.4 nozzle endstop.
 - [`[z_tilt_ng]`](./Config_Reference.md#z_tilt_ng) adds enforced 3-point z tilt calibration
@@ -67,6 +70,7 @@
 ## TMC Drivers
 
 - [`[tmc2240] driver_CS and current_range`](./Config_Reference.md#tmc2240) let you tune the current scaler and current range of your tmc2240 drivers.
+- [Sensorless homing via SPI](./TMC_Drivers.md#sensorless-homing-via-spi) polls the stallguard flag of SPI drivers, so no DIAG pin is needed.
 
 ## Macros
 

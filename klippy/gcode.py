@@ -551,8 +551,6 @@ class GCodeDispatch:
 class GCodeIO:
     def __init__(self, printer):
         self.printer = printer
-        printer.register_event_handler("klippy:ready", self._handle_ready)
-        printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         self.gcode = printer.lookup_object("gcode")
         self.gcode_mutex = self.gcode.get_mutex()
         self.fd = printer.get_start_args().get("gcode_fd")
@@ -571,6 +569,12 @@ class GCodeIO:
         self.pending_commands = []
         self.bytes_read = 0
         self.input_log = collections.deque([], 50)
+        # Register event handlers
+        printer.register_event_handler("klippy:ready", self._handle_ready)
+        printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
+        printer.register_event_handler(
+            "klippy:analyze_shutdown", self._handle_analyze_shutdown
+        )
 
     def _handle_ready(self):
         self.is_printer_ready = True
@@ -579,7 +583,7 @@ class GCodeIO:
                 self.fd, self._process_data
             )
 
-    def _dump_debug(self):
+    def _handle_analyze_shutdown(self, msg, details):
         out = []
         out.append("Dumping gcode input %d blocks" % (len(self.input_log),))
         for eventtime, data in self.input_log:
@@ -590,7 +594,6 @@ class GCodeIO:
         if not self.is_printer_ready:
             return
         self.is_printer_ready = False
-        self._dump_debug()
         if self.is_fileinput:
             self.printer.request_exit("error_exit")
 

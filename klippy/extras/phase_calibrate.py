@@ -3,6 +3,7 @@
 # Copyright (C) 2026  Åsmund Collin <aakjaergaard@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import cmath
 import contextlib
 import logging
 import math
@@ -15,8 +16,10 @@ import time
 from . import motor_kinematics, resonance_tester
 
 REPOSITION_DWELL = 0.3
-# Speed resolution when the speed search ramps through the range
-SEARCH_STEP = 2.5
+# Speed resolution of a calibration sweep
+SWEEP_STEP = 2.5
+# Speed step of a calibration at constant speeds (RAMP=0)
+PASS_STEP = 5.0
 GRAPH_SCRIPT = os.path.normpath(
     os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -34,6 +37,10 @@ HARMONIC_NAMES = {
     2: "1 per 2 full steps",
     4: "1 per full step",
 }
+# A harmonic is calibrated when it reaches this displacement (mm) and this
+# many times its noise level somewhere in the speed range
+MIN_CAL_DISP = 1e-4
+MIN_CAL_SNR = 5.0
 
 
 class PhaseCalibrate:
@@ -52,7 +59,8 @@ class PhaseCalibrate:
         self.measure_time = config.getfloat("measure_time", 0.5, minval=0.1)
         self.max_distance = config.getfloat("max_distance", 150.0, above=0.0)
         self.move_speed = config.getfloat("move_speed", 50.0, above=0.0)
-        self.harmonics = config.getintlist("harmonics", (1, 2, 3, 4))
+        self.belt_pitch = config.getfloat("belt_pitch", 2.0, minval=0.0)
+        self.harmonics = config.getintlist("harmonics", [1, 2, 3, 4])
         if not self.harmonics or min(self.harmonics) < 1:
             raise config.error(
                 "Option 'harmonics' in section '%s' must list positive"
@@ -115,7 +123,14 @@ class PhaseCalibrate:
             return point
         if self.point is not None:
             return list(self.point)
-        return toolhead.get_position()[:3]
+        # The middle of the bed leaves the most room for the test moves
+        status = toolhead.get_status(self.printer.get_reactor().monotonic())
+        lo, hi = status["axis_minimum"], status["axis_maximum"]
+        return [
+            0.5 * (lo[0] + hi[0]),
+            0.5 * (lo[1] + hi[1]),
+            toolhead.get_position()[2],
+        ]
 
     def _get_harmonics(self, gcmd):
         raw = gcmd.get("HARMONICS", None)
@@ -156,20 +171,23 @@ class PhaseCalibrate:
         )
 
     @contextlib.contextmanager
-    def _uncorrected(self, phase_stepping, harmonics):
-        """Clear the corrections of the given harmonics, and restore them
-        if calibration fails."""
+    def _uncorrected(self, phase_stepping, harmonics, speeds):
+        """Clear the corrections of the given harmonics and set the speed
+        range of the corrections, and restore both if calibration fails."""
         previous = {
             (label, h): phase_stepping.get_harmonic(label, h)
             for label in DIRECTIONS.values()
             for h in harmonics
         }
+        previous_speeds = phase_stepping.get_correction_speeds()
         for label, h in previous:
             phase_stepping.set_harmonic(label, h, 0j)
+        phase_stepping.set_correction_speeds(speeds)
         phase_stepping.apply_corrections()
         try:
             yield
         except BaseException:
+            phase_stepping.set_correction_speeds(previous_speeds)
             for (label, h), value in previous.items():
                 phase_stepping.set_harmonic(label, h, value)
             try:
@@ -179,30 +197,6 @@ class PhaseCalibrate:
                     "Unable to restore phase stepping corrections"
                 )
             raise
-
-    def _run_moves(self, toolhead, point, plan, scale, accel):
-        windows = []
-        toolhead.manual_move(point, self.move_speed)
-        toolhead.wait_moves()
-        aclient = self.accel_chip.start_internal_client()
-        try:
-            for speed, start, end in plan:
-                toolhead.manual_move(start, self.move_speed)
-                toolhead.dwell(REPOSITION_DWELL)
-                for motor_dir, target in ((1, end), (-1, start)):
-                    # Every test move starts from rest (a dwell or a full
-                    # reversal precedes it), so the cruise phase begins
-                    # exactly speed/accel after the move start.
-                    start_time = toolhead.get_last_move_time()
-                    toolhead.manual_move(target, speed * scale)
-                    begin = start_time + speed / accel + self.settle_time
-                    windows.append(
-                        (speed, motor_dir, begin, begin + self.measure_time)
-                    )
-            toolhead.manual_move(point, self.move_speed)
-        finally:
-            aclient.finish_measurements()
-        return aclient, windows
 
     def _motor_geometry(self, gcmd, kin, stepper, point):
         """(toolhead move per mm of motor travel, electrical period)"""
@@ -247,38 +241,36 @@ class PhaseCalibrate:
         plan = []
         for speed in speeds:
             half = 0.5 * motor_harmonics.motor_travel(speed, accel, cruise_time)
-            start, end = [
-                [
-                    point[0] + sign * half * direction[0],
-                    point[1] + sign * half * direction[1],
-                    point[2],
-                ]
-                for sign in (-1.0, 1.0)
-            ]
-            plan.append((speed, start, end))
+            ends = self._ends(point, direction, half)
+            plan.append((speed, half, ends[-1], ends[1]))
         toolhead = self.printer.lookup_object("toolhead")
-        self._check_travel(gcmd, toolhead, max(plan)[1:])
+        self._check_travel(gcmd, toolhead, max(plan)[2:])
         return {
+            "kind": "passes",
             "point": point,
             "direction": direction,
             "scale": math.hypot(*direction),
             "period": period,
+            "belt": motor_harmonics.belt_order(period, self.belt_pitch),
             "plan": plan,
+            "speeds": list(speeds),
+            "speed_step": 0.0,
             "accel": accel,
             "max_speed": max(speeds),
         }
 
-    def _setup_ramps(self, gcmd, kin, stepper, point, speed_range, accels):
-        """Plan speed ramps of one motor around point covering speed_range;
-        accels are (to reach and leave a ramp, along the ramp)."""
+    def _setup_ramps(self, gcmd, kin, stepper, point, speeds, step, accels):
+        """Plan speed ramps of one motor around point covering speeds, which
+        are then measured every step; accels are (to reach and leave a
+        ramp, along the ramp)."""
         from . import motor_harmonics
 
         direction, period = self._motor_geometry(gcmd, kin, stepper, point)
         accel = accels[0]
         try:
             segments = motor_harmonics.plan_ramps(
-                speed_range[0],
-                speed_range[1],
+                speeds[0],
+                speeds[-1],
                 period,
                 accels,
                 self.max_distance,
@@ -295,23 +287,66 @@ class PhaseCalibrate:
             gcmd, toolhead, self._ends(point, direction, 0.5 * travel).values()
         )
         return {
+            "kind": "ramps",
             "point": point,
             "direction": direction,
             "scale": math.hypot(*direction),
             "period": period,
+            "belt": motor_harmonics.belt_order(period, self.belt_pitch),
             "segments": segments,
+            "speeds": list(speeds),
+            "speed_step": step,
             "accel": accel,
             "max_speed": segments[-1][1],
         }
 
-    def _run_ramps(self, gcmd, test):
-        """Ramp up and down through each segment in both directions and
-        return (times, accel along the motion, ramps)."""
+    def _run_passes(self, test):
+        """Move at each planned speed in both directions; returns the
+        accelerometer client and the measuring window of each pass."""
+        from . import motor_harmonics
+
+        toolhead = self.printer.lookup_object("toolhead")
+        point, scale, accel = test["point"], test["scale"], test["accel"]
+        settle = self.settle_time
+        windows = []
+        toolhead.manual_move(point, self.move_speed)
+        toolhead.wait_moves()
+        aclient = self.accel_chip.start_internal_client()
+        try:
+            for speed, half, start, end in test["plan"]:
+                toolhead.manual_move(start, self.move_speed)
+                toolhead.dwell(REPOSITION_DWELL)
+                # Every test move starts from rest (a dwell or a full
+                # reversal precedes it), so the cruise phase begins exactly
+                # speed/accel after the move start.
+                cruise = speed * speed / (2.0 * accel) + speed * settle
+                for motor_dir, target in ((1, end), (-1, start)):
+                    start_time = toolhead.get_last_move_time()
+                    toolhead.manual_move(target, speed * scale)
+                    windows.append(
+                        motor_harmonics.Ramp(
+                            motor_dir,
+                            start_time + speed / accel + settle,
+                            speed,
+                            0.0,
+                            self.measure_time,
+                            -motor_dir * (half - cruise),
+                        )
+                    )
+            toolhead.manual_move(point, self.move_speed)
+        finally:
+            aclient.finish_measurements()
+        return aclient, windows
+
+    def _run_ramps(self, test):
+        """Ramp up and down through each segment in both directions;
+        returns the accelerometer client and the ramps."""
         from . import motor_harmonics
 
         toolhead = self.printer.lookup_object("toolhead")
         point, direction = test["point"], test["direction"]
         scale, accel = test["scale"], test["accel"]
+        settle = self.settle_time
 
         def set_accel(value):
             # A move keeps the acceleration limit it was queued with
@@ -356,63 +391,38 @@ class PhaseCalibrate:
                     set_accel(accel)
                     # Skip the ringing from reaching the ramp's first speed
                     sign = 1.0 if up else -1.0
-                    duration = (v2 - v1) / ramp_accel - self.settle_time
-                    if duration > 0.0:
-                        ramps.append(
-                            motor_harmonics.Ramp(
-                                motor_dir,
-                                start_time + first / accel + self.settle_time,
-                                first + sign * ramp_accel * self.settle_time,
-                                sign * ramp_accel,
-                                duration,
-                            )
+                    duration = (v2 - v1) / ramp_accel - settle
+                    if duration <= 0.0:
+                        continue
+                    covered = (
+                        first * first / (2.0 * accel)
+                        + first * settle
+                        + 0.5 * sign * ramp_accel * settle * settle
+                    )
+                    ramps.append(
+                        motor_harmonics.Ramp(
+                            motor_dir,
+                            start_time + first / accel + settle,
+                            first + sign * ramp_accel * settle,
+                            sign * ramp_accel,
+                            duration,
+                            motor_dir * (covered - 0.5 * travel),
                         )
+                    )
             toolhead.manual_move(point, self.move_speed)
         finally:
             aclient.finish_measurements()
-        if not aclient.has_valid_samples():
-            raise gcmd.error(
-                "accelerometer '%s' measured no data" % (self.accel_chip_name,)
-            )
-        times, values = motor_harmonics.project_samples(
-            aclient.get_samples(), direction[0] / scale, direction[1] / scale
-        )
-        return times, values, ramps
+        return aclient, ramps
 
-    def _measure_ramp_rows(self, gcmd, test, harmonics, speeds, speed_step):
+    def _run(self, gcmd, test):
+        """Run the test moves once; returns (sample times, acceleration
+        along the motion, ramps)."""
         from . import motor_harmonics
 
-        times, values, ramps = self._run_ramps(gcmd, test)
-        rows = []
-        for ramp in ramps:
-            rows.extend(
-                motor_harmonics.analyze_ramp(
-                    times,
-                    values,
-                    ramp,
-                    test["period"],
-                    harmonics,
-                    speeds,
-                    speed_step,
-                )
-            )
-        # Each speed lies in one or two (overlapping) segments
-        rows = motor_harmonics.merge_rows(rows)
-        rows.sort(key=lambda row: (row[0], -row[1], row[2].harmonic))
-        return rows
-
-    def _run_test(self, gcmd, test, plan=None):
-        """Run passes and return (times, accel along the motion, windows)."""
-        from . import motor_harmonics
-
-        toolhead = self.printer.lookup_object("toolhead")
-        aclient, windows = self._run_moves(
-            toolhead,
-            test["point"],
-            plan or test["plan"],
-            test["scale"],
-            test["accel"],
-        )
+        if test["kind"] == "ramps":
+            aclient, ramps = self._run_ramps(test)
+        else:
+            aclient, ramps = self._run_passes(test)
         if not aclient.has_valid_samples():
             raise gcmd.error(
                 "accelerometer '%s' measured no data" % (self.accel_chip_name,)
@@ -421,49 +431,48 @@ class PhaseCalibrate:
         times, values = motor_harmonics.project_samples(
             aclient.get_samples(), direction[0] / scale, direction[1] / scale
         )
-        return times, values, windows
+        return times, values, ramps
 
-    def _measure_rows(self, gcmd, test, harmonics):
+    def _measure(self, gcmd, test, harmonics, max_freq_ratio, passes=1):
+        """Run the test moves passes times and measure the harmonics at
+        every planned speed; returns sorted (speed, direction, result)
+        rows, averaged over ramps and passes."""
         from . import motor_harmonics
 
-        times, values, windows = self._run_test(gcmd, test)
         rows = []
-        for speed, motor_dir, begin, end in windows:
-            sl = motor_harmonics.window_slice(times, begin, end)
-            for res in motor_harmonics.analyze_window(
-                times[sl], values[sl], speed, test["period"], harmonics
-            ):
-                rows.append((speed, motor_dir, res))
+        for _ in range(passes):
+            times, values, ramps = self._run(gcmd, test)
+            for ramp in ramps:
+                rows.extend(
+                    motor_harmonics.analyze_ramp(
+                        times,
+                        values,
+                        ramp,
+                        test["period"],
+                        harmonics,
+                        test["speeds"],
+                        test["speed_step"],
+                        test["belt"],
+                        max_freq_ratio,
+                    )
+                )
+        rows = motor_harmonics.merge_rows(rows)
+        rows.sort(key=lambda row: (row[0], -row[1], row[2].harmonic))
         return rows
 
-    def _measure_coherent(self, gcmd, test, speeds, harmonic, passes):
-        """Average complex displacement (mm) of one harmonic per direction
-        and speed, in phase with the motor's electrical angle; returns
-        {direction: {speed: displacement}}."""
-        from . import motor_harmonics
-
-        plan = [p for p in test["plan"] if p[0] in speeds] * passes
-        times, values, windows = self._run_test(gcmd, test, plan)
-        sums = {}
-        for speed, motor_dir, begin, end in windows:
-            omega = 2.0 * math.pi * harmonic * speed / test["period"]
-            sl = motor_harmonics.window_slice(times, begin, end)
-            # Every pass at a speed starts from the same point, so the
-            # motor's angle at the window start is the same and the phases
-            # are comparable.
-            amp = motor_harmonics.harmonic_amplitude(
-                times[sl],
-                values[sl],
-                motor_dir * omega / (2.0 * math.pi),
-                t_ref=begin,
+    def _sweep_table(self, rows):
+        """{(direction, harmonic): ({speed: phasor}, {speed: noise})} of
+        the measured rows."""
+        table = {}
+        for speed, motor_dir, res in rows:
+            if res.phasor is None:
+                continue
+            phasors, noises = table.setdefault(
+                (motor_dir, res.harmonic), ({}, {})
             )
-            sums.setdefault(motor_dir, {}).setdefault(speed, []).append(
-                amp / omega**2
-            )
-        return {
-            d: {s: sum(v) / len(v) for s, v in by_speed.items()}
-            for d, by_speed in sums.items()
-        }
+            phasors[speed] = res.phasor
+            noises[speed] = res.noise_disp
+        return table
 
     def _write_csv(self, filename, stepper_name, period, rows):
         with open(filename, "w") as f:
@@ -471,7 +480,9 @@ class PhaseCalibrate:
                 "# stepper=%s electrical_period=%.6f chip=%s\n"
                 % (stepper_name, period, self.accel_chip_name)
             )
-            f.write("speed,direction,harmonic,freq,accel,disp_um,noise_um\n")
+            f.write(
+                "speed,direction,harmonic,freq,accel,disp_um,noise_um,phase\n"
+            )
             for speed, motor_dir, res in rows:
                 if res.disp is None:
                     continue
@@ -480,8 +491,13 @@ class PhaseCalibrate:
                     if res.noise_disp is None
                     else "%.5f" % (res.noise_disp * 1000.0,)
                 )
+                phase = (
+                    ""
+                    if res.phasor is None
+                    else "%.4f" % cmath.phase(res.phasor)
+                )
                 f.write(
-                    "%.3f,%s,%d,%.3f,%.5f,%.5f,%s\n"
+                    "%.3f,%s,%d,%.3f,%.5f,%.5f,%s,%s\n"
                     % (
                         speed,
                         "fwd" if motor_dir > 0 else "bwd",
@@ -490,6 +506,7 @@ class PhaseCalibrate:
                         res.accel,
                         res.disp * 1000.0,
                         noise,
+                        phase,
                     )
                 )
 
@@ -594,7 +611,8 @@ class PhaseCalibrate:
                 kin,
                 stepper,
                 point,
-                (speeds[0], speeds[-1]),
+                speeds,
+                speed_step,
                 (accel, ramp_accel),
             )
             how = "%d speed ramps" % (len(test["segments"]),)
@@ -608,12 +626,9 @@ class PhaseCalibrate:
             % (stepper.get_name(), period, how, speeds[0], speeds[-1])
         )
         with self._suspend_limits(test):
-            if ramp:
-                rows = self._measure_ramp_rows(
-                    gcmd, test, harmonics, speeds, speed_step
-                )
-            else:
-                rows = self._measure_rows(gcmd, test, harmonics)
+            rows = self._measure(
+                gcmd, test, harmonics, motor_harmonics.MAX_FREQ_RATIO
+            )
 
         filename = self._csv_path(stepper.get_name(), name)
         self._write_csv(filename, stepper.get_name(), period, rows)
@@ -659,7 +674,7 @@ class PhaseCalibrate:
 
     def cmd_PHASE_STEPPING_CALIBRATE(self, gcmd):
         try:
-            from . import motor_harmonics
+            from . import motor_harmonics, phase_fit
         except ImportError:
             raise gcmd.error("PHASE_STEPPING_CALIBRATE requires numpy")
         toolhead = self.printer.lookup_object("toolhead")
@@ -674,139 +689,244 @@ class PhaseCalibrate:
                 "Enable phase stepping on '%s' first (PHASE_STEPPING_ENABLE)"
                 % (name,)
             )
-        harmonics = [
-            int(h) for h in gcmd.get("HARMONICS", "2,4,1").split(",") if h
-        ]
+        harmonics = self._get_harmonics(gcmd)
         accel = gcmd.get_float("ACCEL", self.accel, above=0.0)
-        passes = gcmd.get_int("PASSES", 2, minval=1, maxval=10)
-        probe = gcmd.get_float("PROBE", 0.02, above=0.0, maxval=0.1)
+        passes = gcmd.get_int("PASSES", 1, minval=1, maxval=5)
+        probe = gcmd.get_float("PROBE", 0.0, minval=0.0, maxval=0.1)
+        iterations = gcmd.get_int("ITERATIONS", 2, minval=0, maxval=5)
+        speed_dependent = gcmd.get_int("SPEED_DEPENDENT", 1, minval=0, maxval=1)
         speed_min = gcmd.get_float("SPEED_MIN", self.speed_min, above=0.0)
         speed_max = gcmd.get_float(
             "SPEED_MAX", max(self.speed_max, speed_min), minval=speed_min
         )
-        speed_count = gcmd.get_int("SPEED_COUNT", 5, minval=1, maxval=10)
         ramp = gcmd.get_int("RAMP", 1, minval=0, maxval=1)
         ramp_accel = gcmd.get_float("RAMP_ACCEL", self.ramp_accel, above=0.0)
         graph = gcmd.get_int("GRAPH", int(self.graph), minval=0, maxval=1)
         graph_name = self._get_name(gcmd)
         point = self._get_point(gcmd, toolhead)
+        limit = CORRECTION_LIMIT_RAD
 
-        # A motor's error changes with speed (its load angle grows), so each
-        # harmonic is measured at several speeds where it is clearly seen
-        # and gets the one correction that does best across all of them.
-        # Search with speed ramps (or constant speed passes), then measure at
-        # constant speed where each harmonic shows.
-        speeds = motor_harmonics.plan_speeds(speed_min, speed_max, SEARCH_STEP)
         if ramp:
-            search = self._setup_ramps(
+            speeds = motor_harmonics.plan_speeds(
+                speed_min, speed_max, SWEEP_STEP
+            )
+            test = self._setup_ramps(
                 gcmd,
                 kin,
                 stepper,
                 point,
-                (speed_min, speed_max),
+                speeds,
+                SWEEP_STEP,
                 (accel, ramp_accel),
             )
+            how = "%d speed ramps" % (len(test["segments"]),)
         else:
-            speeds = motor_harmonics.plan_speeds(speed_min, speed_max, 5.0)
-            search = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
+            speeds = motor_harmonics.plan_speeds(
+                speed_min, speed_max, PASS_STEP
+            )
+            test = self._setup_test(gcmd, kin, stepper, point, speeds, accel)
+            how = "%d constant speeds" % (len(speeds),)
+        period = test["period"]
+        reactor = self.printer.get_reactor()
+        started = reactor.monotonic()
+        sweeps = []
 
-        def sweep():
-            if ramp:
-                return self._measure_ramp_rows(
-                    gcmd, search, harmonics, speeds, SEARCH_STEP
+        def sweep(what):
+            gcmd.respond_info(
+                "Sweep %d of about %d: %s"
+                % (len(sweeps) + 1, 6 + iterations, what)
+            )
+            rows = self._measure(
+                gcmd,
+                test,
+                harmonics,
+                motor_harmonics.CALIBRATION_FREQ_RATIO,
+                passes,
+            )
+            sweeps.append(rows)
+            return self._sweep_table(rows)
+
+        def apply(corrections):
+            for (motor_dir, harmonic), c in corrections.items():
+                phase_stepping.set_harmonic(DIRECTIONS[motor_dir], harmonic, c)
+            phase_stepping.apply_corrections()
+
+        def describe(key):
+            return "H%d %s" % (key[1], DIRECTIONS[key[0]])
+
+        def describe_correction(correction):
+            slow, fast = phase_fit.as_pair(correction)
+            text = "%.4f rad at %.2f rad" % (abs(slow), cmath.phase(slow))
+            if fast != slow:
+                text += " at %.0f mm/s, %.4f rad at %.2f rad at %.0f mm/s" % (
+                    speed_min,
+                    abs(fast),
+                    cmath.phase(fast),
+                    speed_max,
                 )
-            return self._measure_rows(gcmd, search, harmonics)
+            return text
 
-        # Calibrate from no correction so that the speeds are picked and
-        # weighed by the motor's own error. Starting from an earlier
-        # correction would leave out the speeds it already cancels, and the
-        # new correction could then make them worse.
-        uncorrected = self._uncorrected(phase_stepping, harmonics)
-        with uncorrected, self._suspend_limits(search):
-            gcmd.respond_info("Finding calibration speeds for %s" % (name,))
-            rows = sweep()
-            period = search["period"]
-            csv_files = []
-            if graph:
-                csv_files.append(self._csv_path(name, graph_name))
-                self._write_csv(csv_files[0], name, period, rows)
-            lines = ["Phase stepping calibration of %s:" % (name,)]
+        gcmd.respond_info(
+            "Calibrating %s over %.0f-%.0f mm/s with %s%s"
+            % (
+                name,
+                speed_min,
+                speed_max,
+                how,
+                ", %d passes each" % (passes,) if passes > 1 else "",
+            )
+        )
+        # Calibrate from no correction so that the measurements show the
+        # motor's own error; the probe and refinement sweeps then determine
+        # the response to each harmonic's correction at every speed.
+        speeds = (speed_min, speed_max) if speed_max > speed_min else None
+        uncorrected = self._uncorrected(phase_stepping, harmonics, speeds)
+        with uncorrected, self._suspend_limits(test):
+            base = sweep("no correction")
+            models, skipped = {}, {}
             for harmonic in harmonics:
-                cal_speeds = motor_harmonics.pick_calibration_speeds(
-                    rows, harmonic, speed_count
+                for motor_dir in DIRECTIONS:
+                    key = (motor_dir, harmonic)
+                    phasors, noises = base.get(key, ({}, {}))
+                    strong = any(
+                        abs(p)
+                        >= max(
+                            MIN_CAL_DISP, MIN_CAL_SNR * (noises.get(s) or 0.0)
+                        )
+                        for s, p in phasors.items()
+                        if speed_min <= s <= speed_max
+                    )
+                    if not phasors:
+                        skipped[key] = "not measurable in this speed range"
+                    elif not strong:
+                        skipped[key] = "below noise, left uncorrected"
+                    else:
+                        model = phase_fit.HarmonicResponse(
+                            speed_min, speed_max, limit
+                        )
+                        model.add(0j, phasors, noises)
+                        models[key] = model
+            if not models:
+                raise gcmd.error(
+                    "No harmonic of %s is measurably above noise between"
+                    " %.0f and %.0f mm/s" % (name, speed_min, speed_max)
                 )
-                if not cal_speeds:
+            probes = {
+                key: probe or phase_fit.probe_size(base[key][0], period, limit)
+                for key in models
+            }
+            for setting in phase_fit.probe_corrections(probes, limit):
+                apply(setting)
+                table = sweep(
+                    "probing "
+                    + ", ".join(
+                        "%s %+.3f%s"
+                        % (
+                            describe(key),
+                            c.imag or c.real,
+                            "j" if c.imag else "",
+                        )
+                        for key, c in setting.items()
+                    )
+                )
+                for key, model in models.items():
+                    model.add(setting[key], *table.get(key, ({}, {})))
+            applied = dict.fromkeys(models, 0j)
+            apply(applied)
+            for it in range(iterations + 1):
+                proposal = {}
+                for key, model in models.items():
+                    if not model.fit():
+                        continue
+                    candidate = model.solve(
+                        speed_dependent=bool(speed_dependent)
+                    )
+                    if model.improves(candidate, applied[key]):
+                        proposal[key] = candidate
+                if not proposal:
+                    break
+                applied.update(proposal)
+                apply(applied)
+                table = sweep(
+                    ("verifying " if it == iterations else "refining ")
+                    + ", ".join(describe(key) for key in proposal)
+                )
+                for key, model in models.items():
+                    model.add(applied[key], *table.get(key, ({}, {})))
+            # Keep a correction only where it measurably beats none
+            final = {}
+            lines = ["Phase stepping calibration of %s:" % (name,)]
+            for key in sorted(models, key=lambda k: (k[1], -k[0])):
+                model = models[key]
+                before = model.measured(0j)
+                after = model.measured(applied[key])
+                noise = dict(zip(model.speeds, model.noise))
+                worst_b, worst_a, avg_b, avg_a, worse = phase_fit.compare(
+                    before, after, noise
+                )
+                if not any(abs(c) for c in phase_fit.as_pair(applied[key])):
+                    final[key] = 0j
                     lines.append(
-                        "H%d: not measurably above noise" % (harmonic,)
+                        "%s over %.0f-%.0f mm/s: worst %.3f um, noise %.3f um;"
+                        " no correction should help, left uncorrected"
+                        % (
+                            describe(key),
+                            speed_min,
+                            speed_max,
+                            worst_b * 1000.0,
+                            model.noise_floor() * 1000.0,
+                        )
                     )
                     continue
-                test = self._setup_test(
-                    gcmd, kin, stepper, point, cal_speeds, accel
-                )
-
-                def measure(corr):
-                    for d, label in DIRECTIONS.items():
-                        phase_stepping.set_harmonic(label, harmonic, corr[d])
-                    phase_stepping.apply_corrections()
-                    return self._measure_coherent(
-                        gcmd, test, cal_speeds, harmonic, passes
-                    )
-
-                gcmd.respond_info(
-                    "Calibrating H%d at %s mm/s"
-                    % (harmonic, ", ".join("%.1f" % s for s in cal_speeds))
-                )
-                c0 = {
-                    d: phase_stepping.get_harmonic(label, harmonic)
-                    for d, label in DIRECTIONS.items()
-                }
-                d0 = measure(c0)
-                d_real = measure({d: c0[d] + probe for d in DIRECTIONS})
-                d_imag = measure({d: c0[d] + 1j * probe for d in DIRECTIONS})
-                new, gains, best, best_vib = {}, {}, {}, {}
-                for d in DIRECTIONS:
-                    new[d], gains[d] = motor_harmonics.multi_speed_correction(
-                        d0[d], d_real[d], d_imag[d], c0[d], probe
-                    )
-                    best[d], best_vib[d] = c0[d], d0[d]
-                for _ in range(2):
-                    vib = measure(new)
-                    for d in DIRECTIONS:
-                        worst = motor_harmonics.worst_vibration(vib[d])
-                        if worst < motor_harmonics.worst_vibration(best_vib[d]):
-                            best[d], best_vib[d] = new[d], vib[d]
-                        new[d] = motor_harmonics.refine_correction(
-                            best[d], best_vib[d], gains[d]
-                        )
-                for d, label in DIRECTIONS.items():
-                    phase_stepping.set_harmonic(label, harmonic, best[d])
-                phase_stepping.apply_corrections()
-                for d, label in DIRECTIONS.items():
-                    before = [abs(v) * 1000.0 for v in d0[d].values()]
-                    after = [abs(v) * 1000.0 for v in best_vib[d].values()]
+                if worst_a >= worst_b:
+                    final[key] = 0j
                     lines.append(
-                        "H%d %s over %.0f-%.0f mm/s: worst %.3f -> %.3f um,"
-                        " average %.3f -> %.3f um (correction %.4f rad at %.2f"
-                        " rad)"
+                        "%s over %.0f-%.0f mm/s: the correction found left"
+                        " %.3f um against %.3f um without, left uncorrected"
                         % (
-                            harmonic,
-                            label,
-                            cal_speeds[0],
-                            cal_speeds[-1],
-                            max(before),
-                            max(after),
-                            sum(before) / len(before),
-                            sum(after) / len(after),
-                            min(abs(best[d]), CORRECTION_LIMIT_RAD),
-                            math.atan2(best[d].imag, best[d].real),
+                            describe(key),
+                            speed_min,
+                            speed_max,
+                            worst_a * 1000.0,
+                            worst_b * 1000.0,
                         )
                     )
-            if graph:
-                gcmd.respond_info("Measuring %s after calibration" % (name,))
-                csv_files.append(
-                    self._csv_path(name, graph_name + "_calibrated")
+                    continue
+                final[key] = applied[key]
+                line = (
+                    "%s over %.0f-%.0f mm/s: worst %.3f -> %.3f um, average"
+                    " %.3f -> %.3f um, noise %.3f um (correction %s)"
+                    % (
+                        describe(key),
+                        speed_min,
+                        speed_max,
+                        worst_b * 1000.0,
+                        worst_a * 1000.0,
+                        avg_b * 1000.0,
+                        avg_a * 1000.0,
+                        model.noise_floor() * 1000.0,
+                        describe_correction(applied[key]),
+                    )
                 )
-                self._write_csv(csv_files[1], name, period, sweep())
+                if worse:
+                    line += "; worse at %s mm/s" % (
+                        ", ".join("%.1f" % s for s in worse),
+                    )
+                lines.append(line)
+            for key in sorted(skipped, key=lambda k: (k[1], -k[0])):
+                lines.append("%s: %s" % (describe(key), skipped[key]))
+            if final != applied:
+                apply(final)
+        lines.append(
+            "%d sweeps in %.0f s" % (len(sweeps), reactor.monotonic() - started)
+        )
+        csv_files = [
+            self._csv_path(name, graph_name),
+            self._csv_path(name, graph_name + "_calibrated"),
+        ]
+        self._write_csv(csv_files[0], name, period, sweeps[0])
+        self._write_csv(csv_files[1], name, period, sweeps[-1])
+        lines.append("Sweeps written to %s and %s" % tuple(csv_files))
         if gcmd.get_int("SAVE", 1, minval=0, maxval=1):
             phase_stepping.save_corrections()
             lines.append(

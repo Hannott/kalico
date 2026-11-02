@@ -1,9 +1,10 @@
 # Standalone regression tests for the opt-in resonance-shaping path added to
 # ToolHead: resolving a notch pair from [resonance_model] at klippy:connect,
-# and _process_moves emitting a shaped profile when it fits (falling back to
+# and _process_lookahead emitting a shaped profile when it fits (falling back to
 # the stock hard trapezoid, unchanged, when it does not).
 #
 # Run: klippy-env/bin/python test/test_toolhead_resonance_shaping.py
+import contextlib
 import importlib
 import os
 import sys
@@ -102,13 +103,32 @@ def test_connect_stays_inert_with_an_empty_model():
     print("  connect degrades gracefully when the model has no saved peaks OK")
 
 
+class FakeReactor:
+    def assert_no_pause(self):
+        return contextlib.nullcontext()
+
+
+class FakeLookahead:
+    def __init__(self):
+        self.moves = []
+
+    def flush(self, lazy=False):
+        moves, self.moves = self.moves, []
+        return moves
+
+
+class FakeMotionQueuing:
+    def note_mcu_movequeue_activity(self, *args, **kwargs):
+        pass
+
+
 class FakeExtruder:
     def __init__(self):
         self.move_calls = []
         self.move_segment_calls = []
 
-    def move(self, print_time, move):
-        self.move_calls.append((print_time, move))
+    def process_move(self, print_time, move, ea_index):
+        self.move_calls.append((print_time, move, ea_index))
 
     def move_segment(
         self,
@@ -154,20 +174,27 @@ def make_process_moves_toolhead(f_lo, f_hi):
     th.trapq = object()
     th.trapq_calls = []
     th.trapq_append = lambda *a: th.trapq_calls.append(a)
-    th.extruder = FakeExtruder()
+    th.extra_axes = [FakeExtruder()]
+    th.reactor = FakeReactor()
+    th.lookahead = FakeLookahead()
+    th.motion_queuing = FakeMotionQueuing()
     th.kin_flush_delay = 0.0
-    th.note_mcu_movequeue_activity = lambda *a, **k: None
     th._advance_move_time = lambda t: None
     return th
+
+
+def process_moves(th, moves):
+    th.lookahead.moves = list(moves)
+    th._process_lookahead()
 
 
 def test_process_moves_uses_the_shaped_profile_when_it_fits():
     th = make_process_moves_toolhead(55.0, 75.0)
     move = FakeMove(0.0, 100.0, 0.0, 50.0, 20000.0, has_extrude=True)
-    th._process_moves([move])
+    process_moves(th, [move])
     assert len(th.trapq_calls) > 1
-    assert th.extruder.move_calls == []
-    assert len(th.extruder.move_segment_calls) == len(th.trapq_calls)
+    assert th.extra_axes[0].move_calls == []
+    assert len(th.extra_axes[0].move_segment_calls) == len(th.trapq_calls)
     print("  a move that fits the shaped ramp is emitted as slices OK")
 
 
@@ -175,7 +202,7 @@ def test_process_moves_falls_back_when_the_ramp_does_not_fit():
     th = make_process_moves_toolhead(55.0, 75.0)
     # Far too short a move for the ramp's own minimum runway.
     move = FakeMove(0.0, 300.0, 0.0, 0.5, 20000.0, has_extrude=True)
-    th._process_moves([move])
+    process_moves(th, [move])
     assert len(th.trapq_calls) == 1
     at, ct, dt = (
         th.trapq_calls[0][2],
@@ -183,7 +210,7 @@ def test_process_moves_falls_back_when_the_ramp_does_not_fit():
         th.trapq_calls[0][4],
     )
     assert (at, ct, dt) == (move.accel_t, move.cruise_t, move.decel_t)
-    assert th.extruder.move_calls and not th.extruder.move_segment_calls
+    assert th.extra_axes[0].move_calls and not th.extra_axes[0].move_segment_calls
     print(
         "  a move too short for the ramp falls back to the stock trapezoid OK"
     )
@@ -193,7 +220,7 @@ def test_process_moves_stock_path_when_shaping_disabled():
     th = make_process_moves_toolhead(55.0, 75.0)
     th.resonance_shaping = False
     move = FakeMove(0.0, 100.0, 0.0, 50.0, 20000.0)
-    th._process_moves([move])
+    process_moves(th, [move])
     assert len(th.trapq_calls) == 1
     print(
         "  shaping disabled uses the stock trapezoid even if a pair is set OK"

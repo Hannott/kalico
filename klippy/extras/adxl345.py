@@ -350,7 +350,7 @@ class ADXL345:
         )
 
     def check_connected(self):
-        if self.mcu.non_critical_disconnected:
+        if self.mcu.non_critical_disconnected or self.mcu._reconnecting:
             raise self.printer.command_error(
                 f"ADXL: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
             )
@@ -372,7 +372,6 @@ class ADXL345:
             )
 
     def start_internal_client(self):
-        self.check_connected()
         aqh = AccelQueryHelper(self.printer)
         self.batch_bulk.add_client(aqh.handle_batch)
         return aqh
@@ -400,6 +399,7 @@ class ADXL345:
 
     # Start, stop, and process message batches
     def _start_measurements(self):
+        self.check_connected()
         # In case of miswiring, testing ADXL345 device ID prevents treating
         # noise or wrong signal as a correctly initialized device
         dev_id = self.read_reg(REG_DEVID)
@@ -433,14 +433,14 @@ class ADXL345:
         logging.info("ADXL345 finished '%s' measurements", self.name)
 
     def _process_batch(self, eventtime):
-        samples = self.ffreader.pull_samples()
+        samples, _ = self.ffreader.pull_samples()
         self._convert_samples(samples)
         if not samples:
             return {}
         return {
             "data": samples,
             "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "overflows": self.ffreader.get_total_overflows(),
         }
 
 

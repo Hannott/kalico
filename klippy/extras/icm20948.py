@@ -107,6 +107,12 @@ class ICM20948:
             "query_icm20948_status oid=%c", oid=self.oid, cq=cmdqueue
         )
 
+    def check_connected(self):
+        if self.mcu.non_critical_disconnected or self.mcu._reconnecting:
+            raise self.printer.command_error(
+                f"ICM: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
+            )
+
     def read_reg(self, reg):
         params = self.i2c.i2c_read([reg], 1)
         return bytearray(params["response"])[0]
@@ -133,6 +139,7 @@ class ICM20948:
 
     # Start, stop, and process message batches
     def _start_measurements(self):
+        self.check_connected()
         # In case of miswiring, testing ICM20948 device ID prevents treating
         # noise or wrong signal as a correctly initialized device
         dev_id = self.read_reg(REG_DEVID)
@@ -178,14 +185,14 @@ class ICM20948:
         self.set_reg(REG_PWR_MGMT_2, SET_PWR_MGMT_2_OFF)
 
     def _process_batch(self, eventtime):
-        samples = self.ffreader.pull_samples()
+        samples, _ = self.ffreader.pull_samples()
         self._convert_samples(samples)
         if not samples:
             return {}
         return {
             "data": samples,
             "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "overflows": self.ffreader.get_total_overflows(),
         }
 
 

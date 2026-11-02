@@ -194,46 +194,88 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
 - SAVE_CONFIG keeps a backup of printer.cfg as it was before saving, so
   restoring corrections from the backup of a calibration's save brings
   back the previous calibration's values.
-
-## Adaptive current
-
-- The coil current follows the motor's planned acceleration. The host
-  samples the stepper position (after kinematics and input shaping) every
-  100 us, takes the largest acceleration per 1 ms block and the blocks
-  2 ms ahead and 3 ms behind it, and queues a GLOBALSCALER value with a
-  clock whenever it changes. A separate clocked queue is needed because a
-  phase segment can last longer than an acceleration.
-- The micro-controller sends a scaler change in place of one coil update
-  of that stepper, so the replay of the host's driver messages covers it
-  as any other write.
-- A hard limit in the driver's current setting (CS) was the first design:
-  GLOBALSCALER only scales down from it, and with 0.075 ohm sense
-  resistors CS 18 is 1.82 A. On the printer the motors were loud again at
-  constant speed (CS 18, 0.5 A); whether from CS or from the lower current
-  is not known yet. Lowering CS costs resolution of the coil currents (the
-  driver multiplies them by (CS + 1) / 32), so CS now stays at 31 unless
-  current_limit is set.
-- Order of register writes matters: entering lowers CS before setting the
-  scaler, leaving restores the scaler before CS. The reverse order would
-  briefly combine a full CS with a boosted scaler. The micro-controller
-  also writes the restore value when it stops, since the host's register
-  writes go through a different command queue and may arrive first.
-- The heat guard filters scaler^2 every 256 ticks with a time constant of
-  about a minute and starts at its limit, so a boost needs time spent
-  below run_current first. In the micro-controller test harness a boost
-  ends within 3 % of the limit.
-- Sampling for the current adds about 4 ms of host time per 13 s of
-  motion on a desktop CPU; a rest of ten minutes costs one flush of
-  0.4 ms, since blocks without motion are skipped.
-- Not tested on hardware yet.
+- The calibrated stepper_x sweep showed two limits of calibrating at a
+  handful of constant speeds. H2 was cancelled to about 0.1 um at
+  100 mm/s but 1.5 um was left at 70 mm/s, where the uncorrected peak
+  sat: the best correction moves with speed and a few speeds cannot pin
+  the compromise down. H4 rose from about 0.07 to 0.3 um at 60-75 mm/s,
+  between the calibration speeds, and nothing reported it, since the
+  sweep after calibration ran only with GRAPH=1 and was not compared.
+- Calibration therefore now works from whole-range sweeps. Each sweep
+  measures every speed in the range every 2.5 mm/s, coherently: the
+  phasors refer to the motor's electrical angle at the test point, so
+  ramps up and down, passes and sweeps are comparable and average
+  coherently. Every harmonic's response to its correction is identified
+  from one baseline sweep and four probe sweeps in which all harmonics
+  are perturbed at once (both signs of a real and of an imaginary step,
+  so that the differences cancel the even orders of the response), since
+  the demodulation separates the harmonics anyway. All sweeps so far,
+  the refinements included, enter one weighted least squares fit of
+  offset and gain per speed, and the correction minimises the worst
+  predicted vibration over the range. Refinement stops when a step
+  should gain less than 5 % or less than half the noise floor, the last
+  sweep is the verification, a harmonic whose correction does not beat
+  none is left uncorrected, and speeds that got worse are reported.
+  About 8 sweeps replace the 15 batches of constant speed passes.
+- Each window is now demodulated by a joint least squares fit of all
+  harmonics, the belt tooth orders and two noise orders, instead of a
+  DFT bin per order. In an 8 period window a Hann bin at H1 takes a
+  large part of a belt order 0.2 orders away, which is the likely reason
+  H1 read 3 times too high on ramps. The belt order is the electrical
+  period over the belt pitch (0.4 with a 0.8 mm period and GT2), and
+  multiples that coincide with a harmonic are dropped, as are noise
+  orders within a cycle of another order.
+- Calibration demodulates up to 0.47 of the sample rate instead of 0.4.
+  The accelerometer's filter attenuates and delays the band below
+  Nyquist, but a calibration only compares measurements made the same
+  way, so the filter cancels; only aliasing would matter, and a
+  demodulation at one order does not pick up the band above Nyquist.
+  This takes H4 from 128 to about 150 mm/s with a LIS2DW at 1600 Hz.
+- The probe size follows the harmonic: about the correction its largest
+  uncorrected displacement implies (2 pi times the displacement over the
+  period), at least 0.02 rad so that a small harmonic answers clearly
+  above the noise, and at most 0.06 rad to stay linear. A fixed 0.02 rad
+  was 20 times the implied correction of H4 and a quarter of that of
+  stepper_y's H2.
+- The gain of a harmonic's response at a speed is the printer's
+  transfer function at that frequency and so smooth over speed, which
+  would allow smoothing it across neighbouring speeds. This was left out:
+  by the end of a calibration the offset at each speed is averaged over
+  all sweeps, and a gain error only slows convergence, which the refits
+  correct.
+- A correction can now change with speed. The micro-controller holds
+  two tables per direction, for the slow and the fast end of the
+  calibrated speed range, and interpolates between them by the planned
+  speed (one 64 bit multiply per update); outside the range it holds
+  the nearer end, since extrapolating a fit is riskier than keeping a
+  compromise. Interpolating the tables linearly is the same as
+  interpolating each harmonic's complex correction, so the host stores
+  a (slow, fast) pair per harmonic, written to the config as two entries
+  with their speeds; an entry without speed is the same at every speed,
+  which keeps earlier configs valid. The fit is still linear in its
+  unknowns: the response at a speed is offset plus gain times the
+  correction in effect there, and minimax over the range solves for
+  both ends at once. A small ridge pulls the ends together where the
+  measurements do not reach one of them (H4 above about 150 mm/s), and
+  the two-end solution is used only when it beats the best constant one
+  by 10 % and by more than the noise, so noise does not earn a slope.
+  The model was chosen over a load angle shift of one table because it
+  covers both an error that moves with the rotor (detent torque) and
+  one fixed to the field (coil asymmetry, current lag), which shift
+  differently with speed.
+- The redesigned calibration and the speed dependent correction have
+  not been run on hardware yet. The per-speed optimum of each harmonic
+  can be read from its sweeps (minus offset over gain) to see how far
+  a linear change in speed describes it.
 
 ## Status and open items
 
 - Tested on hardware: STM32F446 with TMC5160. Not yet tested: STM32H7
   backend, TMC2130, TMC2160 and TMC2240.
-- Next: a DMA backend for STM32G0B1 (its SPI FIFO holds 4 bytes), longer
-  ramp windows for H1, and a print comparison of the wall surface with
-  and without phase stepping.
+- Next: a hardware run of the sweep-based calibration and the speed
+  dependent correction against the earlier results, a DMA backend for
+  STM32G0B1 (its SPI FIFO holds 4 bytes), and a print comparison of the
+  wall surface with and without phase stepping.
 - Moving phase segment generation into C threads, as Klipper's
   `motion_queuing` does for steps, would remove the time one motor waits
   for the other at a flush.
