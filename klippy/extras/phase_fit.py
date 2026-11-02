@@ -61,7 +61,7 @@ def probe_corrections(probes, limit):
     scale = min(1.0, limit / total) if total else 1.0
     return [
         {key: sign * size * scale for key, size in probes.items()}
-        for sign in (1.0, -1.0, 1j, -1j)
+        for sign in (1 + 0j, -1 + 0j, 1j, -1j)
     ]
 
 
