@@ -19,11 +19,20 @@
 #define TICK_CYCLES (CONFIG_CLOCK_FREQ / CONFIG_PHASE_STEPPING_FREQ)
 #define MAX_PHASE_STEPPERS 4
 #define MOVE_QUEUE_SIZE 128
+#define CURRENT_QUEUE_SIZE 64
 #define SPI_WRITE 0x80
 #define HOST_MSG_SIZE 5
+// The current guard updates its heat estimate every GUARD_TICKS ticks
+#define GUARD_TICKS 256
+#define HEAT_SHIFT 15
+// Trinamic current scalers below 32 are invalid; 256 is written as 0
+#define SCALER_MIN 32
+#define SCALER_MAX 256
 
 DECL_CONSTANT("PHASE_STEPPER_TICK_FREQ", CONFIG_PHASE_STEPPING_FREQ);
 DECL_CONSTANT("PHASE_STEPPER_QUEUE_SIZE", MOVE_QUEUE_SIZE - 1);
+DECL_CONSTANT("PHASE_STEPPER_CURRENT_QUEUE_SIZE", CURRENT_QUEUE_SIZE - 1);
+DECL_CONSTANT("PHASE_STEPPER_GUARD_TICKS", GUARD_TICKS);
 
 // round(32767 * sin(i * pi / 2048)) for one quarter of an electrical period
 static const uint16_t sine_quarter[1025] = {
@@ -168,6 +177,12 @@ struct phase_move {
     int32_t start_vel, half_accel;
 };
 
+// From its clock on, the driver's current scaler is to be scaler
+struct current_change {
+    uint32_t clock;
+    uint16_t scaler;
+};
+
 enum { PF_ARMED = 1, PF_RUNNING = 2 };
 enum { PC_SWAP_COILS = 1 };
 
@@ -194,6 +209,20 @@ struct phase_stepper {
     uint8_t host_msg[HOST_MSG_SIZE], host_msg_len, coil_written;
     struct phase_move queue[MOVE_QUEUE_SIZE];
     volatile uint8_t queue_head, queue_tail;
+    // Adaptive current: the host queues changes of the driver's current
+    // scaler (GLOBALSCALER on the TMC5160). The scaler is kept within
+    // scaler_min..scaler_max, and above scaler_rms only while a filtered
+    // mean of scaler^2 (heat) stays below scaler_rms^2 and for at most
+    // boost_limit guard updates in a row, so the motor never runs hotter
+    // than at its configured run current. The host sets the driver's own
+    // current bits so that even scaler 256 stays within the hardware limit.
+    uint8_t scaler_on, scaler_reg, heat_shift;
+    uint16_t scaler_target, scaler, scaler_sent;
+    uint16_t scaler_min, scaler_max, scaler_rms, scaler_restore;
+    uint16_t boost_count, boost_limit, guard_ticks;
+    uint32_t heat, heat_limit, guard_limited;
+    struct current_change current_queue[CURRENT_QUEUE_SIZE];
+    volatile uint8_t current_head, current_tail;
 };
 
 static struct phase_stepper *steppers[MAX_PHASE_STEPPERS];
@@ -260,20 +289,45 @@ xfer_finish(void)
 }
 
 static void
-xfer_start(struct phase_stepper *ps, uint32_t value)
+fill_write(uint8_t *buf, uint8_t reg, uint32_t value)
 {
-    xfer_buf[0] = ps->reg | SPI_WRITE;
-    xfer_buf[1] = value >> 24;
-    xfer_buf[2] = value >> 16;
-    xfer_buf[3] = value >> 8;
-    xfer_buf[4] = value;
+    buf[0] = reg | SPI_WRITE;
+    buf[1] = value >> 24;
+    buf[2] = value >> 16;
+    buf[3] = value >> 8;
+    buf[4] = value;
+}
+
+static void
+xfer_start(struct phase_stepper *ps, uint8_t reg, uint32_t value)
+{
+    fill_write(xfer_buf, reg, value);
     spi_prepare(ps->config);
     gpio_out_write(ps->cs, ps->cs_active_high);
     xfer_owner = ps;
-    ps->last_sent = value;
     ps->coil_written = 1;
     stats.xfers++;
     phase_board_xfer_start(&ps->config, xfer_buf, sizeof(xfer_buf));
+}
+
+// Write a driver register outside the update timer (irqs enabled, the
+// timer may be running for other steppers on the same bus)
+static void
+blocking_write(struct phase_stepper *ps, uint8_t reg, uint32_t value)
+{
+    irqstatus_t flag = irq_save();
+    task_spi_active = 1;
+    if (xfer_owner)
+        xfer_finish();
+    irq_restore(flag);
+    uint8_t msg[5];
+    fill_write(msg, reg, value);
+    spi_prepare(ps->config);
+    gpio_out_write(ps->cs, ps->cs_active_high);
+    spi_transfer(ps->config, 0, sizeof(msg), msg);
+    gpio_out_write(ps->cs, !ps->cs_active_high);
+    ps->coil_written = 1;
+    task_spi_active = 0;
 }
 
 static struct phase_stepper *
@@ -392,6 +446,61 @@ stepper_tick(struct phase_stepper *ps, uint32_t now)
     ps->count--;
 }
 
+// Apply queued current changes that are due at clock now
+static void
+current_changes(struct phase_stepper *ps, uint32_t now)
+{
+    uint8_t tail = ps->current_tail;
+    while (tail != ps->current_head) {
+        struct current_change *c = &ps->current_queue[tail];
+        if (timer_is_before(now, c->clock))
+            break;
+        ps->scaler_target = c->scaler;
+        tail = (tail + 1) % CURRENT_QUEUE_SIZE;
+    }
+    ps->current_tail = tail;
+}
+
+// The scaler to use now; sets *guarded if the heat guard lowered it
+static uint16_t
+limited_scaler(struct phase_stepper *ps, uint8_t *guarded)
+{
+    uint16_t s = ps->scaler_target;
+    if (s > ps->scaler_max)
+        s = ps->scaler_max;
+    if (s < ps->scaler_min)
+        s = ps->scaler_min;
+    *guarded = s > ps->scaler_rms && (ps->heat >= ps->heat_limit
+                                      || ps->boost_count >= ps->boost_limit);
+    return *guarded ? ps->scaler_rms : s;
+}
+
+// Update the heat estimate, an exponentially filtered scaler^2
+static void
+current_guard(struct phase_stepper *ps, uint32_t ticks)
+{
+    uint8_t guarded;
+    ps->guard_ticks += ticks;
+    while (ps->guard_ticks >= GUARD_TICKS) {
+        ps->guard_ticks -= GUARD_TICKS;
+        uint32_t sq = ((uint32_t)ps->scaler * ps->scaler) << HEAT_SHIFT;
+        if (sq >= ps->heat)
+            ps->heat += (sq - ps->heat) >> ps->heat_shift;
+        else
+            ps->heat -= (ps->heat - sq) >> ps->heat_shift;
+        if (ps->scaler_target > ps->scaler_rms) {
+            if (ps->boost_count < 0xffff)
+                ps->boost_count++;
+        } else {
+            ps->boost_count = 0;
+        }
+        limited_scaler(ps, &guarded);
+        if (guarded)
+            ps->guard_limited++;
+    }
+    ps->scaler = limited_scaler(ps, &guarded);
+}
+
 void
 phase_stepper_update(void)
 {
@@ -415,6 +524,10 @@ phase_stepper_update(void)
             continue;
         for (t = 0; t < ticks; t++)
             stepper_tick(ps, now - (ticks - 1 - t) * TICK_CYCLES);
+        if (ps->scaler_on) {
+            current_changes(ps, now);
+            current_guard(ps, ticks);
+        }
     }
 
     if (task_spi_active) {
@@ -429,9 +542,15 @@ phase_stepper_update(void)
             next_stepper = (next_stepper + 1) % stepper_count;
             if (!(ps->flags & (PF_ARMED | PF_RUNNING)))
                 continue;
+            if (ps->scaler_on && ps->scaler != ps->scaler_sent) {
+                ps->scaler_sent = ps->scaler;
+                xfer_start(ps, ps->scaler_reg, ps->scaler & 0xff);
+                break;
+            }
             uint32_t value = coil_value(ps);
             if (value != ps->last_sent) {
-                xfer_start(ps, value);
+                ps->last_sent = value;
+                xfer_start(ps, ps->reg, value);
                 break;
             }
         }
@@ -566,6 +685,8 @@ command_phase_stepper_start(uint32_t *args)
     ps->vel = ps->half_accel = ps->count = 0;
     ps->dir = 0;
     ps->last_sent = ~coil_value(ps);
+    ps->scaler_on = 0;
+    ps->current_tail = ps->current_head;
     ps->flags = PF_ARMED;
     irq_enable();
     timer_start();
@@ -591,6 +712,72 @@ command_phase_stepper_set_hold(uint32_t *args)
 DECL_COMMAND(command_phase_stepper_set_hold,
              "phase_stepper_set_hold oid=%c amplitude=%hu delay=%u ramp=%u");
 
+// Start adaptive current, sent after phase_stepper_start. The heat
+// estimate starts at its limit, as if the motor ran at scaler_rms until now.
+void
+command_phase_stepper_current_config(uint32_t *args)
+{
+    struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
+    uint32_t smin = args[2], smax = args[3], srms = args[4];
+    uint32_t start = args[5], restore = args[6];
+    if (smin < SCALER_MIN || smin > smax || smax > SCALER_MAX
+        || srms < smin || srms > smax || start < smin || start > smax
+        || restore < SCALER_MIN || restore > SCALER_MAX || args[7] > 24)
+        shutdown("Invalid phase stepper current config");
+    irq_disable();
+    ps->scaler_reg = args[1];
+    ps->scaler_min = smin;
+    ps->scaler_max = smax;
+    ps->scaler_rms = srms;
+    ps->scaler_target = ps->scaler = ps->scaler_sent = start;
+    ps->scaler_restore = restore;
+    ps->heat_shift = args[7];
+    ps->boost_limit = args[8];
+    ps->heat = ps->heat_limit = (srms * srms) << HEAT_SHIFT;
+    ps->boost_count = ps->guard_ticks = 0;
+    ps->guard_limited = 0;
+    ps->current_tail = ps->current_head;
+    ps->scaler_on = 1;
+    irq_enable();
+}
+DECL_COMMAND(command_phase_stepper_current_config,
+             "phase_stepper_current_config oid=%c reg=%c min=%hu max=%hu"
+             " rms=%hu start=%hu restore=%hu heat_shift=%c boost_limit=%hu");
+
+// A new run current (SET_TMC_CURRENT) while adaptive current is on
+void
+command_phase_stepper_current_rms(uint32_t *args)
+{
+    struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
+    uint32_t rms = args[1];
+    if (!ps->scaler_on)
+        return;
+    if (rms < ps->scaler_min || rms > ps->scaler_max)
+        shutdown("Invalid phase stepper current config");
+    irq_disable();
+    ps->scaler_rms = rms;
+    ps->heat_limit = (rms * rms) << HEAT_SHIFT;
+    irq_enable();
+}
+DECL_COMMAND(command_phase_stepper_current_rms,
+             "phase_stepper_current_rms oid=%c rms=%hu");
+
+void
+command_phase_stepper_current(uint32_t *args)
+{
+    struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
+    uint8_t head = ps->current_head, next = (head + 1) % CURRENT_QUEUE_SIZE;
+    if (next == ps->current_tail)
+        shutdown("Phase stepper current queue overflow");
+    struct current_change *c = &ps->current_queue[head];
+    c->clock = args[1];
+    c->scaler = args[2];
+    barrier();
+    ps->current_head = next;
+}
+DECL_COMMAND(command_phase_stepper_current,
+             "phase_stepper_current oid=%c clock=%u scaler=%hu");
+
 void
 command_phase_stepper_stop(uint32_t *args)
 {
@@ -598,10 +785,17 @@ command_phase_stepper_stop(uint32_t *args)
     irq_disable();
     if (xfer_owner == ps)
         xfer_finish();
+    uint8_t scaler_on = ps->scaler_on && ps->flags;
     ps->flags = 0;
     ps->count = 0;
     ps->queue_tail = ps->queue_head;
+    ps->scaler_on = 0;
+    ps->current_tail = ps->current_head;
     irq_enable();
+    // Leave the driver at the scaler of its own current setting: the host
+    // restores it too, but its message may arrive before this one.
+    if (scaler_on)
+        blocking_write(ps, ps->scaler_reg, ps->scaler_restore & 0xff);
     uint32_t i;
     for (i = 0; i < stepper_count; i++)
         if (steppers[i]->flags)
@@ -625,13 +819,18 @@ command_phase_stepper_query(uint32_t *args)
     uint32_t xfers = stats.xfers, replays = stats.replays;
     uint64_t total_cycles = stats.total_cycles;
     memset(&stats, 0, sizeof(stats));
+    uint32_t scaler = ps->scaler_on ? ps->scaler : 0;
+    uint32_t heat = ps->scaler_on ? ps->heat >> HEAT_SHIFT : 0;
+    uint32_t guard_limited = ps->guard_limited;
+    ps->guard_limited = 0;
     irq_enable();
     uint32_t avg_cycles = ticks ? total_cycles / ticks : 0;
     sendf("phase_stepper_state oid=%c phase=%u flags=%c pending=%c ticks=%u"
           " lost_ticks=%u locked_ticks=%u replays=%u xfers=%u"
-          " max_cycles=%u avg_cycles=%u tick_clock=%u", oid, phase, flags
-          , pending, ticks, lost, locked, replays, xfers, max_cycles
-          , avg_cycles, tick_clock);
+          " max_cycles=%u avg_cycles=%u tick_clock=%u scaler=%hu heat=%u"
+          " guard_limited=%u", oid, phase, flags, pending, ticks, lost
+          , locked, replays, xfers, max_cycles, avg_cycles, tick_clock
+          , scaler, heat, guard_limited);
 }
 DECL_COMMAND(command_phase_stepper_query, "phase_stepper_query oid=%c");
 

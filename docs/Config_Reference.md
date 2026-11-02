@@ -2567,6 +2567,28 @@ direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
 #   phase in radians of electrical angle), one set per direction of
 #   motion. PHASE_STEPPING_CALIBRATE finds and stores them. The default
 #   is no correction.
+#adaptive_current: False
+#   Let the coil current follow the motor's planned acceleration
+#   (TMC5160 only): current_min at constant speed and more while
+#   accelerating. The driver's run_current becomes the limit for the
+#   average current. See "Adaptive current" in Phase_Stepping.md. The
+#   default is False.
+#current_limit:
+#   Hard upper limit for the coil current (amps RMS), set in the
+#   driver's own current setting so that nothing the micro-controller
+#   writes can exceed it. Use the motor's rated current or less. This
+#   parameter must be provided when adaptive_current is True.
+#current_min:
+#   Current (amps RMS) at constant speed and at rest. This parameter must
+#   be provided when adaptive_current is True.
+#current_max:
+#   Highest current (amps RMS) used while accelerating; at most the hard
+#   limit that current_limit gives. The default is the driver's
+#   run_current, so the current is only ever lowered.
+#accel_reference:
+#   The motor acceleration (mm/s^2) that gets the driver's run_current;
+#   the current rises in a straight line from current_min at rest. The
+#   default is max_accel from the [printer] section.
 ```
 
 ## Config file helpers
