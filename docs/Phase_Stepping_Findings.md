@@ -30,12 +30,11 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
   them for its coils but its microstep counter (MSCNT) keeps counting
   them, so homing and position tracking need no change. This was
   confirmed with `PHASE_STEPPING_STEP_TEST`.
-- Phase stepping registers as a step generator on the toolhead (Kalico
-  bleeding-edge-v2). Klipper master and Kalico main moved step
-  generation to `motion_queuing` (`register_flush_callback`); a port
-  there would need that hook. Kalico is not expected to bring
-  `motion_queuing` to bleeding-edge-v2, so this stays a bleeding-edge
-  feature.
+- Phase stepping generates its coil updates from a flush callback of
+  `motion_queuing`, which runs before the steppers' steps are generated
+  and passes the time the steps are generated to. It registered as a
+  step generator on the toolhead until bleeding-edge-v2 took over
+  Klipper's `motion_queuing` in November 2026.
 
 ## Micro-controller
 
