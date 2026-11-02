@@ -126,8 +126,11 @@ class CommandQueryWrapper:
 
 # Wrapper around command sending
 class CommandWrapper:
-    def __init__(self, serial, msgformat, cmd_queue=None):
+    def __init__(
+        self, serial, msgformat, cmd_queue=None, error=serialhdl.error
+    ):
         self._serial = serial
+        self._error = error
         msgparser = serial.get_msgparser()
         self._cmd = msgparser.lookup_command(msgformat)
         if cmd_queue is None:
@@ -137,11 +140,19 @@ class CommandWrapper:
 
     def send(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send_wait_ack(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send_wait_ack(
+                cmd, minclock, reqclock, self._cmd_queue
+            )
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def get_command_tag(self):
         return self._msgtag
@@ -233,17 +244,21 @@ class MCU_trsync:
         )
         state_tag = state_cmd.get_command_tag()
         ffi_main, ffi_lib = chelper.get_ffi()
-        self._trdispatch_mcu = ffi_main.gc(
-            ffi_lib.trdispatch_mcu_alloc(
-                self._trdispatch,
-                mcu._serial.get_serialqueue(),  # XXX
-                self._cmd_queue,
-                self._oid,
-                set_timeout_tag,
-                trigger_tag,
-                state_tag,
-            ),
-            ffi_lib.free,
+        # Not ffi.gc() - lifetime is managed explicitly.  _build_config() runs
+        # again when a non-critical mcu reconnects; free the previous object
+        # first so it is unlinked from td->tdm_list.  Any object still attached
+        # at teardown is released by trdispatch_free().
+        if self._trdispatch_mcu is not None:
+            ffi_lib.trdispatch_mcu_free(self._trdispatch_mcu)
+            self._trdispatch_mcu = None
+        self._trdispatch_mcu = ffi_lib.trdispatch_mcu_alloc(
+            self._trdispatch,
+            mcu._serial.get_serialqueue(),  # XXX
+            self._cmd_queue,
+            self._oid,
+            set_timeout_tag,
+            trigger_tag,
+            state_tag,
         )
 
     def _shutdown(self):
@@ -321,7 +336,9 @@ class TriggerDispatch:
         self._mcu = mcu
         self._trigger_completion = None
         ffi_main, ffi_lib = chelper.get_ffi()
-        self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
+        self._trdispatch = ffi_main.gc(
+            ffi_lib.trdispatch_alloc(), ffi_lib.trdispatch_free
+        )
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
 
     def get_oid(self):
@@ -435,9 +452,17 @@ class MCU_endstop:
             cq=cmd_queue,
         )
 
+    def _check_connected(self):
+        if self._mcu.non_critical_disconnected:
+            raise self._mcu.get_printer().command_error(
+                f"Cannot use endstop on disconnected MCU "
+                f"'{self._mcu.get_name()}'"
+            )
+
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
+        self._check_connected()
         clock = self._mcu.print_time_to_clock(print_time)
         rest_ticks = (
             self._mcu.print_time_to_clock(print_time + rest_time) - clock
@@ -475,6 +500,7 @@ class MCU_endstop:
         return self._mcu.clock_to_print_time(next_clock - self._rest_ticks)
 
     def query_endstop(self, print_time):
+        self._check_connected()
         clock = self._mcu.print_time_to_clock(print_time)
         if self._mcu.is_fileoutput():
             return 0
@@ -836,6 +862,7 @@ class MCU:
                 self.non_critical_recon_event
             )
         self.non_critical_disconnected = False
+        self._reconnecting = False
         self._non_critical_reconnect_event_name = (
             f"danger:non_critical_mcu_{self.get_name()}:reconnected"
         )
@@ -980,6 +1007,10 @@ class MCU:
             self.estimated_print_time = dummy_estimated_print_time
 
     def handle_non_critical_disconnect(self):
+        if self.non_critical_disconnected or self._reconnecting:
+            # check_active() keeps running while the mcu is disconnected
+            # or still reconnecting; only handle the first disconnect
+            return
         self.non_critical_disconnected = True
         self._clocksync.disconnect()
         self._disconnect()
@@ -1094,14 +1125,60 @@ class MCU:
         return "\n".join(log_info)
 
     def recon_mcu(self):
-        res = self._mcu_identify()
-        if not res:
+        self._reconnecting = True
+        try:
+            if not self._mcu_identify():
+                return False
+            if self._recon_handle_shutdown():
+                return False
+            self._is_shutdown = False
+            self.reset_to_initial_state()
+            self.non_critical_disconnected = False
+            self._connect()
+        except Exception:
+            logging.exception(
+                "Reconnect attempt on MCU '%s' failed", self._name
+            )
+            self._abort_recon_attempt()
             return False
-        self.reset_to_initial_state()
-        self.non_critical_disconnected = False
-        self._connect()
+        finally:
+            self._reconnecting = False
         self._printer.send_event(self._non_critical_reconnect_event_name)
         return True
+
+    def _recon_handle_shutdown(self):
+        # A firmware shutdown survives the loss of the host connection.
+        # Ask the mcu to reset so a later reconnect attempt starts from
+        # a clean state.  Returns True if the mcu was shutdown.
+        get_config_cmd = self.lookup_query_command(
+            "get_config",
+            "config is_config=%c crc=%u is_shutdown=%c move_count=%hu",
+        )
+        if not get_config_cmd.send()["is_shutdown"]:
+            return False
+        logging.info(
+            "MCU '%s' is in a shutdown state - attempting reset", self._name
+        )
+        if self._reset_cmd is not None:
+            self._reset_cmd.send()
+        elif self._config_reset_cmd is not None:
+            self._config_reset_cmd.send()
+        else:
+            # No reset mechanism - clear the shutdown state and let the
+            # next reconnect attempt reuse the retained config
+            clear_shutdown_cmd = self.try_lookup_command("clear_shutdown")
+            if clear_shutdown_cmd is not None:
+                clear_shutdown_cmd.send()
+        self._reactor.pause(self._reactor.monotonic() + 0.015)
+        self._abort_recon_attempt()
+        return True
+
+    def _abort_recon_attempt(self):
+        # Return to the disconnected state; the reconnect timer retries
+        self._clocksync.disconnect()
+        self._disconnect()
+        self.non_critical_disconnected = True
+        self._get_status_info["non_critical_disconnected"] = True
 
     def reset_to_initial_state(self):
         if self._cached_init_state:
@@ -1245,6 +1322,7 @@ class MCU:
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
+        self._get_status_info["mcu_kconfig"] = msgparser.get_kconfig()
         if app in ("Klipper", "Danger-Klipper"):
             pconfig = self._printer.lookup_object("configfile")
             pconfig.runtime_warning(
@@ -1341,7 +1419,9 @@ class MCU:
         return self._serial.alloc_command_queue()
 
     def lookup_command(self, msgformat, cq=None):
-        return CommandWrapper(self._serial, msgformat, cq)
+        return CommandWrapper(
+            self._serial, msgformat, cq, self._printer.command_error
+        )
 
     def lookup_query_command(
         self, msgformat, respformat, oid=None, cq=None, is_async=False
@@ -1389,8 +1469,10 @@ class MCU:
         self._steppersync = None
 
     def _shutdown(self, force=False):
-        if self._emergency_stop_cmd is None or (
-            self._is_shutdown and not force
+        if (
+            self._emergency_stop_cmd is None
+            or self.non_critical_disconnected
+            or (self._is_shutdown and not force)
         ):
             return
         self._emergency_stop_cmd.send()
@@ -1509,6 +1591,7 @@ class MCU:
         self._printer.invoke_shutdown(
             "Lost communication with MCU '%s'" % (self._name,)
         )
+        self._serial.abort_wait_acks()
 
     # Misc external commands
     def is_fileoutput(self):
