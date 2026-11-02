@@ -481,3 +481,164 @@ def test_flow_control_holds_entries_back():
     placed = [flow.place(c, w) for c, w in ((0, 120), (10, 0), (5, 0), (2, 0))]
     assert [p[0] for p in placed] == [120, 120, 130, 135]
     assert [p[1] for p in placed] == [None, None, None, 120]
+
+
+def test_adaptive_current_plan():
+    # TMC5160 with 0.075 ohm sense resistors: CS 31 is 3.06 A full scale
+    plan = phase_stepping.adaptive_current_plan(0.075, 1.9, 0.5, 1.0, 1.0)
+    assert plan["cs"] == 18
+    assert plan["full_scale"] == pytest.approx(1.8193, abs=1e-4)
+    assert plan["full_scale"] <= 1.9
+    assert (plan["scaler_min"], plan["scaler_max"]) == (71, 140)
+    assert plan["scaler_rms"] == 140
+    # Without a current_limit CS stays at 31 (finest resolution)
+    plan = phase_stepping.adaptive_current_plan(0.075, None, 0.5, 1.0, 1.0)
+    assert plan["cs"] == 31
+    assert plan["full_scale"] == pytest.approx(3.0641, abs=1e-4)
+    assert (plan["scaler_min"], plan["scaler_max"]) == (42, 83)
+    assert plan["scaler_rms"] == 83
+    for args in (
+        (0.075, 1.9, 0.5, 2.0, 1.0),  # current_max above the hard limit
+        (0.075, 1.9, 0.1, 1.0, 1.0),  # current_min below scaler 32
+        (0.075, 0.01, 0.5, 1.0, 1.0),  # no CS fits current_limit
+        (0.075, 1.9, 1.2, 1.0, 1.0),  # current_min above current_max
+    ):
+        with pytest.raises(ValueError):
+            phase_stepping.adaptive_current_plan(*args)
+
+
+class CurrentHelper:
+    sense_resistor = 0.075
+    req_run_current = actual_current = 1.0
+    req_hold_current = 0.4
+
+
+class AdaptiveStepper(Stepper):
+    def get_tmc_current_helper(self):
+        return CurrentHelper()
+
+
+class AdaptiveConfig(Config):
+    values = {
+        "current_limit": 1.9,
+        "current_min": 0.5,
+        "current_max": None,
+        "accel_reference": 20000.0,
+    }
+
+    def getboolean(self, k, default):
+        return True if k == "adaptive_current" else default
+
+    def getfloat(self, k, default=None, **kw):
+        return self.values[k]
+
+
+class RecordingMCUTMC(FakeMCUTMC):
+    def __init__(self, mcu):
+        super().__init__(mcu)
+        self.writes = []
+        f = self.fields
+        f.set_field("globalscaler", 83)
+        f.set_field("irun", 31)
+        f.set_field("ihold", 12)
+
+    def set_register(self, name, val, print_time=None):
+        self.writes.append((name, val))
+        super().set_register(name, val, print_time)
+
+
+def test_adaptive_current_glue():
+    ffi_main, ffi_lib = chelper.get_ffi()
+    reactor = Reactor()
+    mcu = FakeMCU(reactor)
+    consts = mcu.get_constants()
+    consts.update(
+        PHASE_STEPPER_CURRENT_QUEUE_SIZE=63, PHASE_STEPPER_GUARD_TICKS=256
+    )
+    mcu.get_constants = lambda: consts
+    tq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
+    sk = ffi_main.gc(ffi_lib.corexy_stepper_alloc(b"+"), ffi_lib.free)
+    ffi_lib.itersolve_set_trapq(sk, tq)
+    ffi_lib.itersolve_set_position(sk, 100.0, 100.0, 0.0)
+    stepper = AdaptiveStepper(sk, ffi_lib)
+    toolhead = Toolhead(stepper)
+    mcu_tmc = RecordingMCUTMC(mcu)
+    printer = Printer(mcu_tmc, toolhead, reactor)
+    ps = phase_stepping.PhaseStepping(AdaptiveConfig(printer))
+    mcu.config_cb()
+    ps._handle_connect()
+    fields = mcu_tmc.fields
+    ps._enable()
+
+    # The current setting drops to the hard limit's CS before the scaler
+    # is lowered, and both come before direct mode
+    names = [w[0] for w in mcu_tmc.writes]
+    assert names[:3] == ["IHOLD_IRUN", "GLOBALSCALER", "GCONF"]
+    assert fields.get_field("irun", mcu_tmc.writes[0][1]) == 18
+    assert fields.get_field("ihold", mcu_tmc.writes[0][1]) == 18
+    assert mcu_tmc.writes[1][1] == 71
+    config = [s for s in mcu.sent if s[0] == "phase_stepper_current_config"]
+    assert config and config[0][1][2:8] == [71, 140, 140, 71, 83, 13]
+
+    # Driver module current writes (as SET_TMC_CURRENT makes them) wait in
+    # its cache while active
+    mcu_tmc.writes.clear()
+    ps.mcu_tmc.set_register(
+        "GLOBALSCALER", fields.set_field("globalscaler", 120)
+    )
+    ps.mcu_tmc.set_register("IHOLD_IRUN", fields.set_field("irun", 31))
+    assert mcu_tmc.writes == []
+    assert fields.registers["GLOBALSCALER"] == 120
+
+    t0 = reactor.t + 0.5
+    t1 = _append(ffi_lib, tq, t0, (100.0, 100.0), (180.0, 140.0), 400.0, 8000.0)
+    t2 = _append(
+        ffi_lib, tq, t1 + 0.3, (180.0, 140.0), (100.0, 100.0), 400.0, 20000.0
+    )
+    flush = reactor.t
+    while flush < t2 + 0.3:
+        flush += 0.05
+        for gen in toolhead.generators:
+            gen(flush)
+    changes = [
+        (s[1][1], s[1][2], s[2], s[3])
+        for s in mcu.sent
+        if s[0] == "phase_stepper_current"
+    ]
+    clocks = [c[3] for c in changes]
+    assert clocks == sorted(clocks)
+    assert all(71 <= c[1] <= 140 for c in changes)
+    # Peak stepper accelerations (CoreXY '+' motor): 8000 * (0.894 + 0.447)
+    # and 20000 * 1.342; the second is above the reference and is capped
+    peaks = []
+    for start, end in ((t0, t1), (t1 + 0.3, t2)):
+        lo = mcu.print_time_to_clock(start - 0.01)
+        hi = mcu.print_time_to_clock(end + 0.01)
+        peaks.append(max(c[1] for c in changes if lo <= c[3] <= hi))
+    assert peaks[0] == ffi_lib.phasegen_current_scaler(ps.pg, 8000 * 3 / 5**0.5)
+    assert peaks[1] == 140
+    # The current rises before each move starts and falls back after
+    for start in (t0, t1 + 0.3):
+        first_up = min(
+            c[3]
+            for c in changes
+            if c[1] > 71 and c[3] >= mcu.print_time_to_clock(start - 0.01)
+        )
+        assert first_up <= mcu.print_time_to_clock(start)
+    assert changes[-1][1] == 71
+    # Flow control: never more changes in flight than the MCU queue holds
+    events = sorted(
+        [(c[2], 1) for c in changes] + [(c[3], -1) for c in changes]
+    )
+    load = peak = 0
+    for _, delta in events:
+        load += delta
+        peak = max(peak, load)
+    assert peak <= 63
+
+    # Leaving restores the scaler before the current setting
+    mcu_tmc.writes.clear()
+    ps._disable(wait=True)
+    names = [w[0] for w in mcu_tmc.writes]
+    assert names[:3] == ["GLOBALSCALER", "GCONF", "IHOLD_IRUN"]
+    assert mcu_tmc.writes[0][1] == 120

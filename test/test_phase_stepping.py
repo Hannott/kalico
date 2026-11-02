@@ -247,6 +247,7 @@ def _guarded():
     obj = ps.PhaseStepping.__new__(ps.PhaseStepping)
     obj.mcu_tmc = _DriverModule()
     obj.active = obj.direct = False
+    obj.adaptive_run = None
     obj.holds = 0
 
     def send_hold():
@@ -332,6 +333,7 @@ def test_stats_report_lead_and_mcu_counters():
     obj = ps.PhaseStepping.__new__(ps.PhaseStepping)
     obj.stepper_name = "stepper_x"
     obj.active = False
+    obj.adaptive_run = obj.current_state = None
     assert obj.stats(0.0) == (False, "phase_stepping_stepper_x: off")
     obj.active = True
     obj.lead_min, obj.generate_max = 0.2312, 0.0042

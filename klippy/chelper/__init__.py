@@ -230,6 +230,19 @@ defs_phasegen = """
     double phasegen_target(struct phasegen *pg, int64_t tick);
     int64_t phasegen_get_phase(struct phasegen *pg);
     int64_t phasegen_get_last_tick(struct phasegen *pg);
+    struct phasegen_current {
+        int64_t tick;
+        int32_t scaler;
+    };
+    void phasegen_setup_current(struct phasegen *pg, int32_t block_ticks
+        , int32_t lead_blocks, int32_t lag_blocks, int32_t sample_ticks
+        , double current_min, double current_slope, double current_max
+        , double full_scale, int32_t scaler_min, int32_t scaler_max);
+    void phasegen_start_current(struct phasegen *pg, int64_t first_tick
+        , int32_t scaler);
+    int32_t phasegen_current_scaler(struct phasegen *pg, double accel);
+    int32_t phasegen_current(struct phasegen *pg, int64_t end_tick
+        , struct phasegen_current *out, int32_t max_out);
 """
 
 defs_serialqueue = """

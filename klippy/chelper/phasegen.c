@@ -23,6 +23,9 @@
 // Stationary ticks needed before the queue is left empty (motor held)
 #define IDLE_TICKS 20
 #define VEL_LIMIT 2147483647.
+// Blocks of adaptive current peaks kept while a call works through them
+// (a power of two above lead + lag + 1)
+#define PEAK_CACHE 16
 
 struct phasegen {
     struct stepper_kinematics *sk;
@@ -40,6 +43,17 @@ struct phasegen {
     struct move *m;
     double *delta;
     int delta_size;
+    // Adaptive current: a driver current scaler for each block of
+    // block_ticks ticks, from the largest stepper acceleration within the
+    // block and lead_blocks after and lag_blocks before it, sampled every
+    // sample_ticks. Current is current_min + current_slope * |accel| within
+    // current_min..current_max, and scaler 256 is full_scale.
+    int32_t block_ticks, lead_blocks, lag_blocks, sample_ticks;
+    double current_min, current_slope, current_max, full_scale;
+    int32_t scaler_min, scaler_max, last_scaler;
+    int64_t next_block;
+    int64_t peak_block[PEAK_CACHE];
+    double peak_accel[PEAK_CACHE];
 };
 
 struct phasegen * __visible
@@ -351,5 +365,146 @@ phasegen_generate(struct phasegen *pg, double flush_time
         done += count;
     }
     pg->last_tick = end_tick;
+    return num;
+}
+
+void __visible
+phasegen_setup_current(struct phasegen *pg, int32_t block_ticks
+                       , int32_t lead_blocks, int32_t lag_blocks
+                       , int32_t sample_ticks, double current_min
+                       , double current_slope, double current_max
+                       , double full_scale, int32_t scaler_min
+                       , int32_t scaler_max)
+{
+    pg->block_ticks = block_ticks;
+    pg->lead_blocks = lead_blocks;
+    pg->lag_blocks = lag_blocks;
+    pg->sample_ticks = sample_ticks;
+    pg->current_min = current_min;
+    pg->current_slope = current_slope;
+    pg->current_max = current_max;
+    pg->full_scale = full_scale;
+    pg->scaler_min = scaler_min;
+    pg->scaler_max = scaler_max;
+}
+
+// Levels from the block holding first_tick on; the MCU starts at scaler
+void __visible
+phasegen_start_current(struct phasegen *pg, int64_t first_tick
+                       , int32_t scaler)
+{
+    pg->next_block = first_tick / pg->block_ticks;
+    pg->last_scaler = scaler;
+}
+
+int32_t __visible
+phasegen_current_scaler(struct phasegen *pg, double accel)
+{
+    double current = pg->current_min + pg->current_slope * fabs(accel);
+    if (current > pg->current_max)
+        current = pg->current_max;
+    int32_t scaler = (int32_t)ceil(256. * current / pg->full_scale - 1e-9);
+    if (scaler < pg->scaler_min)
+        scaler = pg->scaler_min;
+    if (scaler > pg->scaler_max)
+        scaler = pg->scaler_max;
+    return scaler;
+}
+
+static double
+tick_print_time(struct phasegen *pg, int64_t tick)
+{
+    return pg->grid_time + (tick + 1) * pg->tick_time;
+}
+
+// Largest |acceleration| (mm/s^2) of the stepper within block b, cached
+// for the blocks around it
+static double
+block_accel(struct phasegen *pg, int64_t b)
+{
+    int idx = b & (PEAK_CACHE - 1);
+    if (pg->peak_block[idx] == b)
+        return pg->peak_accel[idx];
+    int64_t s = pg->sample_ticks, first = b * pg->block_ticks;
+    int64_t last = first + pg->block_ticks - 1;
+    double peak = 0.;
+    double t_last = tick_print_time(pg, last + s);
+    if (next_motion_time(pg->sk, tick_print_time(pg, first - s), t_last)
+        < t_last) {
+        double dt = s * pg->tick_time, inv = 1. / (dt * dt);
+        double p0 = stepper_position(pg, tick_print_time(pg, first - s));
+        double p1 = stepper_position(pg, tick_print_time(pg, first));
+        int64_t k;
+        for (k = first; k <= last; k += s) {
+            double p2 = stepper_position(pg, tick_print_time(pg, k + s));
+            double a = fabs(p2 - 2. * p1 + p0) * inv;
+            if (a > peak)
+                peak = a;
+            p0 = p1;
+            p1 = p2;
+        }
+    }
+    pg->peak_block[idx] = b;
+    pg->peak_accel[idx] = peak;
+    return peak;
+}
+
+// Emit a scaler change for each block that ends at or before end_tick and
+// needs a different level than the one before it. Returns the number of
+// changes written to out; call again while it fills out.
+int32_t __visible
+phasegen_current(struct phasegen *pg, int64_t end_tick
+                 , struct phasegen_current *out, int32_t max_out)
+{
+    int64_t bt = pg->block_ticks;
+    int64_t last_block = (end_tick + 1) / bt - 1;
+    // Moves may have been added since the last call
+    int i;
+    for (i = 0; i < PEAK_CACHE; i++)
+        pg->peak_block[i] = INT64_MIN;
+    // Sampling ahead of the planned window must not disturb stepper
+    // position tracking for the next phasegen_generate()
+    double hold_pos = pg->hold_pos;
+    pg->m = NULL;
+    int32_t num = 0;
+    while (pg->next_block <= last_block && num < max_out) {
+        int64_t b = pg->next_block, next = b + 1;
+        int64_t first = b - pg->lag_blocks, last = b + pg->lead_blocks;
+        double t_first = tick_print_time(pg, first * bt - pg->sample_ticks);
+        double t_last = tick_print_time(pg, (last + 1) * bt
+                                        + pg->sample_ticks);
+        double accel = 0.;
+        double t_move = next_motion_time(pg->sk, t_first, t_last);
+        if (t_move < t_last) {
+            int64_t k;
+            for (k = first; k <= last; k++) {
+                double a = block_accel(pg, k);
+                if (a > accel)
+                    accel = a;
+            }
+        } else {
+            // At rest until a later move: skip to the first block whose
+            // window may reach it
+            double t_end = tick_print_time(pg, (last_block + 1) * bt);
+            t_move = next_motion_time(pg->sk, t_last, t_end);
+            int64_t tick = (int64_t)floor((t_move - pg->grid_time)
+                                          / pg->tick_time) - 1;
+            int64_t skip = (tick - pg->sample_ticks) / bt - pg->lead_blocks;
+            if (skip > next)
+                next = skip;
+            if (next > last_block + 1)
+                next = last_block + 1;
+        }
+        int32_t scaler = phasegen_current_scaler(pg, accel);
+        if (scaler != pg->last_scaler) {
+            out[num].tick = b * bt;
+            out[num].scaler = scaler;
+            num++;
+            pg->last_scaler = scaler;
+        }
+        pg->next_block = next;
+    }
+    pg->m = NULL;
+    pg->hold_pos = hold_pos;
     return num;
 }

@@ -10,7 +10,7 @@ import time
 
 from klippy import chelper
 
-from . import motor_kinematics, tmc
+from . import motor_kinematics, tmc, tmc5160
 
 # One electrical period (4 full steps) is a full 32 bit phase wrap, and the
 # drivers' microstep counter (MSCNT) has 1024 positions per period.
@@ -40,6 +40,24 @@ STEP_TEST_SPEED = 10.0
 # Allowed difference between MSCURACT and the expected sine table value, as
 # a fraction of the current amplitude.
 MAPPING_TOL = 0.08
+# Adaptive current sets one level per block, from the largest acceleration
+# within the block and a little before and after it, so the current is up
+# before an acceleration starts and stays while the rotor settles.
+CURRENT_BLOCK = 0.001
+CURRENT_LEAD = 0.002
+CURRENT_LAG = 0.003
+CURRENT_SAMPLE = 0.0001
+CURRENT_BUFFER = 1024
+# The MCU's heat guard averages the squared current over THERMAL_TIME
+# (shorter than a motor's own thermal time constant of several minutes, so
+# it is the stricter limit) and ends any boost after BOOST_TIME.
+THERMAL_TIME = 60.0
+BOOST_TIME = 1.0
+# Valid range of the TMC5160 current scaler (GLOBALSCALER; 256 is sent as 0)
+SCALER_MIN = 32
+SCALER_MAX = 256
+# Below this current setting (CS) the driver's current steps get coarse
+CS_RECOMMENDED = 16
 
 SINE_QUARTER = [
     round(32767 * math.sin(i * math.pi / 2048)) for i in range(1025)
@@ -191,6 +209,77 @@ def hold_settings(
         ramp_time = (irun - ihold) * iholddelay * 2**18 / tmc_freq
         ramp = int(round(ramp_time * tick_freq / steps))
     return hold_amp, int(round(delay * tick_freq)), ramp
+
+
+def current_full_scale(sense_resistor, cs):
+    """RMS current of a TMC5160 at current setting cs (IRUN) and scaler 256."""
+    return (cs + 1) / 32.0 * tmc5160.VREF / (sense_resistor * math.sqrt(2.0))
+
+
+def adaptive_current_plan(
+    sense_resistor, current_limit, current_min, current_max, run_current
+):
+    """Driver settings for adaptive current.
+
+    Without a current_limit the current setting (CS) stays at 31, the
+    driver's finest current resolution, and only the MCU limits the scaler.
+    With one, CS is the largest whose full scale stays within current_limit,
+    so no scaler the MCU writes can exceed it, at the cost of coarser coil
+    currents. Returns a dict with cs, full_scale and the scaler range and
+    run current scaler; raises ValueError if the currents do not fit.
+    """
+    cs = 31
+    if current_limit is not None:
+        cs = (
+            int(
+                math.floor(
+                    32.0
+                    * current_limit
+                    * sense_resistor
+                    * math.sqrt(2.0)
+                    / tmc5160.VREF
+                    + 1e-9
+                )
+            )
+            - 1
+        )
+        cs = min(31, cs)
+    if cs < 0:
+        raise ValueError(
+            "current_limit %.3f A is below the smallest full scale current"
+            " of the driver" % (current_limit,)
+        )
+    full_scale = current_full_scale(sense_resistor, cs)
+    scaler_min = int(math.ceil(256.0 * current_min / full_scale - 1e-9))
+    scaler_max = int(math.floor(256.0 * current_max / full_scale + 1e-9))
+    if scaler_max > SCALER_MAX:
+        raise ValueError(
+            "current_max %.3f A is above the hard limit %.3f A (CS %d)"
+            % (current_max, full_scale, cs)
+        )
+    if scaler_min < SCALER_MIN:
+        raise ValueError(
+            "current_min %.3f A is below %.3f A, the lowest the driver can"
+            " scale to at CS %d"
+            % (current_min, full_scale * SCALER_MIN / 256.0, cs)
+        )
+    if scaler_min > scaler_max:
+        raise ValueError("current_min is above current_max")
+    return {
+        "cs": cs,
+        "full_scale": full_scale,
+        "scaler_min": scaler_min,
+        "scaler_max": scaler_max,
+        "scaler_rms": run_current_scaler(
+            run_current, full_scale, scaler_min, scaler_max
+        ),
+    }
+
+
+def run_current_scaler(run_current, full_scale, scaler_min, scaler_max):
+    """Scaler of the heat guard's limit, rounded down."""
+    scaler = int(math.floor(256.0 * run_current / full_scale + 1e-9))
+    return max(scaler_min, min(scaler_max, scaler))
 
 
 def sign9(value):
@@ -398,6 +487,29 @@ class PhaseStepping:
         self.set_hold_cmd = None
         self.queue_size = None
         self.auto_enable = config.getboolean("auto_enable", False)
+        self.adaptive = config.getboolean("adaptive_current", False)
+        if self.adaptive:
+            if "GLOBALSCALER" not in self.mcu_tmc.name_to_reg:
+                raise config.error(
+                    "adaptive_current needs a driver with GLOBALSCALER"
+                    " (TMC5160) in [%s]" % (tmc_section,)
+                )
+            self.current_limit = config.getfloat(
+                "current_limit", None, above=0.0
+            )
+            self.current_min = config.getfloat("current_min", above=0.0)
+            self.current_max = config.getfloat("current_max", None, above=0.0)
+            self.accel_reference = config.getfloat(
+                "accel_reference", None, above=0.0
+            )
+            if self.accel_reference is None:
+                self.accel_reference = config.getsection("printer").getfloat(
+                    "max_accel", above=0.0
+                )
+        self.current_cmds = None
+        self.current_buf = None
+        # Settings while the driver runs with adaptive current
+        self.adaptive_run = None
         self.ffi_main, self.ffi_lib = chelper.get_ffi()
         self.pg = self.ffi_main.gc(
             self.ffi_lib.phasegen_alloc(), self.ffi_lib.phasegen_free
@@ -410,6 +522,7 @@ class PhaseStepping:
         self.lead_min = None
         self.generate_max = 0.0
         self.mcu_stats = None
+        self.current_state = None
         self.peers = []
         self.query_mutex = self.printer.get_reactor().mutex()
         # The driver is in direct mode (also during PHASE_STEPPING_TEST)
@@ -502,10 +615,32 @@ class PhaseStepping:
             "phase_stepper_query oid=%c",
             "phase_stepper_state oid=%c phase=%u flags=%c pending=%c"
             " ticks=%u lost_ticks=%u locked_ticks=%u replays=%u xfers=%u"
-            " max_cycles=%u avg_cycles=%u tick_clock=%u",
+            " max_cycles=%u avg_cycles=%u tick_clock=%u scaler=%hu heat=%u"
+            " guard_limited=%u",
             oid=self.oid,
             cq=cq,
         )
+        if self.adaptive:
+            consts = self.mcu.get_constants()
+            self.current_cmds = {
+                "config": self.mcu.lookup_command(
+                    "phase_stepper_current_config oid=%c reg=%c min=%hu"
+                    " max=%hu rms=%hu start=%hu restore=%hu heat_shift=%c"
+                    " boost_limit=%hu",
+                    cq=cq,
+                ),
+                "change": self.mcu.lookup_command(
+                    "phase_stepper_current oid=%c clock=%u scaler=%hu", cq=cq
+                ),
+                "rms": self.mcu.lookup_command(
+                    "phase_stepper_current_rms oid=%c rms=%hu", cq=cq
+                ),
+                "queue_size": consts["PHASE_STEPPER_CURRENT_QUEUE_SIZE"],
+                "guard_ticks": consts["PHASE_STEPPER_GUARD_TICKS"],
+            }
+            self.current_buf = self.ffi_main.new(
+                "struct phasegen_current[]", CURRENT_BUFFER
+            )
 
     def _handle_connect(self):
         toolhead = self.printer.lookup_object("toolhead")
@@ -515,6 +650,8 @@ class PhaseStepping:
         toolhead.register_step_generator(self._generate)
         for cmd in ("FORCE_MOVE", "STEPPER_BUZZ"):
             self._wrap_step_command(cmd)
+        if self.adaptive:
+            self._check_adaptive()
         # The MCU's counters are shared by its phase steppers and a query
         # resets them, so one of them collects them for all
         peers = [
@@ -526,6 +663,56 @@ class PhaseStepping:
             self.peers = peers
             reactor = self.printer.get_reactor()
             reactor.register_timer(self._collect_mcu_stats, reactor.NOW)
+
+    def _adaptive_plan(self):
+        helper = self.stepper.get_tmc_current_helper()
+        run_current = helper.req_run_current
+        current_max = self.current_max
+        if current_max is None:
+            current_max = run_current
+        plan = adaptive_current_plan(
+            helper.sense_resistor,
+            self.current_limit,
+            self.current_min,
+            current_max,
+            run_current,
+        )
+        if self.current_min > run_current:
+            raise ValueError(
+                "current_min %.3f A is above run_current %.3f A"
+                % (self.current_min, run_current)
+            )
+        plan["current_max"] = current_max
+        plan["run_current"] = run_current
+        plan["slope"] = (
+            max(0.0, run_current - self.current_min) / self.accel_reference
+        )
+        return plan
+
+    def _check_adaptive(self):
+        try:
+            plan = self._adaptive_plan()
+        except ValueError as e:
+            raise self.printer.config_error(
+                "[phase_stepping %s]: %s" % (self.stepper_name, e)
+            )
+        logging.info(
+            "Phase stepping %s: adaptive current %.3f-%.3f A, driver full"
+            " scale %.3f A (CS %d)",
+            self.stepper_name,
+            self.current_min,
+            plan["current_max"],
+            plan["full_scale"],
+            plan["cs"],
+        )
+        if self.current_limit is not None and plan["cs"] < CS_RECOMMENDED:
+            logging.warning(
+                "Phase stepping %s: current_limit gives CS %d; below %d the"
+                " driver's current steps get coarse",
+                self.stepper_name,
+                plan["cs"],
+                CS_RECOMMENDED,
+            )
 
     def _wrap_step_command(self, cmd):
         """FORCE_MOVE and STEPPER_BUZZ move a stepper by step pulses, which
@@ -565,6 +752,12 @@ class PhaseStepping:
         if any(peer.active for peer in self.peers):
             try:
                 self.mcu_stats = self._query()
+                # The first query took the MCU-wide counters; the others
+                # only add each stepper's adaptive current state
+                self.current_state = self.mcu_stats
+                for peer in self.peers[1:]:
+                    if peer.adaptive_run is not None:
+                        peer.current_state = peer._query()
             except self.printer.command_error:
                 return self.printer.get_reactor().NEVER
         return eventtime + STATS_INTERVAL
@@ -589,6 +782,15 @@ class PhaseStepping:
                     state["max_cycles"] * cycle_us,
                     state["avg_cycles"] * cycle_us,
                 )
+            )
+        run = self.adaptive_run
+        current, self.current_state = self.current_state, None
+        if run is not None and current is not None:
+            per_amp = run["full_scale"] / 256.0
+            msg += " current=%.3f heat_rms=%.3f guard_limited=%d" % (
+                current["scaler"] * per_amp,
+                math.sqrt(current["heat"]) * per_amp,
+                current["guard_limited"],
             )
         return True, msg
 
@@ -659,8 +861,20 @@ class PhaseStepping:
         mcu_tmc = self.mcu_tmc
         fields = mcu_tmc.get_fields()
         driver_set_register = mcu_tmc.set_register
+        self.driver_set_register = driver_set_register
 
         def set_register(reg_name, val, print_time=None):
+            if self.adaptive_run is not None and reg_name in (
+                "IHOLD_IRUN",
+                "GLOBALSCALER",
+            ):
+                # With adaptive current the MCU scales the current; the
+                # driver module's new values wait in its register cache
+                # until direct mode ends, and a run current change
+                # becomes the heat guard's new limit.
+                if self.active and reg_name == "GLOBALSCALER":
+                    self._update_run_current()
+                return
             if self.direct and reg_name == "IHOLD_IRUN":
                 val = with_field(
                     fields, "ihold", fields.get_field("irun", val), val
@@ -693,10 +907,35 @@ class PhaseStepping:
             self.tick_freq,
             self.amplitude,
         )
+        if self.adaptive_run is not None:
+            # At rest the scaler gives current_min, so the hold current is
+            # reached by scaling the amplitude relative to that, over the
+            # same ramp time
+            hold_current = (
+                self.stepper.get_tmc_current_helper().req_hold_current
+            )
+            ramp_ticks = ramp * (self.amplitude - hold_amp)
+            ratio = min(1.0, hold_current / self.current_min)
+            hold_amp = int(round(self.amplitude * ratio))
+            steps = self.amplitude - hold_amp
+            ramp = int(round(ramp_ticks / steps)) if steps else 0
         self.set_hold_cmd.send([self.oid, hold_amp, delay, ramp])
 
-    def _enter_direct(self, start_phase, amplitude):
-        """Hand the coils to direct mode at start_phase."""
+    def _update_run_current(self):
+        run = self.adaptive_run
+        current = self.stepper.get_tmc_current_helper().actual_current
+        rms = run_current_scaler(
+            current, run["full_scale"], run["scaler_min"], run["scaler_max"]
+        )
+        if rms != run["scaler_rms"]:
+            run["scaler_rms"] = rms
+            self.current_cmds["rms"].send([self.oid, rms])
+        self._send_hold()
+
+    def _enter_direct(self, start_phase, amplitude, adaptive=None):
+        """Hand the coils to direct mode at start_phase. With an adaptive
+        current plan the driver's current setting becomes the plan's hard
+        limit and the scaler its start value."""
         mcu_tmc = self.mcu_tmc
         fields = mcu_tmc.get_fields()
         # Use the values the driver module last wrote: IHOLD_IRUN is write
@@ -708,7 +947,18 @@ class PhaseStepping:
             )
         self.direct = True
         try:
-            mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
+            if adaptive is not None:
+                # Lower the current setting first: with the driver module's
+                # scaler it gives less current than either end state.
+                val = with_field(fields, "irun", adaptive["cs"], ihold_irun)
+                val = with_field(fields, "ihold", adaptive["cs"], val)
+                self.driver_set_register("IHOLD_IRUN", val)
+                self.driver_set_register(
+                    "GLOBALSCALER", adaptive["scaler_start"] & 0xFF
+                )
+                self.adaptive_run = adaptive
+            else:
+                mcu_tmc.set_register("IHOLD_IRUN", ihold_irun)
             # The driver module's periodic register checks run in another
             # greenlet, and two transfers on one SPI oid at once would
             # take each other's response
@@ -726,6 +976,14 @@ class PhaseStepping:
     def _leave_direct(self):
         self.direct = False
         registers = self.mcu_tmc.get_fields().registers
+        if self.adaptive_run is not None:
+            # Restore the scaler before the current setting: the driver
+            # module's full current setting with a boosted scaler could
+            # exceed the hard limit.
+            self.adaptive_run = None
+            self.mcu_tmc.set_register(
+                "GLOBALSCALER", registers.get("GLOBALSCALER", 0)
+            )
         self.mcu_tmc.set_register("GCONF", registers.get("GCONF", 0))
         self.mcu_tmc.set_register("IHOLD_IRUN", registers["IHOLD_IRUN"])
 
@@ -778,7 +1036,16 @@ class PhaseStepping:
         sign = 1.0 if stepper.get_dir_inverted()[0] else -1.0
         start_phase = mscnt << MSCNT_SHIFT
         self._upload_corrections()
-        self._enter_direct(start_phase, self.amplitude)
+        adaptive = None
+        if self.adaptive:
+            try:
+                adaptive = self._adaptive_plan()
+            except ValueError as e:
+                raise self.printer.command_error(
+                    "Phase stepping %s: %s" % (self.stepper_name, e)
+                )
+            adaptive["scaler_start"] = adaptive["scaler_min"]
+        self._enter_direct(start_phase, self.amplitude, adaptive)
         mcu = self.mcu
         try:
             est = mcu.estimated_print_time(
@@ -788,6 +1055,8 @@ class PhaseStepping:
             self.start_cmd.send(
                 [self.oid, start_clock & MASK32, start_phase, self.amplitude]
             )
+            if adaptive is not None:
+                self._send_current_config(adaptive)
             state = self._query()
         except self.printer.command_error:
             self._leave_direct()
@@ -811,10 +1080,80 @@ class PhaseStepping:
         self.ffi_lib.phasegen_start(
             self.pg, grid_time, first_tick - 1, start_phase, self._rest_pos()
         )
+        if adaptive is not None:
+            self._start_current(adaptive, first_tick)
         self.active = True
         self._send_hold()
         # Keep new moves from starting before the MCU takes over
         toolhead.dwell(START_DELAY + 0.050)
+
+    def _send_current_config(self, adaptive):
+        registers = self.mcu_tmc.get_fields().registers
+        restore = registers.get("GLOBALSCALER", 0) or SCALER_MAX
+        guard_period = self.current_cmds["guard_ticks"] / float(self.tick_freq)
+        heat_shift = int(round(math.log2(THERMAL_TIME / guard_period)))
+        self.current_cmds["config"].send(
+            [
+                self.oid,
+                self.mcu_tmc.name_to_reg["GLOBALSCALER"],
+                adaptive["scaler_min"],
+                adaptive["scaler_max"],
+                adaptive["scaler_rms"],
+                adaptive["scaler_start"],
+                restore,
+                max(0, min(24, heat_shift)),
+                int(round(BOOST_TIME / guard_period)),
+            ]
+        )
+
+    def _start_current(self, adaptive, first_tick):
+        def ticks(t):
+            return max(1, int(round(t * self.tick_freq)))
+
+        self.ffi_lib.phasegen_setup_current(
+            self.pg,
+            ticks(CURRENT_BLOCK),
+            int(math.ceil(CURRENT_LEAD / CURRENT_BLOCK - 1e-9)),
+            int(math.ceil(CURRENT_LAG / CURRENT_BLOCK - 1e-9)),
+            ticks(CURRENT_SAMPLE),
+            self.current_min,
+            adaptive["slope"],
+            adaptive["current_max"],
+            adaptive["full_scale"],
+            adaptive["scaler_min"],
+            adaptive["scaler_max"],
+        )
+        self.ffi_lib.phasegen_start_current(
+            self.pg, first_tick, adaptive["scaler_start"]
+        )
+        self.run["current_flow"] = collections.deque()
+
+    def _queue_current(self):
+        """Send the current changes for the ticks generated so far."""
+        run = self.run
+        grid_clock, tick_cycles = run["grid_clock"], run["tick_cycles"]
+        flow = run["current_flow"]
+        queue_size = self.current_cmds["queue_size"]
+        end_tick = self.ffi_lib.phasegen_get_last_tick(self.pg)
+        while True:
+            num = self.ffi_lib.phasegen_current(
+                self.pg, end_tick, self.current_buf, CURRENT_BUFFER
+            )
+            for i in range(num):
+                change = self.current_buf[i]
+                clock = grid_clock + change.tick * tick_cycles
+                # A change leaves the MCU's queue once its clock passes
+                minclock = 0
+                if len(flow) >= queue_size:
+                    minclock = flow.popleft() + tick_cycles
+                flow.append(clock)
+                self.current_cmds["change"].send(
+                    [self.oid, clock & MASK32, change.scaler],
+                    minclock=minclock,
+                    reqclock=clock,
+                )
+            if num < CURRENT_BUFFER:
+                break
 
     def _update_sk(self):
         sk = self.stepper.get_stepper_kinematics()
@@ -863,6 +1202,8 @@ class PhaseStepping:
                     reqclock=reqclock,
                 )
                 self._note_lead(reqclock)
+        if self.adaptive_run is not None:
+            self._queue_current()
 
     def _note_lead(self, clock):
         """Track how far ahead of its start a motion was queued; the MCU
@@ -932,6 +1273,7 @@ class PhaseStepping:
 
     def _handle_shutdown(self):
         self.active = self.direct = False
+        self.adaptive_run = None
 
     def _handle_homing_move_begin(self, hmove):
         if not self.active:
