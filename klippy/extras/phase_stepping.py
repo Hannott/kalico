@@ -221,25 +221,29 @@ def adaptive_current_plan(
 ):
     """Driver settings for adaptive current.
 
-    The current setting (CS) is the largest whose full scale stays within
-    current_limit, so no scaler the MCU writes can exceed it. Returns a
-    dict with cs, full_scale and the scaler range and run current scaler;
-    raises ValueError if the currents do not fit.
+    Without a current_limit the current setting (CS) stays at 31, the
+    driver's finest current resolution, and only the MCU limits the scaler.
+    With one, CS is the largest whose full scale stays within current_limit,
+    so no scaler the MCU writes can exceed it, at the cost of coarser coil
+    currents. Returns a dict with cs, full_scale and the scaler range and
+    run current scaler; raises ValueError if the currents do not fit.
     """
-    cs = (
-        int(
-            math.floor(
-                32.0
-                * current_limit
-                * sense_resistor
-                * math.sqrt(2.0)
-                / tmc5160.VREF
-                + 1e-9
+    cs = 31
+    if current_limit is not None:
+        cs = (
+            int(
+                math.floor(
+                    32.0
+                    * current_limit
+                    * sense_resistor
+                    * math.sqrt(2.0)
+                    / tmc5160.VREF
+                    + 1e-9
+                )
             )
+            - 1
         )
-        - 1
-    )
-    cs = min(31, cs)
+        cs = min(31, cs)
     if cs < 0:
         raise ValueError(
             "current_limit %.3f A is below the smallest full scale current"
@@ -490,7 +494,9 @@ class PhaseStepping:
                     "adaptive_current needs a driver with GLOBALSCALER"
                     " (TMC5160) in [%s]" % (tmc_section,)
                 )
-            self.current_limit = config.getfloat("current_limit", above=0.0)
+            self.current_limit = config.getfloat(
+                "current_limit", None, above=0.0
+            )
             self.current_min = config.getfloat("current_min", above=0.0)
             self.current_max = config.getfloat("current_max", None, above=0.0)
             self.accel_reference = config.getfloat(
@@ -695,15 +701,15 @@ class PhaseStepping:
                 "[phase_stepping %s]: %s" % (self.stepper_name, e)
             )
         logging.info(
-            "Phase stepping %s: adaptive current %.3f-%.3f A, hard limit"
-            " %.3f A (CS %d)",
+            "Phase stepping %s: adaptive current %.3f-%.3f A, driver full"
+            " scale %.3f A (CS %d)",
             self.stepper_name,
             self.current_min,
             plan["current_max"],
             plan["full_scale"],
             plan["cs"],
         )
-        if plan["cs"] < CS_RECOMMENDED:
+        if self.current_limit is not None and plan["cs"] < CS_RECOMMENDED:
             logging.warning(
                 "Phase stepping %s: current_limit gives CS %d; below %d the"
                 " driver's current steps get coarse",

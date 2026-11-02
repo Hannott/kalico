@@ -2574,10 +2574,12 @@ direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
 #   average current. See "Adaptive current" in Phase_Stepping.md. The
 #   default is False.
 #current_limit:
-#   Hard upper limit for the coil current (amps RMS), set in the
-#   driver's own current setting so that nothing the micro-controller
-#   writes can exceed it. Use the motor's rated current or less. This
-#   parameter must be provided when adaptive_current is True.
+#   Optional hard upper limit for the coil current (amps RMS), set by
+#   lowering the driver's own current setting (CS) so that nothing the
+#   micro-controller writes can exceed it. Lowering CS makes the coil
+#   currents coarser, which can be heard as motor noise. The default is
+#   no limit: CS stays at 31 and the micro-controller alone keeps the
+#   current at or below current_max.
 #current_min:
 #   Current (amps RMS) at constant speed and at rest. This parameter must
 #   be provided when adaptive_current is True.

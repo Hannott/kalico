@@ -491,6 +491,12 @@ def test_adaptive_current_plan():
     assert plan["full_scale"] <= 1.9
     assert (plan["scaler_min"], plan["scaler_max"]) == (71, 140)
     assert plan["scaler_rms"] == 140
+    # Without a current_limit CS stays at 31 (finest resolution)
+    plan = phase_stepping.adaptive_current_plan(0.075, None, 0.5, 1.0, 1.0)
+    assert plan["cs"] == 31
+    assert plan["full_scale"] == pytest.approx(3.0641, abs=1e-4)
+    assert (plan["scaler_min"], plan["scaler_max"]) == (42, 83)
+    assert plan["scaler_rms"] == 83
     for args in (
         (0.075, 1.9, 0.5, 2.0, 1.0),  # current_max above the hard limit
         (0.075, 1.9, 0.1, 1.0, 1.0),  # current_min below scaler 32
