@@ -57,7 +57,7 @@ def make_extruder():
     e.trapq = object()
     e.appends = []
     e.trapq_append = lambda *a: e.appends.append(a)
-    e.extruder_stepper = None
+    e.extruder_steppers = []
     return e
 
 
@@ -82,7 +82,7 @@ def test_segmented_and_whole_move_agree_on_final_position():
         assert segs, (move_d, ratio)
 
         whole = make_extruder()
-        whole.move(0.0, move)
+        whole.process_move(0.0, move, 3)
 
         sliced = make_extruder()
         t = 0.0
@@ -101,7 +101,7 @@ def test_segmented_and_whole_move_agree_on_final_position():
                 sliced.last_position,
             )
     print(
-        "  segmented emission lands on the same extruder position as move() OK"
+        "  segmented emission lands on the same extruder position as process_move() OK"
     )
 
 
@@ -119,7 +119,7 @@ def test_consecutive_moves_stay_continuous():
         for at, ct, dt, sv, cv, a, dist in segs:
             e.move_segment(t, move, at, ct, dt, sv, cv, a, dist)
             t += at + ct + dt
-        ref.move(0.0, move)
+        ref.process_move(0.0, move, 3)
     for i in range(3):
         assert abs(e.last_position[i] - ref.last_position[i]) < 1e-9, (
             i,

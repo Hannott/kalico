@@ -210,7 +210,9 @@ def test_process_moves_falls_back_when_the_ramp_does_not_fit():
         th.trapq_calls[0][4],
     )
     assert (at, ct, dt) == (move.accel_t, move.cruise_t, move.decel_t)
-    assert th.extra_axes[0].move_calls and not th.extra_axes[0].move_segment_calls
+    assert (
+        th.extra_axes[0].move_calls and not th.extra_axes[0].move_segment_calls
+    )
     print(
         "  a move too short for the ramp falls back to the stock trapezoid OK"
     )
