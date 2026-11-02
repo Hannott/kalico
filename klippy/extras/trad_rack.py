@@ -681,6 +681,7 @@ class TradRack:
     cmd_TR_UNLOAD_TOOLHEAD_params = {
         "MIN_TEMP": {"type": "float", "default": 0.0},
         "EXACT_TEMP": {"type": "float", "default": 0.0},
+        "RESET_SPEED": {"type": "int", "default": 1},
     }
 
     def cmd_TR_UNLOAD_TOOLHEAD(self, gcmd):
