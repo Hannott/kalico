@@ -512,7 +512,8 @@ class PhaseStepping:
         for stepper in toolhead.get_kinematics().get_steppers():
             if stepper.get_name() == self.stepper_name:
                 self.stepper = stepper
-        toolhead.register_step_generator(self._generate)
+        motion_queuing = self.printer.lookup_object("motion_queuing")
+        motion_queuing.register_flush_callback(self._generate)
         for cmd in ("FORCE_MOVE", "STEPPER_BUZZ"):
             self._wrap_step_command(cmd)
         # The MCU's counters are shared by its phase steppers and a query
@@ -825,13 +826,15 @@ class PhaseStepping:
             )
             run["sk"] = sk
 
-    def _generate(self, flush_time):
+    def _generate(self, flush_time, step_gen_time):
+        """Flush callback of motion_queuing: queue coil updates as far as
+        the steppers' steps are generated."""
         if not self.active:
             return
         self._update_sk()
         begin = time.perf_counter()
         num = self.ffi_lib.phasegen_generate(
-            self.pg, flush_time, self.seg_buf, SEG_BUFFER
+            self.pg, step_gen_time, self.seg_buf, SEG_BUFFER
         )
         self.generate_max = max(self.generate_max, time.perf_counter() - begin)
         if num < 0:
