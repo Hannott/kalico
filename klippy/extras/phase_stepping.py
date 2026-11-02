@@ -1080,7 +1080,7 @@ class PhaseStepping:
             self.resume_after_homing = False
             self._enable()
 
-    def _handle_motor_off(self, print_time):
+    def _handle_motor_off(self):
         self.resume_after_homing = False
         self._disable(wait=False)
 
