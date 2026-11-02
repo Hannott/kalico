@@ -126,8 +126,11 @@ class CommandQueryWrapper:
 
 # Wrapper around command sending
 class CommandWrapper:
-    def __init__(self, serial, msgformat, cmd_queue=None):
+    def __init__(
+        self, serial, msgformat, cmd_queue=None, error=serialhdl.error
+    ):
         self._serial = serial
+        self._error = error
         msgparser = serial.get_msgparser()
         self._cmd = msgparser.lookup_command(msgformat)
         if cmd_queue is None:
@@ -137,11 +140,19 @@ class CommandWrapper:
 
     def send(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send_wait_ack(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send_wait_ack(
+                cmd, minclock, reqclock, self._cmd_queue
+            )
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def get_command_tag(self):
         return self._msgtag
@@ -851,6 +862,7 @@ class MCU:
                 self.non_critical_recon_event
             )
         self.non_critical_disconnected = False
+        self._reconnecting = False
         self._non_critical_reconnect_event_name = (
             f"danger:non_critical_mcu_{self.get_name()}:reconnected"
         )
@@ -995,6 +1007,10 @@ class MCU:
             self.estimated_print_time = dummy_estimated_print_time
 
     def handle_non_critical_disconnect(self):
+        if self.non_critical_disconnected or self._reconnecting:
+            # check_active() keeps running while the mcu is disconnected
+            # or still reconnecting; only handle the first disconnect
+            return
         self.non_critical_disconnected = True
         self._clocksync.disconnect()
         self._disconnect()
@@ -1109,6 +1125,7 @@ class MCU:
         return "\n".join(log_info)
 
     def recon_mcu(self):
+        self._reconnecting = True
         try:
             if not self._mcu_identify():
                 return False
@@ -1124,6 +1141,8 @@ class MCU:
             )
             self._abort_recon_attempt()
             return False
+        finally:
+            self._reconnecting = False
         self._printer.send_event(self._non_critical_reconnect_event_name)
         return True
 
@@ -1303,6 +1322,7 @@ class MCU:
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
+        self._get_status_info["mcu_kconfig"] = msgparser.get_kconfig()
         if app in ("Klipper", "Danger-Klipper"):
             pconfig = self._printer.lookup_object("configfile")
             pconfig.runtime_warning(
@@ -1399,7 +1419,9 @@ class MCU:
         return self._serial.alloc_command_queue()
 
     def lookup_command(self, msgformat, cq=None):
-        return CommandWrapper(self._serial, msgformat, cq)
+        return CommandWrapper(
+            self._serial, msgformat, cq, self._printer.command_error
+        )
 
     def lookup_query_command(
         self, msgformat, respformat, oid=None, cq=None, is_async=False
@@ -1569,6 +1591,7 @@ class MCU:
         self._printer.invoke_shutdown(
             "Lost communication with MCU '%s'" % (self._name,)
         )
+        self._serial.abort_wait_acks()
 
     # Misc external commands
     def is_fileoutput(self):

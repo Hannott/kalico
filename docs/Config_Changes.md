@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261002: Homing with a physical endstop no longer backs off by
+`homing_retract_dist` after the final touch; the axis stays on the
+endstop, as in Klipper. The final back-off now only applies to
+sensorless homing.
+
 20260713: Input shaper motion changes slightly after this update. A missing
 coefficient in the `3hump_ei` shaper definition was corrected, which alters
 the toolhead motion produced by the `3hump_ei` shaper. In addition, the
