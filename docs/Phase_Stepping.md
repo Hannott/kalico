@@ -108,27 +108,28 @@ rises 2 ms before an acceleration and falls 3 ms after it.
 ```
 [phase_stepping stepper_x]
 adaptive_current: True
-current_limit: 1.9
 current_min: 0.5
 #current_max: 1.0
 #accel_reference: 20000
 ```
 
 With `current_max` left at the driver's `run_current` the current is only
-ever lowered: slow prints run cooler and quieter, and fast acceleration
-gets the same current as before. A `current_max` above `run_current`
-allows short boosts.
+ever lowered: slow prints run cooler, and fast acceleration gets the same
+current as before. A `current_max` above `run_current` allows short
+boosts. A low `current_min` makes the motor's own detent torque stand out
+more, which can be heard at constant speed; calibrating with adaptive
+current on fits the corrections to `current_min`.
 
-The current is scaled with the driver's GLOBALSCALER register, which keeps
-the full resolution of the coil currents. Several limits protect the
-motor and driver:
+The current is scaled with the driver's GLOBALSCALER register, and the
+driver's own current setting (CS) stays at 31, its finest resolution.
+Several limits protect the motor and driver:
 
-- The driver's own current setting (CS) is set from `current_limit` so
-  that even the largest scaler stays within it. The micro-controller never
-  writes CS. A `current_limit` that gives CS below 16 is logged as a
-  warning, since the driver's current steps get coarse there.
 - The micro-controller keeps the scaler within `current_min` and
   `current_max`.
+- Optionally, `current_limit` lowers CS so that even the largest scaler
+  stays within it; the micro-controller never writes CS. This makes the
+  coil currents coarser and the motor louder, and CS below 16 is logged
+  as a warning.
 - A heat guard in the micro-controller averages the squared current over
   about a minute and allows a boost above `run_current` only while that
   average is below `run_current`, for at most one second at a time. The

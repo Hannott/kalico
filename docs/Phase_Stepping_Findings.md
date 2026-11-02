@@ -206,11 +206,13 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
 - The micro-controller sends a scaler change in place of one coil update
   of that stepper, so the replay of the host's driver messages covers it
   as any other write.
-- The hard limit is the driver's current setting (CS): GLOBALSCALER only
-  scales down from it. With 0.075 ohm sense resistors CS 18 is 1.82 A.
-  Lowering CS costs resolution of the coil currents (the driver multiplies
-  them by (CS + 1) / 32), so CS is kept as high as current_limit allows
-  instead of matching current_max.
+- A hard limit in the driver's current setting (CS) was the first design:
+  GLOBALSCALER only scales down from it, and with 0.075 ohm sense
+  resistors CS 18 is 1.82 A. On the printer the motors were loud again at
+  constant speed (CS 18, 0.5 A); whether from CS or from the lower current
+  is not known yet. Lowering CS costs resolution of the coil currents (the
+  driver multiplies them by (CS + 1) / 32), so CS now stays at 31 unless
+  current_limit is set.
 - Order of register writes matters: entering lowers CS before setting the
   scaler, leaving restores the scaler before CS. The reverse order would
   briefly combine a full CS with a boosted scaler. The micro-controller
