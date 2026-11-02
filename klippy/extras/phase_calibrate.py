@@ -656,13 +656,14 @@ class PhaseCalibrate:
     )
     cmd_PHASE_STEPPING_CALIBRATE_params = {
         "STEPPER": {"type": "string", "required": True},
-        "HARMONICS": {"type": "string", "default": "2,4,1"},
+        "HARMONICS": {"type": "string", "required": False},
         "ACCEL": {"type": "float", "required": False},
-        "PASSES": {"type": "int", "default": 2},
-        "PROBE": {"type": "float", "default": 0.02},
+        "PASSES": {"type": "int", "default": 1},
+        "PROBE": {"type": "float", "default": 0.0},
+        "ITERATIONS": {"type": "int", "default": 2},
         "SPEED_MIN": {"type": "float", "required": False},
         "SPEED_MAX": {"type": "float", "required": False},
-        "SPEED_COUNT": {"type": "int", "default": 5},
+        "SPEED_DEPENDENT": {"type": "int", "default": 1},
         "RAMP": {"type": "int", "default": 1},
         "RAMP_ACCEL": {"type": "float", "required": False},
         "GRAPH": {"type": "int", "required": False},
