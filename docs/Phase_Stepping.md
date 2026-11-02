@@ -83,10 +83,18 @@ SAVE_CONFIG
 
 The correction shifts the coil current angle so that the rotor lands
 where it should; it is measured and stored separately for each motor and
-direction. A motor's error changes somewhat with speed, so each harmonic
-is calibrated over several speeds around its largest peaks; use
-`SPEED_MIN` and `SPEED_MAX` to limit it to the speeds you print walls at.
-Compare with `MEASURE_MOTOR_HARMONICS` before and after.
+direction. The calibration sweeps the motor through the speed range a
+few times: without correction, with small probe corrections, and with
+the correction those sweeps predict to be best, until the result stops
+improving. Every sweep measures every speed in the range, and the last
+one verifies the result. A motor's error changes somewhat with speed, so
+one correction is a compromise over the range; use `SPEED_MIN` and
+`SPEED_MAX` to limit it to the speeds you print walls at. The command
+reports the worst and average vibration per harmonic before and after,
+and speeds that got worse, if any. Turn off fans that are not needed
+while calibrating, and run it with the motors warm, as a print would
+have them. With the defaults it takes about 8 sweeps of a minute each
+per motor.
 
 ## Test move
 

@@ -1514,28 +1514,35 @@ is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
 
 #### PHASE_STEPPING_CALIBRATE
 `PHASE_STEPPING_CALIBRATE STEPPER=<config_name> [HARMONICS=<h1,h2,...>]
-[SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [SPEED_COUNT=<n>] [PASSES=<n>]
+[SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [PASSES=<n>] [ITERATIONS=<n>]
 [PROBE=<radians>] [ACCEL=<mm/s^2>] [RAMP=<0|1>] [RAMP_ACCEL=<mm/s^2>]
 [POINT=x,y,z] [SAVE=<0|1>] [GRAPH=<0|1>] [NAME=<name>]`: Find the
-coil angle corrections that cancel the given harmonics (default 2, 4 and
-1) of a phase stepped motor, per direction of motion. The corrections of
-those harmonics are cleared first, so the result does not depend on an
-earlier calibration. It then ramps the motor through the speed range as
+coil angle corrections that cancel the harmonics (default the `harmonics`
+of the `phase_calibrate` section) of a phase stepped motor, per direction
+of motion. The corrections of those harmonics are cleared first, so the
+result does not depend on an earlier calibration. The motor then sweeps
+the speed range between SPEED_MIN and SPEED_MAX as
 `MEASURE_MOTOR_HARMONICS` does (or with `RAMP=0` steps through constant
-speeds) to find where each harmonic vibrates most. A motor's error
-changes somewhat with speed, so each harmonic is then measured at
-constant speed at up to SPEED_COUNT (default 5) of those speeds between
-SPEED_MIN and SPEED_MAX, picked around its largest peaks, with no
-correction and two small probe corrections, and gets the single
-correction that leaves the least worst vibration across those speeds.
-Limit the speed range to the speeds you print at, so that peaks at
-other speeds don't take priority. The results are stored for
-`SAVE_CONFIG` unless `SAVE=0`. Phase stepping must be enabled on the
-stepper. With `GRAPH=1` (default from the `graph` config option) it also
-measures all speeds again after calibrating, and writes the sweeps before
-and after to `motor_harmonics_<stepper>_<name>.csv` and
-`motor_harmonics_<stepper>_<name>_calibrated.csv` in `output_dir`, each
-with a PNG graph.
+speeds): once without correction, four times with small probe
+corrections on every harmonic that is measurably above noise, and then
+with the correction the sweeps so far predict to leave the least worst
+vibration anywhere in the range, refined up to ITERATIONS (default 2)
+times until a further sweep would not pay. Every sweep measures every
+speed in the range every 2.5 mm/s, so no speed between the calibration
+points is left to chance. The last sweep verifies the result; a harmonic
+whose correction does not beat none is left uncorrected, and speeds that
+got worse are reported. Limit the speed range to the speeds you print
+at: a motor's error changes somewhat with speed and the single
+correction is a compromise over the range. PASSES repeats each sweep
+and averages, for a noisy printer. PROBE sets the probe correction for
+all harmonics; by default each harmonic is probed in proportion to its
+uncorrected level. The results are stored for `SAVE_CONFIG` unless
+`SAVE=0`. Phase stepping must be enabled on the stepper. The sweeps
+before and after calibration are written to
+`motor_harmonics_<stepper>_<name>.csv` and
+`motor_harmonics_<stepper>_<name>_calibrated.csv` in `output_dir`, and
+with `GRAPH=1` (default from the `graph` config option) each gets a PNG
+graph. With the default settings a calibration takes about 8 sweeps.
 
 #### MEASURE_MOTOR_HARMONICS
 `MEASURE_MOTOR_HARMONICS STEPPER=<config_name> [SPEED_MIN=<mm/s>]

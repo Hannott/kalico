@@ -2478,8 +2478,14 @@ accel_chip:
 #move_speed: 50
 #   The speed (in mm/s) of moves between tests. The default is 50.
 #harmonics: 1, 2, 3, 4
-#   The harmonics of the electrical frequency to measure. The default
-#   is 1, 2, 3, 4.
+#   The harmonics of the electrical frequency to measure and calibrate.
+#   The default is 1, 2, 3, 4.
+#belt_pitch: 2.0
+#   The tooth pitch of the belt the motor drives, in mm. The belt's
+#   tooth meshing vibrates at a frequency near the motor's harmonics,
+#   and is fitted out of the measurements so that it does not count as
+#   motor vibration. Set to 0 for a motor without a belt. The default
+#   is 2.0 (GT2).
 #graph: False
 #   Whether MEASURE_MOTOR_HARMONICS and PHASE_STEPPING_CALIBRATE also
 #   save a PNG graph of their measurements. Requires matplotlib in the
