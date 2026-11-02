@@ -340,6 +340,9 @@ is always available):
 - `printing_time`: The amount of time (in seconds) the printer has
   been in the "Printing" state (as tracked by the idle_timeout
   module).
+- `idle_timeout`: The current 'timeout' (in seconds)
+   to wait for the gcode to be triggered.
+   (as set by [SET_IDLE_TIMEOUT](G-Codes.md#set_idle_timeout))
 
 ## led
 
@@ -398,6 +401,11 @@ The following information is available in
 - `mcu_constants.<constant_name>`: Compile time constants reported by
   the micro-controller. The available constants may differ between
   micro-controller architectures and with each code revision.
+- `mcu_kconfig`: The minimal build configuration (`savedefconfig`
+  output) the micro-controller firmware was compiled from, as reported by
+  the micro-controller. `None` if the firmware predates this feature, is a
+  nonconforming build, or is a fork that doesn't implement it — absence
+  does not identify which of those applies.
 - `last_stats.<statistics_name>`: Statistics information on the
   micro-controller connection.
 - `non_critical_disconnected`: True/False if the mcu is disconnected.
