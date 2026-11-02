@@ -195,6 +195,36 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
   restoring corrections from the backup of a calibration's save brings
   back the previous calibration's values.
 
+## Adaptive current
+
+- The coil current follows the motor's planned acceleration. The host
+  samples the stepper position (after kinematics and input shaping) every
+  100 us, takes the largest acceleration per 1 ms block and the blocks
+  2 ms ahead and 3 ms behind it, and queues a GLOBALSCALER value with a
+  clock whenever it changes. A separate clocked queue is needed because a
+  phase segment can last longer than an acceleration.
+- The micro-controller sends a scaler change in place of one coil update
+  of that stepper, so the replay of the host's driver messages covers it
+  as any other write.
+- The hard limit is the driver's current setting (CS): GLOBALSCALER only
+  scales down from it. With 0.075 ohm sense resistors CS 18 is 1.82 A.
+  Lowering CS costs resolution of the coil currents (the driver multiplies
+  them by (CS + 1) / 32), so CS is kept as high as current_limit allows
+  instead of matching current_max.
+- Order of register writes matters: entering lowers CS before setting the
+  scaler, leaving restores the scaler before CS. The reverse order would
+  briefly combine a full CS with a boosted scaler. The micro-controller
+  also writes the restore value when it stops, since the host's register
+  writes go through a different command queue and may arrive first.
+- The heat guard filters scaler^2 every 256 ticks with a time constant of
+  about a minute and starts at its limit, so a boost needs time spent
+  below run_current first. In the micro-controller test harness a boost
+  ends within 3 % of the limit.
+- Sampling for the current adds about 4 ms of host time per 13 s of
+  motion on a desktop CPU; a rest of ten minutes costs one flush of
+  0.4 ms, since blocks without motion are skipped.
+- Not tested on hardware yet.
+
 ## Status and open items
 
 - Tested on hardware: STM32F446 with TMC5160. Not yet tested: STM32H7

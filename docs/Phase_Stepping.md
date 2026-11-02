@@ -88,6 +88,61 @@ is calibrated over several speeds around its largest peaks; use
 `SPEED_MIN` and `SPEED_MAX` to limit it to the speeds you print walls at.
 Compare with `MEASURE_MOTOR_HARMONICS` before and after.
 
+## Adaptive current
+
+**This feature is experimental and only supports the TMC5160.**
+
+A motor needs torque for friction and for acceleration. With
+`adaptive_current: True` the coil current follows the acceleration the
+motor is about to make:
+
+```
+current = current_min + (run_current - current_min) * |acceleration| / accel_reference
+```
+
+limited to `current_min`..`current_max`. The acceleration is that of the
+motor itself, after kinematics and input shaping, so on CoreXY a diagonal
+move counts at up to 1.4 times the toolhead acceleration. The current
+rises 2 ms before an acceleration and falls 3 ms after it.
+
+```
+[phase_stepping stepper_x]
+adaptive_current: True
+current_limit: 1.9
+current_min: 0.5
+#current_max: 1.0
+#accel_reference: 20000
+```
+
+With `current_max` left at the driver's `run_current` the current is only
+ever lowered: slow prints run cooler and quieter, and fast acceleration
+gets the same current as before. A `current_max` above `run_current`
+allows short boosts.
+
+The current is scaled with the driver's GLOBALSCALER register, which keeps
+the full resolution of the coil currents. Several limits protect the
+motor and driver:
+
+- The driver's own current setting (CS) is set from `current_limit` so
+  that even the largest scaler stays within it. The micro-controller never
+  writes CS. A `current_limit` that gives CS below 16 is logged as a
+  warning, since the driver's current steps get coarse there.
+- The micro-controller keeps the scaler within `current_min` and
+  `current_max`.
+- A heat guard in the micro-controller averages the squared current over
+  about a minute and allows a boost above `run_current` only while that
+  average is below `run_current`, for at most one second at a time. The
+  motor therefore never runs hotter than at a fixed `run_current`.
+- When phase stepping turns off, the driver's own scaler is restored
+  before its own current setting.
+- A driver error or a micro-controller shutdown turns the motors off as
+  without phase stepping.
+
+`SET_TMC_CURRENT` changes the heat guard's limit at once; the driver's
+own settings return when phase stepping turns off. The statistics lines
+in the log show each stepper's present `current`, the guard's average
+(`heat_rms`) and how often the guard held a boost back (`guard_limited`).
+
 ## Test move
 
 Home the printer, move the toolhead away from the edges, then run:
