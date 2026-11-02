@@ -71,30 +71,109 @@ a wrong direction or lost steps.
 
 ## Calibration
 
-With phase stepping enabled and the accelerometer from
-[phase_calibrate](Config_Reference.md#phase_calibrate) on the toolhead,
-run for each motor:
+Phase stepping pays off with the corrections that cancel the motor's
+own position errors. Finding them needs the accelerometer used for input
+shaper calibration on the toolhead, and numpy in the Kalico environment
+(as [resonance measurements](Measuring_Resonances.md) do).
+
+### Setting up
+
+Name the accelerometer, and let phase stepping start by itself after
+homing:
 
 ```
+[phase_calibrate]
+accel_chip: lis2dw
+
+[phase_stepping stepper_x]
+auto_enable: True
+
+[phase_stepping stepper_y]
+auto_enable: True
+```
+
+The defaults suit a belt driven printer: the test moves run around the
+middle of the bed, the belt is GT2, and the corrections are calibrated
+for motor speeds from 30 to 160 mm/s. On a CoreXY printer a move along X
+or Y at a toolhead speed of v runs each motor at 1.4 v, so that range
+covers toolhead speeds of about 20 to 115 mm/s; on a Cartesian printer
+motor and toolhead speed are the same. If you print walls at other
+speeds, set `speed_min` and `speed_max` in `[phase_calibrate]` to the
+motor speeds you use: the corrections are best inside the range they
+were calibrated for, and the calibration spends its effort there. Set
+`belt_pitch: 0` for a motor without a belt, and `graph: True` for a PNG
+graph of each sweep (needs matplotlib). The other options are described
+in the [config reference](Config_Reference.md#phase_calibrate).
+
+### Calibrating
+
+Have the printer as it is when it prints: motors warm from a few
+minutes of moves or a short print, fans that are not needed off (their
+vibration raises the noise level). Then run, for each motor:
+
+```
+G28
 PHASE_STEPPING_CALIBRATE STEPPER=stepper_x
 PHASE_STEPPING_CALIBRATE STEPPER=stepper_y
 SAVE_CONFIG
 ```
 
-The correction shifts the coil current angle so that the rotor lands
-where it should; it is measured and stored separately for each motor and
-direction. The calibration sweeps the motor through the speed range a
-few times: without correction, with small probe corrections, and with
-the correction those sweeps predict to be best, until the result stops
-improving. Every sweep measures every speed in the range, and the last
-one verifies the result. A motor's error changes somewhat with speed, so
-one correction is a compromise over the range; use `SPEED_MIN` and
-`SPEED_MAX` to limit it to the speeds you print walls at. The command
-reports the worst and average vibration per harmonic before and after,
-and speeds that got worse, if any. Turn off fans that are not needed
-while calibrating, and run it with the motors warm, as a print would
-have them. With the defaults it takes about 8 sweeps of a minute each
-per motor.
+A calibration sweeps the motor up and down through the speed range
+about eight times, a minute each: once without correction, four times
+with small probe corrections that show how each harmonic answers, then
+with the correction those sweeps predict to be best, refined until it
+stops improving. The last sweep verifies the result. On a CoreXY printer
+the moves are diagonal, since only one motor runs.
+
+### Reading the result
+
+For each harmonic and direction the command reports the worst and the
+average vibration over the speed range before and after, the noise
+level, and the correction found, for example:
+
+```
+H2 forward over 30-160 mm/s: worst 4.520 -> 0.170 um, average 1.812 -> 0.094 um,
+noise 0.052 um (correction 0.0312 rad at 2.21 rad at 30 mm/s, 0.0251 rad at 2.41 rad at 160 mm/s)
+H4 forward over 30-160 mm/s: worst 0.160 -> 0.041 um, ... (correction 0.0011 rad at -0.40 rad)
+H3 forward: below noise, left uncorrected
+```
+
+- A correction given at two speeds changes with the speed between them:
+  a loaded motor's error moves as its speed grows, and the
+  micro-controller follows the speed linearly between the two ends and
+  holds the nearer end outside them. A correction given once is the same
+  at every speed; the calibration keeps it that way unless following the
+  speed clearly helps.
+- A result close to the noise level is as good as the accelerometer can
+  tell. Repeated calibrations differ by about the noise.
+- "left uncorrected" means the harmonic was not measurable above the
+  noise, or that no correction beat having none. Both are normal for
+  harmonics 1 and 3; harmonics 2 and 4 are the ones that matter on most
+  motors.
+- "worse at ..." lists speeds where the harmonic rose above its
+  uncorrected level by more than the noise. A few such speeds at a low
+  level are the price of one correction for a whole range; many, or
+  large ones, mean the range should be narrowed to the speeds you print.
+
+The sweeps before and after are written to `output_dir` as CSV files
+(see [motor harmonics](Motor_Harmonics.md)), with graphs when `graph` is
+set.
+
+### Checking
+
+`MEASURE_MOTOR_HARMONICS STEPPER=stepper_x` measures a motor without
+changing anything, so running it before and after shows the difference
+across all speeds; `PHASE_STEPPING_ENABLE STEPPER=stepper_x ENABLE=0`
+switches back to step pulses for a comparison. A tall, thin print with
+walls at your usual speed shows the vertical fine artifacts directly.
+
+### Calibrating again
+
+The corrections belong to the motor, its driver settings and its load.
+Calibrate again after changing `run_current`, `microsteps`, the motor or
+the driver, the belt tension or the toolhead mass, and after a change of
+`speed_min` or `speed_max`. A calibration starts from no correction, so
+it never depends on the one before it.
 
 ## Test move
 

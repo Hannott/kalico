@@ -1514,9 +1514,10 @@ is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
 
 #### PHASE_STEPPING_CALIBRATE
 `PHASE_STEPPING_CALIBRATE STEPPER=<config_name> [HARMONICS=<h1,h2,...>]
-[SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [PASSES=<n>] [ITERATIONS=<n>]
-[PROBE=<radians>] [ACCEL=<mm/s^2>] [RAMP=<0|1>] [RAMP_ACCEL=<mm/s^2>]
-[POINT=x,y,z] [SAVE=<0|1>] [GRAPH=<0|1>] [NAME=<name>]`: Find the
+[SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [SPEED_DEPENDENT=<0|1>] [PASSES=<n>]
+[ITERATIONS=<n>] [PROBE=<radians>] [ACCEL=<mm/s^2>] [RAMP=<0|1>]
+[RAMP_ACCEL=<mm/s^2>] [POINT=x,y,z] [SAVE=<0|1>] [GRAPH=<0|1>]
+[NAME=<name>]`: Find the
 coil angle corrections that cancel the harmonics (default the `harmonics`
 of the `phase_calibrate` section) of a phase stepped motor, per direction
 of motion. The corrections of those harmonics are cleared first, so the
@@ -1532,8 +1533,13 @@ speed in the range every 2.5 mm/s, so no speed between the calibration
 points is left to chance. The last sweep verifies the result; a harmonic
 whose correction does not beat none is left uncorrected, and speeds that
 got worse are reported. Limit the speed range to the speeds you print
-at: a motor's error changes somewhat with speed and the single
-correction is a compromise over the range. PASSES repeats each sweep
+at: a motor's error changes somewhat with speed. Where following the
+speed clearly helps, a harmonic's correction is given at SPEED_MIN and
+at SPEED_MAX and the micro-controller follows the speed linearly between
+them (`SPEED_DEPENDENT=0` keeps every correction the same at all
+speeds); otherwise one correction is a compromise over the range. The
+corrections of all harmonics of the stepper refer to this speed range
+afterwards. PASSES repeats each sweep
 and averages, for a noisy printer. PROBE sets the probe correction for
 all harmonics; by default each harmonic is probed in proportion to its
 uncorrected level. The results are stored for `SAVE_CONFIG` unless
@@ -1578,8 +1584,8 @@ pulses. The stepper must be enabled and at rest.
 `PHASE_STEPPING_SET_CORRECTION STEPPER=<config_name> [HARMONIC=<n>
 MAG=<radians> [PHASE=<radians>]] [DIRECTION=<forward|backward|both>]
 [SAVE=<0|1>]`: Set (or with `MAG=0` remove) the coil angle correction of
-one harmonic and report the corrections in use. `SAVE=1` stores them for
-`SAVE_CONFIG`.
+one harmonic, the same at every speed, and report the corrections in
+use. `SAVE=1` stores them for `SAVE_CONFIG`.
 
 #### PHASE_STEPPING_STEP_TEST
 `PHASE_STEPPING_STEP_TEST STEPPER=<config_name> [DISTANCE=<mm>]`: Moves

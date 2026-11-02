@@ -121,7 +121,14 @@ class PhaseCalibrate:
             return point
         if self.point is not None:
             return list(self.point)
-        return toolhead.get_position()[:3]
+        # The middle of the bed leaves the most room for the test moves
+        status = toolhead.get_status(self.printer.get_reactor().monotonic())
+        lo, hi = status["axis_minimum"], status["axis_maximum"]
+        return [
+            0.5 * (lo[0] + hi[0]),
+            0.5 * (lo[1] + hi[1]),
+            toolhead.get_position()[2],
+        ]
 
     def _get_harmonics(self, gcmd):
         raw = gcmd.get("HARMONICS", None)
@@ -162,20 +169,23 @@ class PhaseCalibrate:
         )
 
     @contextlib.contextmanager
-    def _uncorrected(self, phase_stepping, harmonics):
-        """Clear the corrections of the given harmonics, and restore them
-        if calibration fails."""
+    def _uncorrected(self, phase_stepping, harmonics, speeds):
+        """Clear the corrections of the given harmonics and set the speed
+        range of the corrections, and restore both if calibration fails."""
         previous = {
             (label, h): phase_stepping.get_harmonic(label, h)
             for label in DIRECTIONS.values()
             for h in harmonics
         }
+        previous_speeds = phase_stepping.get_correction_speeds()
         for label, h in previous:
             phase_stepping.set_harmonic(label, h, 0j)
+        phase_stepping.set_correction_speeds(speeds)
         phase_stepping.apply_corrections()
         try:
             yield
         except BaseException:
+            phase_stepping.set_correction_speeds(previous_speeds)
             for (label, h), value in previous.items():
                 phase_stepping.set_harmonic(label, h, value)
             try:
@@ -651,6 +661,7 @@ class PhaseCalibrate:
         passes = gcmd.get_int("PASSES", 1, minval=1, maxval=5)
         probe = gcmd.get_float("PROBE", 0.0, minval=0.0, maxval=0.1)
         iterations = gcmd.get_int("ITERATIONS", 2, minval=0, maxval=5)
+        speed_dependent = gcmd.get_int("SPEED_DEPENDENT", 1, minval=0, maxval=1)
         speed_min = gcmd.get_float("SPEED_MIN", self.speed_min, above=0.0)
         speed_max = gcmd.get_float(
             "SPEED_MAX", max(self.speed_max, speed_min), minval=speed_min
@@ -710,6 +721,18 @@ class PhaseCalibrate:
         def describe(key):
             return "H%d %s" % (key[1], DIRECTIONS[key[0]])
 
+        def describe_correction(correction):
+            slow, fast = phase_fit.as_pair(correction)
+            text = "%.4f rad at %.2f rad" % (abs(slow), cmath.phase(slow))
+            if fast != slow:
+                text += " at %.0f mm/s, %.4f rad at %.2f rad at %.0f mm/s" % (
+                    speed_min,
+                    abs(fast),
+                    cmath.phase(fast),
+                    speed_max,
+                )
+            return text
+
         gcmd.respond_info(
             "Calibrating %s over %.0f-%.0f mm/s with %s%s"
             % (
@@ -723,7 +746,8 @@ class PhaseCalibrate:
         # Calibrate from no correction so that the measurements show the
         # motor's own error; the probe and refinement sweeps then determine
         # the response to each harmonic's correction at every speed.
-        uncorrected = self._uncorrected(phase_stepping, harmonics)
+        speeds = (speed_min, speed_max) if speed_max > speed_min else None
+        uncorrected = self._uncorrected(phase_stepping, harmonics, speeds)
         with uncorrected, self._suspend_limits(test):
             base = sweep("no correction")
             models, skipped = {}, {}
@@ -781,7 +805,9 @@ class PhaseCalibrate:
                 for key, model in models.items():
                     if not model.fit():
                         continue
-                    candidate = model.solve()
+                    candidate = model.solve(
+                        speed_dependent=bool(speed_dependent)
+                    )
                     if model.improves(candidate, applied[key]):
                         proposal[key] = candidate
                 if not proposal:
@@ -805,7 +831,7 @@ class PhaseCalibrate:
                 worst_b, worst_a, avg_b, avg_a, worse = phase_fit.compare(
                     before, after, noise
                 )
-                if not applied[key]:
+                if not any(abs(c) for c in phase_fit.as_pair(applied[key])):
                     final[key] = 0j
                     lines.append(
                         "%s over %.0f-%.0f mm/s: worst %.3f um, noise %.3f um;"
@@ -836,8 +862,7 @@ class PhaseCalibrate:
                 final[key] = applied[key]
                 line = (
                     "%s over %.0f-%.0f mm/s: worst %.3f -> %.3f um, average"
-                    " %.3f -> %.3f um, noise %.3f um (correction %.4f rad at"
-                    " %.2f rad)"
+                    " %.3f -> %.3f um, noise %.3f um (correction %s)"
                     % (
                         describe(key),
                         speed_min,
@@ -847,8 +872,7 @@ class PhaseCalibrate:
                         avg_b * 1000.0,
                         avg_a * 1000.0,
                         model.noise_floor() * 1000.0,
-                        abs(applied[key]),
-                        cmath.phase(applied[key]),
+                        describe_correction(applied[key]),
                     )
                 )
                 if worse:

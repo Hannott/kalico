@@ -2452,7 +2452,7 @@ accel_chip:
 #   must be provided.
 #point:
 #   An X, Y, Z position to run the test around. The default is the
-#   current toolhead position.
+#   middle of the bed at the current height.
 #speed_min: 30
 #speed_max: 160
 #speed_step: 5
@@ -2521,8 +2521,12 @@ direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
 #   Coil angle corrections that cancel the motor's own position error,
 #   as space separated harmonic:magnitude:phase entries (magnitude and
 #   phase in radians of electrical angle), one set per direction of
-#   motion. PHASE_STEPPING_CALIBRATE finds and stores them. The default
-#   is no correction.
+#   motion. A harmonic may instead have two entries with a fourth part,
+#   the motor speed in mm/s each applies at: between the two speeds the
+#   correction follows the speed linearly, outside them it holds the
+#   nearer entry. All such entries of a stepper must use the same two
+#   speeds. PHASE_STEPPING_CALIBRATE finds and stores the corrections.
+#   The default is no correction.
 ```
 
 ## Config file helpers

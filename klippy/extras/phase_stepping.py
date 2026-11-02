@@ -3,6 +3,7 @@
 # Copyright (C) 2026  Åsmund Collin <aakjaergaard@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import cmath
 import collections
 import logging
 import math
@@ -75,39 +76,111 @@ def coil_value(phase, amplitude, swap_coils, shift=0):
 
 def parse_correction(text):
     """Parse "harmonic:magnitude:phase" entries (radians of electrical
-    angle) into {harmonic: (magnitude, phase)}."""
-    corr = {}
+    angle), each optionally followed by ":speed", the motor speed (mm/s)
+    it applies at. A harmonic has either one entry without speed or two
+    entries at the slow and the fast end of the speed range; between the
+    ends the correction follows the speed linearly, outside them it holds
+    the nearer end's value. Returns ({harmonic: (slow, fast)}, (slow speed,
+    fast speed) or None), the corrections as complex magnitude*exp(1j*
+    phase)."""
+    entries = {}
     for item in text.replace(",", " ").split():
         parts = item.split(":")
-        if len(parts) != 3:
-            raise ValueError("expected harmonic:magnitude:phase, got %r" % item)
+        if len(parts) not in (3, 4):
+            raise ValueError(
+                "expected harmonic:magnitude:phase[:speed], got %r" % item
+            )
         harmonic = int(parts[0])
         if harmonic < 1:
             raise ValueError("harmonic must be at least 1")
-        corr[harmonic] = (float(parts[1]), float(parts[2]))
-    return corr
+        value = cmath.rect(float(parts[1]), float(parts[2]))
+        speed = float(parts[3]) if len(parts) == 4 else None
+        entries.setdefault(harmonic, []).append((speed, value))
+    corr, speeds = {}, None
+    for harmonic, items in entries.items():
+        if len(items) == 1 and items[0][0] is None:
+            corr[harmonic] = (items[0][1], items[0][1])
+            continue
+        if len(items) != 2 or None in (items[0][0], items[1][0]):
+            raise ValueError(
+                "harmonic %d needs one entry, or two with speeds" % harmonic
+            )
+        items.sort(key=lambda item: item[0])
+        pair = (items[0][0], items[1][0])
+        if pair[0] >= pair[1]:
+            raise ValueError(
+                "harmonic %d needs two different speeds" % harmonic
+            )
+        if speeds is not None and pair != speeds:
+            raise ValueError(
+                "all harmonics must use the same two speeds, got %g, %g and"
+                " %g, %g" % (speeds + pair)
+            )
+        speeds = pair
+        corr[harmonic] = (items[0][1], items[1][1])
+    return corr, speeds
 
 
-def format_correction(corr):
-    return " ".join(
-        "%d:%.5f:%.4f" % (h, mag, pha)
-        for h, (mag, pha) in sorted(corr.items())
-        if mag
-    )
+def _format_entry(harmonic, value, speed=None):
+    text = "%d:%.5f:%.4f" % (harmonic, abs(value), cmath.phase(value))
+    if speed is not None:
+        text += ":%g" % (speed,)
+    return text
+
+
+def format_correction(corr, speeds=None):
+    """The config text of corrections {harmonic: (slow, fast)} with the
+    (slow, fast) speeds; a harmonic with the same correction at both ends
+    is written once, without speed."""
+    items = []
+    for harmonic, (slow, fast) in sorted(corr.items()):
+        if not abs(slow) and not abs(fast):
+            continue
+        if speeds is None or slow == fast:
+            items.append(_format_entry(harmonic, slow))
+        else:
+            items.append(_format_entry(harmonic, slow, speeds[0]))
+            items.append(_format_entry(harmonic, fast, speeds[1]))
+    return " ".join(items)
+
+
+def correction_at(pair, speeds, speed):
+    """The correction of a (slow, fast) pair at a motor speed."""
+    slow, fast = pair
+    if speeds is None or speed <= speeds[0]:
+        return slow
+    if speed >= speeds[1]:
+        return fast
+    frac = (speed - speeds[0]) / (speeds[1] - speeds[0])
+    return slow + (fast - slow) * frac
 
 
 def correction_table(corr):
-    """Angle shift per microstep counter position, in 1/4096 period."""
+    """Angle shift per microstep counter position, in 1/4096 period, of
+    complex corrections {harmonic: magnitude*exp(1j*phase)}."""
     scale = 4096.0 / (2.0 * math.pi)
     table = []
     for i in range(CORRECTION_SIZE):
         theta = 2.0 * math.pi * i / CORRECTION_SIZE
         shift = sum(
-            mag * math.sin(h * theta + pha) for h, (mag, pha) in corr.items()
+            (c * cmath.exp(1j * h * theta)).imag for h, c in corr.items()
         )
         units = int(round(shift * scale))
         table.append(max(-CORRECTION_LIMIT, min(CORRECTION_LIMIT, units)))
     return table
+
+
+def correction_speed_params(speeds, period, tick_freq):
+    """(speed_lo, scale) for the MCU: the slow speed in phase units per
+    tick and the scale that maps the speed above it to a 16 bit fraction
+    of the range, as ((speed - speed_lo) * scale) >> 32; (0, 0) without a
+    speed range."""
+    if speeds is None or speeds[1] <= speeds[0]:
+        return 0, 0
+    per_mm_s = PHASE_PER_PERIOD / period / tick_freq
+    lo = int(round(speeds[0] * per_mm_s))
+    span = (speeds[1] - speeds[0]) * per_mm_s
+    return lo, min(0xFFFFFFFF, int(round(65536.0 * 2.0**32 / span)))
 
 
 def check_coil_mapping(mscnt, cur_a, cur_b):
@@ -342,10 +415,11 @@ class PhaseStepping:
         self.amplitude = config.getint("amplitude", 248, minval=16, maxval=255)
         self.swap_coils = config.getboolean("swap_coils", True)
         self.corrections = {}
+        self.correction_speeds = None
         for direction in DIRECTIONS:
             option = "correction_" + direction
             try:
-                self.corrections[direction] = parse_correction(
+                self.corrections[direction], speeds = parse_correction(
                     config.get(option, "")
                 )
             except ValueError as e:
@@ -353,6 +427,14 @@ class PhaseStepping:
                     "Option '%s' in section '%s': %s"
                     % (option, config.get_name(), e)
                 )
+            if speeds is not None:
+                if self.correction_speeds not in (None, speeds):
+                    raise config.error(
+                        "Section '%s': correction_forward and"
+                        " correction_backward must use the same two speeds"
+                        % (config.get_name(),)
+                    )
+                self.correction_speeds = speeds
         tmc_section = find_tmc_section(config, self.stepper_name)
         if tmc_section is None:
             raise config.error(
@@ -487,7 +569,12 @@ class PhaseStepping:
             "phase_stepper_queue_wait oid=%c clock=%u", cq=cq
         )
         self.set_correction_cmd = self.mcu.lookup_command(
-            "phase_stepper_set_correction oid=%c dir=%c offset=%hu data=%*s",
+            "phase_stepper_set_correction oid=%c dir=%c end=%c offset=%hu"
+            " data=%*s",
+            cq=cq,
+        )
+        self.set_correction_speed_cmd = self.mcu.lookup_command(
+            "phase_stepper_set_correction_speed oid=%c speed_lo=%u scale=%u",
             cq=cq,
         )
         self.set_hold_cmd = self.mcu.lookup_command(
@@ -596,26 +683,50 @@ class PhaseStepping:
         return {
             "enabled": self.active,
             "correction_forward": format_correction(
-                self.corrections["forward"]
+                self.corrections["forward"], self.correction_speeds
             ),
             "correction_backward": format_correction(
-                self.corrections["backward"]
+                self.corrections["backward"], self.correction_speeds
             ),
         }
 
     def get_harmonic(self, direction, harmonic):
-        mag, pha = self.corrections[direction].get(harmonic, (0.0, 0.0))
-        return complex(mag * math.cos(pha), mag * math.sin(pha))
+        """The (slow, fast) complex corrections of a harmonic."""
+        return self.corrections[direction].get(harmonic, (0j, 0j))
 
     def set_harmonic(self, direction, harmonic, value):
-        mag = min(abs(value), CORRECTION_MAX)
-        if mag:
-            self.corrections[direction][harmonic] = (
-                mag,
-                math.atan2(value.imag, value.real),
-            )
+        """Set a harmonic's correction: one complex value for all speeds,
+        or a (slow, fast) pair over the correction speeds."""
+        if isinstance(value, complex):
+            value = (value, value)
+        pair = tuple(
+            c * CORRECTION_MAX / abs(c) if abs(c) > CORRECTION_MAX else c
+            for c in value
+        )
+        if abs(pair[0]) or abs(pair[1]):
+            self.corrections[direction][harmonic] = pair
         else:
             self.corrections[direction].pop(harmonic, None)
+
+    def get_correction_speeds(self):
+        return self.correction_speeds
+
+    def set_correction_speeds(self, speeds):
+        """Set the (slow, fast) motor speeds (mm/s) the two ends of the
+        corrections apply at; existing corrections keep their values at
+        the new speeds."""
+        if speeds is not None and speeds[0] >= speeds[1]:
+            raise ValueError("the slow speed must be below the fast speed")
+        for corr in self.corrections.values():
+            for harmonic, pair in corr.items():
+                if speeds is None:
+                    corr[harmonic] = (pair[0], pair[0])
+                else:
+                    corr[harmonic] = tuple(
+                        correction_at(pair, self.correction_speeds, speed)
+                        for speed in speeds
+                    )
+        self.correction_speeds = speeds
 
     def apply_corrections(self):
         """Send changed corrections to the MCU (the motor must be at rest)."""
@@ -630,22 +741,36 @@ class PhaseStepping:
             configfile.set(
                 section,
                 "correction_" + d,
-                format_correction(self.corrections[d]),
+                format_correction(self.corrections[d], self.correction_speeds),
             )
 
     def _upload_corrections(self):
         for index, direction in enumerate(DIRECTIONS):
-            table = correction_table(self.corrections[direction])
-            data = bytes(v & 0xFF for v in table)
-            for offset in range(0, CORRECTION_SIZE, CORRECTION_CHUNK):
-                self.set_correction_cmd.send(
-                    [
-                        self.oid,
-                        index,
-                        offset,
-                        data[offset : offset + CORRECTION_CHUNK],
-                    ]
+            for end in (0, 1):
+                table = correction_table(
+                    {
+                        h: pair[end]
+                        for h, pair in self.corrections[direction].items()
+                    }
                 )
+                data = bytes(v & 0xFF for v in table)
+                for offset in range(0, CORRECTION_SIZE, CORRECTION_CHUNK):
+                    self.set_correction_cmd.send(
+                        [
+                            self.oid,
+                            index,
+                            end,
+                            offset,
+                            data[offset : offset + CORRECTION_CHUNK],
+                        ]
+                    )
+        period = motor_kinematics.stepper_electrical_period(
+            self.printer, self.stepper
+        )
+        speed_lo, scale = correction_speed_params(
+            self.correction_speeds, period or 1.0, self.tick_freq
+        )
+        self.set_correction_speed_cmd.send([self.oid, speed_lo, scale])
 
     # Switching the driver in and out of direct mode
 
@@ -986,10 +1111,7 @@ class PhaseStepping:
             pha = gcmd.get_float("PHASE", 0.0)
             for d in DIRECTIONS:
                 if direction in (d, "both"):
-                    if mag:
-                        self.corrections[d][harmonic] = (mag, pha)
-                    else:
-                        self.corrections[d].pop(harmonic, None)
+                    self.set_harmonic(d, harmonic, cmath.rect(mag, pha))
             if self.active:
                 self.printer.lookup_object("toolhead").wait_moves()
                 self._upload_corrections()
@@ -1000,8 +1122,14 @@ class PhaseStepping:
             % (
                 self.stepper_name,
                 "enabled" if self.active else "disabled",
-                format_correction(self.corrections["forward"]) or "none",
-                format_correction(self.corrections["backward"]) or "none",
+                format_correction(
+                    self.corrections["forward"], self.correction_speeds
+                )
+                or "none",
+                format_correction(
+                    self.corrections["backward"], self.correction_speeds
+                )
+                or "none",
             )
         )
 

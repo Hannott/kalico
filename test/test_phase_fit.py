@@ -43,14 +43,29 @@ def test_probe_corrections_fit_the_table():
     assert pf.probe_corrections({}, LIMIT) == [{}, {}, {}, {}]
 
 
+def test_pairs_and_constants_are_the_same_correction():
+    model = pf.HarmonicResponse(40.0, 100.0, LIMIT)
+    assert pf.as_pair(0.01j) == (0.01j, 0.01j)
+    assert pf.as_pair((0.01j, 0.02)) == (0.01j, 0.02)
+    assert model.value((0j, 0.02), 70.0) == pytest.approx(0.01)
+    assert model.value((0j, 0.02), 30.0) == 0.0
+    assert model.value((0j, 0.02), 120.0) == pytest.approx(0.02)
+    assert model.value(0.01j, 70.0) == 0.01j
+    assert list(model.fraction([40.0, 55.0, 100.0])) == [0.0, 0.25, 1.0]
+    assert list(pf.HarmonicResponse(50.0, 50.0, LIMIT).fraction([50.0])) == [
+        0.0
+    ]
+
+
 def _linear_motor(targets, gains, noise=0.0, seed=1):
     """A sweep function: vibration gain * (c - target) per speed, plus
-    noise, for a correction c."""
+    noise, for a correction c, which may be a (slow, fast) pair."""
     rng = np.random.default_rng(seed)
+    model = pf.HarmonicResponse(min(targets), max(targets), LIMIT)
 
     def sweep(c):
         phasors = {
-            s: gains[s] * (c - targets[s])
+            s: gains[s] * (complex(model.value(c, s)) - targets[s])
             + noise * (rng.normal() + 1j * rng.normal())
             for s in targets
         }
@@ -59,17 +74,17 @@ def _linear_motor(targets, gains, noise=0.0, seed=1):
     return sweep
 
 
-def _calibrate(sweep, speed_min=40.0, speed_max=100.0, iterations=2):
-    model = pf.HarmonicResponse(speed_min, speed_max, LIMIT)
+def _calibrate(sweep, iterations=2, speed_dependent=True):
+    model = pf.HarmonicResponse(40.0, 100.0, LIMIT)
     phasors, noises = sweep(0j)
     model.add(0j, phasors, noises)
     probe = pf.probe_size(phasors, PERIOD, LIMIT)
     for setting in pf.probe_corrections({"k": probe}, LIMIT):
         model.add(setting["k"], *sweep(setting["k"]))
-    applied = 0j
+    applied = (0j, 0j)
     for _ in range(iterations + 1):
         assert model.fit() == len(SPEEDS)
-        c = model.solve()
+        c = model.solve(speed_dependent=speed_dependent)
         if not model.improves(c, applied):
             break
         applied = c
@@ -82,7 +97,9 @@ def test_shared_optimum_is_found_exactly():
     gains = {s: 3e-2 * np.exp(1j * s / 20.0) for s in SPEEDS}
     sweep = _linear_motor(dict.fromkeys(SPEEDS, target), gains)
     model, applied = _calibrate(sweep)
-    assert applied == pytest.approx(target, abs=1e-9)
+    # A constant error gets a constant correction
+    assert applied[0] == applied[1]
+    assert applied[0] == pytest.approx(target, abs=1e-9)
     assert model.worst(applied) < 1e-12
     # Two sweeps at the same correction are averaged
     assert model.measured(applied)[40.0] == pytest.approx(0.0, abs=1e-12)
@@ -96,7 +113,7 @@ def test_minimax_minimises_the_worst_speed():
     gains[70.0] *= 5.0
     targets = {s: 0.03 * np.exp(1j * (s - 40.0) / 50.0) for s in SPEEDS}
     sweep = _linear_motor(targets, gains)
-    model, applied = _calibrate(sweep)
+    model, applied = _calibrate(sweep, speed_dependent=False)
     worst = model.worst(applied)
     grid = np.linspace(-0.05, 0.05, 201)
 
@@ -104,13 +121,17 @@ def test_minimax_minimises_the_worst_speed():
         return max(abs(gains[s] * (c - targets[s])) for s in SPEEDS)
 
     best_on_grid = min(exact(complex(re, im)) for re in grid for im in grid)
-    assert exact(applied) <= best_on_grid * 1.001
-    assert worst == pytest.approx(exact(applied), rel=1e-6)
+    assert exact(applied[0]) <= best_on_grid * 1.001
+    assert worst == pytest.approx(exact(applied[0]), rel=1e-6)
     assert worst < 0.25 * model.worst(0j)
     # Least squares leaves the busy speed worse but the rest better
-    rms = model.solve("rms")
-    assert exact(rms) > exact(applied)
+    rms = model.solve("rms", speed_dependent=False)
+    assert exact(rms[0]) > exact(applied[0])
     assert np.mean(model.predict(rms)) < np.mean(model.predict(applied))
+    # A correction that follows the speed does far better still
+    varying = model.solve()
+    assert varying[0] != varying[1]
+    assert model.worst(varying) < 0.5 * worst
 
 
 def test_noisy_sweeps_still_converge_and_stop():
@@ -118,13 +139,16 @@ def test_noisy_sweeps_still_converge_and_stop():
     gains = {s: 2e-2 * np.exp(1j * s / 25.0) for s in SPEEDS}
     sweep = _linear_motor(dict.fromkeys(SPEEDS, target), gains, noise=2e-5)
     model, applied = _calibrate(sweep, iterations=5)
-    # Each sweep places the correction within noise / gain = 1e-3 rad
-    assert applied == pytest.approx(target, abs=5e-4)
+    # Each sweep places the correction within noise / gain = 1e-3 rad, and
+    # the noise does not earn a correction that changes with speed
+    assert applied[0] == applied[1]
+    assert applied[0] == pytest.approx(target, abs=5e-4)
     # Converged within the noise: refinement stopped before 5 iterations
     assert len(model.sweeps) < 11
     assert model.noise_floor() == pytest.approx(2e-5)
     assert model.worst(applied) < 4.0 * model.noise_floor()
-    assert not model.improves(applied + 1e-6, applied)
+    nudged = (applied[0] + 1e-6, applied[1] + 1e-6)
+    assert not model.improves(nudged, applied)
 
 
 def test_fit_uses_only_the_speed_range_and_enough_points():
@@ -136,7 +160,7 @@ def test_fit_uses_only_the_speed_range_and_enough_points():
     model.add(0.02, *sweep(0.02))
     assert model.fit() == 7
     assert list(model.speeds) == [50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0]
-    assert model.solve() == pytest.approx(0.01 + 0.01j)
+    assert model.solve() == pytest.approx((0.01 + 0.01j, 0.01 + 0.01j))
 
 
 def test_solve_stays_within_the_limit():
@@ -146,7 +170,23 @@ def test_solve_stays_within_the_limit():
     model.add(0j, *sweep(0j))
     model.add(0.02, *sweep(0.02))
     model.fit()
-    assert abs(model.solve()) == pytest.approx(LIMIT)
+    assert abs(model.solve()[0]) == pytest.approx(LIMIT)
+
+
+def test_free_end_stays_with_the_measured_one():
+    # Only 40-60 mm/s measured of a 40-100 range: the fast end, which the
+    # measurements do not reach, must not run away from the slow end
+    measured = [s for s in SPEEDS if s <= 60.0]
+    gains = {s: 1e-2 * np.exp(1j * s / 30.0) for s in measured}
+    sweep = _linear_motor(dict.fromkeys(measured, 0.02 + 0.01j), gains)
+    model = pf.HarmonicResponse(40.0, 100.0, LIMIT)
+    model.add(0j, *sweep(0j))
+    model.add(0.02, *sweep(0.02))
+    model.add(0.02j, *sweep(0.02j))
+    model.fit()
+    slow, fast = model._solve("minimax", True)
+    assert slow == pytest.approx(0.02 + 0.01j, abs=1e-6)
+    assert fast == pytest.approx(slow, abs=1e-6)
 
 
 def test_compare_reports_speeds_that_got_worse():
@@ -161,10 +201,11 @@ def test_compare_reports_speeds_that_got_worse():
     assert pf.compare({}, {}, {})[4] == []
 
 
-def _ramp_sweep(errors_at, noise):
+def _ramp_sweep(errors_at, noise, model):
     """Sweep function over simulated ramps: ramps up and down in both
     directions through 20-120 mm/s with the displacement errors
-    errors_at(speed) plus the correction, analysed on a speed grid."""
+    errors_at(speed) plus the correction, which model maps to each speed,
+    analysed on a speed grid."""
     grid = mh.plan_speeds(30.0, 110.0, 2.5)
 
     def sweep(c):
@@ -174,7 +215,9 @@ def _ramp_sweep(errors_at, noise):
                 v1 = 20.0 if up else 120.0
                 a = 50.0 if up else -50.0
                 ramp = mh.Ramp(motor_dir, 10.0, v1, a, 2.0, -motor_dir * 60.0)
-                times, accel = _varying_samples(ramp, errors_at, c, noise)
+                times, accel = _varying_samples(
+                    ramp, errors_at, lambda s: model.value(c, s), noise
+                )
                 rows += mh.analyze_ramp(
                     times, accel, ramp, PERIOD, (2,), grid, 2.5, belt=0.4
                 )
@@ -189,7 +232,7 @@ def _ramp_sweep(errors_at, noise):
     return sweep
 
 
-def _varying_samples(ramp, errors_at, correction, noise):
+def _varying_samples(ramp, errors_at, correction_at, noise):
     rng = np.random.default_rng(5)
     times = ramp.start_time + np.arange(0.0, ramp.duration, 1.0 / 1600.0)
     t = times - ramp.start_time
@@ -202,7 +245,7 @@ def _varying_samples(ramp, errors_at, correction, noise):
     angle = 2.0 * math.pi * pos / PERIOD
     # The motor's error varies slowly with speed, so its derivatives are
     # neglected against those of the fast electrical angle
-    c = errors_at(speed) + correction
+    c = errors_at(speed) + correction_at(speed)
     accel = rng.normal(0.0, noise, len(times)) + ramp.motor_dir * ramp.accel
     accel += np.imag(
         c * np.exp(2j * angle) * (2j * rate_change - (2.0 * rate) ** 2)
@@ -212,8 +255,8 @@ def _varying_samples(ramp, errors_at, correction, noise):
 
 def test_calibration_from_simulated_ramps_cancels_the_error():
     target = 2e-3 * np.exp(0.8j)
-    sweep = _ramp_sweep(lambda speed: target + 0.0 * speed, noise=20.0)
     models = {d: pf.HarmonicResponse(40.0, 100.0, LIMIT) for d in (1, -1)}
+    sweep = _ramp_sweep(lambda speed: target + 0.0 * speed, 20.0, models[1])
     base = sweep(0j)
     for d, model in models.items():
         model.add(0j, *base[d])
@@ -227,28 +270,39 @@ def test_calibration_from_simulated_ramps_cancels_the_error():
         # The firmware shifts the angle by Im(c e^{ih angle}), the same form
         # as the simulated error, so the correction that cancels it is -C
         c = model.solve()
-        assert c == pytest.approx(-target, rel=0.03)
+        assert c[0] == c[1]
+        assert c[0] == pytest.approx(-target, rel=0.03)
         assert model.worst(c) < 0.05 * model.worst(0j)
         assert model.noise_floor() < 0.1 * model.worst(0j)
 
 
-def test_drifting_error_leaves_an_even_residue():
-    # The error's phase turns with speed; the single correction splits the
-    # difference and no speed is left worse than the uncorrected worst
+def test_drifting_error_gets_a_correction_that_follows_the_speed():
+    # The error's phase turns with speed. A constant correction splits the
+    # difference and leaves the ends of the range worst, as minimax does; a
+    # correction that follows the speed cancels nearly all of it.
+    model = pf.HarmonicResponse(40.0, 100.0, LIMIT)
     sweep = _ramp_sweep(
         lambda speed: 2e-3 * np.exp(1j * (0.8 + (speed - 70.0) / 100.0)),
-        noise=0.0,
+        0.0,
+        model,
     )
-    model = pf.HarmonicResponse(40.0, 100.0, LIMIT)
     base = sweep(0j)
     model.add(0j, *base[1])
     probe = pf.probe_size(base[1][0], PERIOD, LIMIT)
     for setting in pf.probe_corrections({1: probe}, LIMIT):
         model.add(setting[1], *sweep(setting[1])[1])
     model.fit()
-    c = model.solve()
-    residue = model.predict(c)
+    constant = model.solve(speed_dependent=False)
+    residue = model.predict(constant)
     assert np.max(residue) < 0.35 * model.worst(0j)
-    # The ends of the range are left worst, as minimax does
     assert residue[0] == pytest.approx(residue[-1], rel=0.1)
     assert np.min(residue) < 0.5 * np.max(residue)
+    varying = model.solve()
+    assert varying[0] != varying[1]
+    assert model.worst(varying) < 0.2 * np.max(residue)
+    for speed in (40.0, 70.0, 100.0):
+        expected = -2e-3 * np.exp(1j * (0.8 + (speed - 70.0) / 100.0))
+        assert model.value(varying, speed) == pytest.approx(expected, rel=0.1)
+    # Applied, the sweep confirms it
+    model.add(varying, *sweep(varying)[1])
+    assert max(model.measured(varying).values()) < 0.2 * np.max(residue)

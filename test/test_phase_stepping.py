@@ -1,4 +1,5 @@
 # Tests for the host side helpers of phase_stepping.py
+import cmath
 import math
 import os
 import sys
@@ -135,22 +136,109 @@ def test_with_field_leaves_the_register_cache_alone():
 
 
 def test_correction_parse_format_round_trip():
-    corr = ps.parse_correction("2:0.0123:1.5708, 4:0.004:-0.3")
-    assert corr == {2: (0.0123, 1.5708), 4: (0.004, -0.3)}
-    assert ps.parse_correction(ps.format_correction(corr)) == corr
-    assert ps.parse_correction("") == {}
+    corr, speeds = ps.parse_correction("2:0.0123:1.5708, 4:0.004:-0.3")
+    assert speeds is None
+    assert corr[2] == pytest.approx((cmath.rect(0.0123, 1.5708),) * 2)
+    assert corr[4] == pytest.approx((cmath.rect(0.004, -0.3),) * 2)
+    text = ps.format_correction(corr)
+    assert text == "2:0.01230:1.5708 4:0.00400:-0.3000"
+    again, speeds = ps.parse_correction(text)
+    assert speeds is None
+    assert again[2] == pytest.approx(corr[2]) and again[4] == pytest.approx(
+        corr[4]
+    )
+    assert ps.parse_correction("") == ({}, None)
     with pytest.raises(ValueError):
         ps.parse_correction("2:0.01")
 
 
+def test_speed_dependent_correction_round_trip():
+    text = "2:0.03000:2.2000:50 2:0.02500:2.4000:100 4:0.00100:-0.4000"
+    corr, speeds = ps.parse_correction(text)
+    assert speeds == (50.0, 100.0)
+    assert corr[2][0] == pytest.approx(cmath.rect(0.03, 2.2))
+    assert corr[2][1] == pytest.approx(cmath.rect(0.025, 2.4))
+    assert corr[4][0] == corr[4][1]
+    assert ps.format_correction(corr, speeds) == text
+    # The order of the entries does not matter
+    assert ps.parse_correction("2:0.025:2.4:100 2:0.03:2.2:50")[1] == (
+        50.0,
+        100.0,
+    )
+    for bad in (
+        "2:0.03:2.2:50",
+        "2:0.03:2.2:50 2:0.02:2.4:50",
+        "2:0.03:2.2:50 2:0.02:2.4:100 2:0.01:0:75",
+        "2:0.03:2.2:50 2:0.02:2.4:100 4:0.01:0:60 4:0.01:0:100",
+    ):
+        with pytest.raises(ValueError):
+            ps.parse_correction(bad)
+
+
+def test_correction_at_interpolates_between_the_ends():
+    pair, speeds = (0.02 + 0j, 0.04j), (50.0, 100.0)
+    assert ps.correction_at(pair, speeds, 40.0) == pair[0]
+    assert ps.correction_at(pair, speeds, 50.0) == pair[0]
+    assert ps.correction_at(pair, speeds, 75.0) == pytest.approx(0.01 + 0.02j)
+    assert ps.correction_at(pair, speeds, 100.0) == pair[1]
+    assert ps.correction_at(pair, speeds, 120.0) == pair[1]
+    assert ps.correction_at(pair, None, 120.0) == pair[0]
+
+
+def test_set_correction_speeds_keeps_the_corrections_in_place():
+    obj = ps.PhaseStepping.__new__(ps.PhaseStepping)
+    obj.corrections = {
+        "forward": {2: (0.02 + 0j, 0.04j)},
+        "backward": {4: (0.01j, 0.01j)},
+    }
+    obj.correction_speeds = (50.0, 100.0)
+    obj.set_correction_speeds((75.0, 100.0))
+    assert obj.corrections["forward"][2] == pytest.approx((0.01 + 0.02j, 0.04j))
+    assert obj.corrections["backward"][4] == (0.01j, 0.01j)
+    obj.set_correction_speeds(None)
+    assert obj.corrections["forward"][2] == pytest.approx(
+        (0.01 + 0.02j, 0.01 + 0.02j)
+    )
+    with pytest.raises(ValueError):
+        obj.set_correction_speeds((100.0, 50.0))
+    obj.set_harmonic("forward", 2, 0.5 + 0j)
+    assert obj.get_harmonic("forward", 2) == pytest.approx(
+        (ps.CORRECTION_MAX, ps.CORRECTION_MAX)
+    )
+    obj.set_harmonic("forward", 2, (0j, 0j))
+    assert obj.get_harmonic("forward", 2) == (0j, 0j)
+    assert 2 not in obj.corrections["forward"]
+
+
+def test_correction_speed_params_map_the_range_to_16_bits():
+    period, tick_freq = 0.8, 40000
+    per_mm_s = 2.0**32 / period / tick_freq
+    lo, scale = ps.correction_speed_params((50.0, 100.0), period, tick_freq)
+    assert lo == round(50.0 * per_mm_s)
+
+    def mcu_fraction(speed):
+        # As correction_shift() in src/phase_stepper.c computes it
+        vel = int(round(speed * per_mm_s))
+        if vel <= lo:
+            return 0
+        return min(0xFFFF, ((vel - lo) * scale) >> 32)
+
+    assert mcu_fraction(40.0) == 0 and mcu_fraction(50.0) == 0
+    assert mcu_fraction(75.0) == pytest.approx(32768, abs=2)
+    assert mcu_fraction(100.0) >= 65534 and mcu_fraction(150.0) == 65535
+    slow, fast = -20, 40
+    assert slow + (((fast - slow) * mcu_fraction(75.0)) >> 16) == 10
+    assert ps.correction_speed_params(None, period, tick_freq) == (0, 0)
+
+
 def test_correction_table_follows_the_harmonics():
-    table = ps.correction_table({2: (0.02, 0.0)})
+    table = ps.correction_table({2: 0.02 + 0j})
     scale = 4096.0 / (2.0 * math.pi)
     for i in (0, 64, 128, 300, 1000):
         theta = 2.0 * math.pi * i / 1024
         assert table[i] == round(0.02 * math.sin(2 * theta) * scale)
     # Corrections are limited to what a signed byte holds on the MCU
-    assert max(ps.correction_table({1: (1.0, 0.0)})) == ps.CORRECTION_LIMIT
+    assert max(ps.correction_table({1: 1.0 + 0j})) == ps.CORRECTION_LIMIT
 
 
 def test_coil_value_applies_the_shift():

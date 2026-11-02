@@ -243,20 +243,39 @@ LIS2DW accelerometer on the toolhead, with travel moves at 600 mm/s.
   by the end of a calibration the offset at each speed is averaged over
   all sweeps, and a gain error only slows convergence, which the refits
   correct.
-- The sweep-based calibration has not been run on hardware yet. The
-  per-speed optimum of each harmonic can be read from its sweeps (minus
-  offset over gain); if it drifts with speed as the stepper_x H2 residue
-  suggests, a correction with a term linear in speed would be the next
-  step, and the fit stays linear in its unknowns.
+- A correction can now change with speed. The micro-controller holds
+  two tables per direction, for the slow and the fast end of the
+  calibrated speed range, and interpolates between them by the planned
+  speed (one 64 bit multiply per update); outside the range it holds
+  the nearer end, since extrapolating a fit is riskier than keeping a
+  compromise. Interpolating the tables linearly is the same as
+  interpolating each harmonic's complex correction, so the host stores
+  a (slow, fast) pair per harmonic, written to the config as two entries
+  with their speeds; an entry without speed is the same at every speed,
+  which keeps earlier configs valid. The fit is still linear in its
+  unknowns: the response at a speed is offset plus gain times the
+  correction in effect there, and minimax over the range solves for
+  both ends at once. A small ridge pulls the ends together where the
+  measurements do not reach one of them (H4 above about 150 mm/s), and
+  the two-end solution is used only when it beats the best constant one
+  by 10 % and by more than the noise, so noise does not earn a slope.
+  The model was chosen over a load angle shift of one table because it
+  covers both an error that moves with the rotor (detent torque) and
+  one fixed to the field (coil asymmetry, current lag), which shift
+  differently with speed.
+- The redesigned calibration and the speed dependent correction have
+  not been run on hardware yet. The per-speed optimum of each harmonic
+  can be read from its sweeps (minus offset over gain) to see how far
+  a linear change in speed describes it.
 
 ## Status and open items
 
 - Tested on hardware: STM32F446 with TMC5160. Not yet tested: STM32H7
   backend, TMC2130, TMC2160 and TMC2240.
-- Next: a hardware run of the sweep-based calibration against the
-  earlier results, a DMA backend for STM32G0B1 (its SPI FIFO holds
-  4 bytes), and a print comparison of the wall surface with and without
-  phase stepping.
+- Next: a hardware run of the sweep-based calibration and the speed
+  dependent correction against the earlier results, a DMA backend for
+  STM32G0B1 (its SPI FIFO holds 4 bytes), and a print comparison of the
+  wall surface with and without phase stepping.
 - Moving phase segment generation into C threads, as Klipper's
   `motion_queuing` does for steps, would remove the time one motor waits
   for the other at a flush.

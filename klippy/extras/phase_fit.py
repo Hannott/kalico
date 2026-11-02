@@ -5,7 +5,10 @@
 # vibration measured at that harmonic responds linearly to it, with a gain
 # that depends on the speed through the printer's mechanics, so sweeps made
 # at a few corrections determine the response at every speed and one
-# correction can be chosen for a whole speed range.
+# correction can be chosen for a whole speed range. A correction is a
+# (slow, fast) pair: its values at the two ends of the speed range, between
+# which the micro-controller follows the speed linearly; a correction that
+# is the same at every speed has equal ends.
 #
 # Copyright (C) 2026  Åsmund Collin <aakjaergaard@gmail.com>
 #
@@ -20,9 +23,22 @@ PROBE_MAX = 0.06
 MIN_POINTS = 2
 # A step is worth a sweep when it should lower the worst vibration this much
 MIN_IMPROVEMENT = 0.05
+# A correction that changes with speed is used when it should lower the
+# worst vibration this much below the best constant one
+SPEED_DEPENDENT_GAIN = 0.1
+# Weight, relative to the measurements, that pulls the two ends of a
+# correction together where the measurements leave them free
+SLOPE_RIDGE = 1e-3
 # A speed counts as worse than before when it rose by more than this share
 # of the earlier level, and by more than twice the noise
 REGRESSION_SHARE = 0.2
+
+
+def as_pair(correction):
+    """A correction as its (slow, fast) ends."""
+    if isinstance(correction, tuple):
+        return correction
+    return (complex(correction), complex(correction))
 
 
 def probe_size(phasors, period, limit):
@@ -56,7 +72,7 @@ class HarmonicResponse:
     noise level {speed: displacement}. fit() then finds, per speed, the
     offset r0 and gain g with vibration r(c) = r0 + g * c by weighted least
     squares over all sweeps so far, so that every sweep improves the
-    model, and solve() picks the correction for a speed range.
+    model, and solve() picks the correction for the speed range.
     """
 
     def __init__(self, speed_min, speed_max, limit):
@@ -66,15 +82,28 @@ class HarmonicResponse:
         self.speeds = np.zeros(0)
         self.offset = self.gain = self.noise = np.zeros(0, dtype=complex)
 
+    def fraction(self, speeds):
+        """Where speeds lie between the slow (0) and fast (1) end."""
+        span = self.speed_max - self.speed_min
+        if span <= 0.0:
+            return np.zeros(np.shape(speeds))
+        return np.clip((np.asarray(speeds) - self.speed_min) / span, 0.0, 1.0)
+
+    def value(self, correction, speeds):
+        """The correction in effect at speeds."""
+        slow, fast = as_pair(correction)
+        return slow + (fast - slow) * self.fraction(speeds)
+
     def add(self, correction, phasors, noises):
-        self.sweeps.append((complex(correction), dict(phasors), dict(noises)))
+        self.sweeps.append((as_pair(correction), dict(phasors), dict(noises)))
 
     def measured(self, correction):
         """{speed: displacement} measured at correction in the speed range,
         averaged over the sweeps made at it."""
+        wanted = as_pair(correction)
         levels = {}
         for c, phasors, _ in self.sweeps:
-            if abs(c - correction) > 1e-12:
+            if abs(c[0] - wanted[0]) > 1e-12 or abs(c[1] - wanted[1]) > 1e-12:
                 continue
             for speed, phasor in phasors.items():
                 if self.speed_min <= speed <= self.speed_max:
@@ -89,7 +118,8 @@ class HarmonicResponse:
                 if not self.speed_min <= speed <= self.speed_max:
                     continue
                 noise = noises.get(speed) or 0.0
-                by_speed.setdefault(speed, []).append((c, phasor, noise))
+                value = complex(self.value(c, speed))
+                by_speed.setdefault(speed, []).append((value, phasor, noise))
         speeds, offsets, gains, noise = [], [], [], []
         for speed in sorted(by_speed):
             points = by_speed[speed]
@@ -117,7 +147,9 @@ class HarmonicResponse:
 
     def predict(self, correction):
         """Predicted displacement per speed at correction."""
-        return np.abs(self.offset + self.gain * correction)
+        return np.abs(
+            self.offset + self.gain * self.value(correction, self.speeds)
+        )
 
     def worst(self, correction):
         return float(np.max(self.predict(correction)))
@@ -125,13 +157,27 @@ class HarmonicResponse:
     def noise_floor(self):
         return float(np.max(self.noise)) if len(self.noise) else 0.0
 
-    def solve(self, objective="minimax", iterations=100):
-        """Correction that leaves the least worst predicted vibration over
-        the speed range (Lawson's algorithm: least squares, reweighted
-        towards the speeds left worst), or with objective "rms" the least
-        total, within the correction limit."""
+    def solve(self, objective="minimax", speed_dependent=True):
+        """The (slow, fast) correction that leaves the least worst predicted
+        vibration over the speed range, or with objective "rms" the least
+        total. A correction that changes with speed is returned only when
+        it beats the best constant one by SPEED_DEPENDENT_GAIN and by more
+        than noise can account for."""
+        constant = self._solve(objective, False)
+        if not speed_dependent:
+            return constant
+        varying = self._solve(objective, True)
+        before = self.worst(constant)
+        gain = before - self.worst(varying)
+        if gain > max(SPEED_DEPENDENT_GAIN * before, 0.5 * self.noise_floor()):
+            return varying
+        return constant
+
+    def _solve(self, objective, varying, iterations=100):
+        """Lawson's algorithm: least squares, reweighted towards the speeds
+        left worst, within the correction limit."""
         weights = np.ones(len(self.speeds))
-        c = self._weighted(weights)
+        c = self._weighted(weights, varying)
         if objective == "minimax":
             for _ in range(iterations):
                 left = weights * self.predict(c)
@@ -139,23 +185,47 @@ class HarmonicResponse:
                 if not total:
                     break
                 weights = left / total
-                c = self._weighted(weights)
+                c = self._weighted(weights, varying)
         return c
 
-    def _weighted(self, weights):
-        den = np.sum(weights * np.abs(self.gain) ** 2)
-        if not den:
-            return 0j
-        c = -np.sum(weights * np.conj(self.gain) * self.offset) / den
-        if abs(c) > self.limit:
-            c *= self.limit / abs(c)
-        return complex(c)
+    def _weighted(self, weights, varying):
+        if not len(self.speeds):
+            return (0j, 0j)
+        if not varying:
+            den = np.sum(weights * np.abs(self.gain) ** 2)
+            if not den:
+                return (0j, 0j)
+            c = -np.sum(weights * np.conj(self.gain) * self.offset) / den
+            return self._limited((complex(c), complex(c)))
+        root = np.sqrt(weights)
+        u = self.fraction(self.speeds)
+        design = np.column_stack(
+            [self.gain * (1.0 - u) * root, self.gain * u * root]
+        )
+        target = -self.offset * root
+        # Where the measurements leave an end free (speeds not reaching it),
+        # a small pull towards equal ends keeps it from running away
+        ridge = math.sqrt(
+            SLOPE_RIDGE * np.sum(weights * np.abs(self.gain) ** 2)
+        )
+        design = np.vstack([design, [[ridge, -ridge]]])
+        target = np.append(target, 0j)
+        slow, fast = np.linalg.lstsq(design, target, rcond=None)[0]
+        return self._limited((complex(slow), complex(fast)))
+
+    def _limited(self, pair):
+        largest = max(abs(pair[0]), abs(pair[1]))
+        if largest > self.limit:
+            scale = self.limit / largest
+            return (pair[0] * scale, pair[1] * scale)
+        return pair
 
     def improves(self, candidate, applied):
         """Whether candidate should lower the worst vibration enough below
         what applied is predicted to leave to be worth another sweep: by
         MIN_IMPROVEMENT, and by more than noise can account for."""
-        if abs(candidate - applied) < 1e-9:
+        candidate, applied = as_pair(candidate), as_pair(applied)
+        if max(abs(candidate[i] - applied[i]) for i in (0, 1)) < 1e-9:
             return False
         before = self.worst(applied)
         gain = before - self.worst(candidate)
