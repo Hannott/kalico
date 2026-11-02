@@ -128,6 +128,7 @@ class ManualStepper:
         "ACCEL": {"type": "float", "required": False},
         "STOP_ON_ENDSTOP": {"type": "int", "default": 0},
         "MOVE": {"type": "float", "required": False},
+        "GCODE_AXIS": {"type": "string", "required": False},
         "SYNC": {"type": "int", "default": 1},
     }
 
