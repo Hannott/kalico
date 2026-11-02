@@ -221,10 +221,18 @@ class Kin:
         return [self.stepper]
 
 
+class MotionQueuing:
+    def __init__(self):
+        self.generators = []
+
+    def register_flush_callback(self, callback, can_add_trapq=False):
+        self.generators.append(callback)
+
+
 class Toolhead:
     def __init__(self, stepper):
         self.kin = Kin(stepper)
-        self.generators = []
+        self.motion_queuing = MotionQueuing()
 
         self.last_move_time = 0.0
         self.position = [100.0, 100.0, 0.0, 0.0]
@@ -243,9 +251,6 @@ class Toolhead:
 
     def get_kinematics(self):
         return self.kin
-
-    def register_step_generator(self, handler):
-        self.generators.append(handler)
 
 
 class Enable:
@@ -271,6 +276,7 @@ class Printer:
         self.reactor = reactor
         self.objs = {
             "toolhead": toolhead,
+            "motion_queuing": toolhead.motion_queuing,
             "stepper_enable": StepperEnable(),
             "gcode": type(
                 "G",
@@ -441,8 +447,8 @@ def test_glue_follows_planned_motion(shaped):
         while state["flush"] < end:
             state["flush"] += 0.05
             first = ffi_lib.phasegen_get_last_tick(ps.pg) + 1
-            for gen in toolhead.generators:
-                gen(state["flush"])
+            for gen in toolhead.motion_queuing.generators:
+                gen(state["flush"], state["flush"])
             last = ffi_lib.phasegen_get_last_tick(ps.pg)
             # Targets as seen at generation time, before any later reset
             for tick in range(first, last + 1):
