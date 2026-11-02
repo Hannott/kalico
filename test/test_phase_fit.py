@@ -34,6 +34,7 @@ def test_probe_corrections_fit_the_table():
     probes = {"a": 0.05, "b": 0.03}
     settings = pf.probe_corrections(probes, LIMIT)
     assert [s["a"] for s in settings] == [0.05, -0.05, 0.05j, -0.05j]
+    assert all(isinstance(s["a"], complex) for s in settings)
     assert [s["b"] for s in settings] == [0.03, -0.03, 0.03j, -0.03j]
     # Four large probes are scaled down together
     probes = {k: 0.06 for k in "abcd"}

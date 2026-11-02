@@ -698,8 +698,8 @@ class PhaseStepping:
     def set_harmonic(self, direction, harmonic, value):
         """Set a harmonic's correction: one complex value for all speeds,
         or a (slow, fast) pair over the correction speeds."""
-        if isinstance(value, complex):
-            value = (value, value)
+        if not isinstance(value, tuple):
+            value = (complex(value), complex(value))
         pair = tuple(
             c * CORRECTION_MAX / abs(c) if abs(c) > CORRECTION_MAX else c
             for c in value

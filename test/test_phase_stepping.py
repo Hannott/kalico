@@ -208,6 +208,9 @@ def test_set_correction_speeds_keeps_the_corrections_in_place():
     obj.set_harmonic("forward", 2, (0j, 0j))
     assert obj.get_harmonic("forward", 2) == (0j, 0j)
     assert 2 not in obj.corrections["forward"]
+    # A real probe step is one value for all speeds, like a complex one
+    obj.set_harmonic("forward", 4, -0.02)
+    assert obj.get_harmonic("forward", 4) == (-0.02 + 0j, -0.02 + 0j)
 
 
 def test_correction_speed_params_map_the_range_to_16_bits():
