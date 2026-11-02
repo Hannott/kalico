@@ -1506,6 +1506,104 @@ Palette 2 once the loading has been completed. This command is the
 same as pressing **Smart Load** directly on the Palette 2 screen after
 the filament load is complete.
 
+### [phase_calibrate]
+
+The following command is available when a
+[phase_calibrate config section](Config_Reference.md#phase_calibrate)
+is enabled (also see the [motor harmonics guide](Motor_Harmonics.md)).
+
+#### PHASE_STEPPING_CALIBRATE
+`PHASE_STEPPING_CALIBRATE STEPPER=<config_name> [HARMONICS=<h1,h2,...>]
+[SPEED_MIN=<mm/s>] [SPEED_MAX=<mm/s>] [SPEED_DEPENDENT=<0|1>] [PASSES=<n>]
+[ITERATIONS=<n>] [PROBE=<radians>] [ACCEL=<mm/s^2>] [RAMP=<0|1>]
+[RAMP_ACCEL=<mm/s^2>] [POINT=x,y,z] [SAVE=<0|1>] [GRAPH=<0|1>]
+[NAME=<name>]`: Find the
+coil angle corrections that cancel the harmonics (default the `harmonics`
+of the `phase_calibrate` section) of a phase stepped motor, per direction
+of motion. The corrections of those harmonics are cleared first, so the
+result does not depend on an earlier calibration. The motor then sweeps
+the speed range between SPEED_MIN and SPEED_MAX as
+`MEASURE_MOTOR_HARMONICS` does (or with `RAMP=0` steps through constant
+speeds): once without correction, four times with small probe
+corrections on every harmonic that is measurably above noise, and then
+with the correction the sweeps so far predict to leave the least worst
+vibration anywhere in the range, refined up to ITERATIONS (default 2)
+times until a further sweep would not pay. Every sweep measures every
+speed in the range every 2.5 mm/s, so no speed between the calibration
+points is left to chance. The last sweep verifies the result; a harmonic
+whose correction does not beat none is left uncorrected, and speeds that
+got worse are reported. Limit the speed range to the speeds you print
+at: a motor's error changes somewhat with speed. Where following the
+speed clearly helps, a harmonic's correction is given at SPEED_MIN and
+at SPEED_MAX and the micro-controller follows the speed linearly between
+them (`SPEED_DEPENDENT=0` keeps every correction the same at all
+speeds); otherwise one correction is a compromise over the range. The
+corrections of all harmonics of the stepper refer to this speed range
+afterwards. PASSES repeats each sweep
+and averages, for a noisy printer. PROBE sets the probe correction for
+all harmonics; by default each harmonic is probed in proportion to its
+uncorrected level. The results are stored for `SAVE_CONFIG` unless
+`SAVE=0`. Phase stepping must be enabled on the stepper. The sweeps
+before and after calibration are written to
+`motor_harmonics_<stepper>_<name>.csv` and
+`motor_harmonics_<stepper>_<name>_calibrated.csv` in `output_dir`, and
+with `GRAPH=1` (default from the `graph` config option) each gets a PNG
+graph. With the default settings a calibration takes about 8 sweeps.
+
+#### MEASURE_MOTOR_HARMONICS
+`MEASURE_MOTOR_HARMONICS STEPPER=<config_name> [SPEED_MIN=<mm/s>]
+[SPEED_MAX=<mm/s>] [SPEED_STEP=<mm/s>] [ACCEL=<mm/s^2>] [RAMP=<0|1>]
+[RAMP_ACCEL=<mm/s^2>] [HARMONICS=<h1,h2,...>] [POINT=x,y,z]
+[NAME=<name>] [GRAPH=<0|1>]`: Moves only the given X/Y stepper
+(diagonally on a CoreXY printer) and measures the toolhead vibration at
+each harmonic of the motor's electrical frequency. By default the motor
+ramps smoothly up and down through the speed range in both directions,
+like a resonance sweep, and each harmonic is followed as its frequency
+changes; results are given every SPEED_STEP. The ramp is gentle at low
+speeds and at most RAMP_ACCEL (mm/s^2 of motor travel) at high speeds,
+and the range is split into several ramps that fit in `max_distance`.
+`RAMP=0` measures at a series of constant speeds instead. It reports the
+strongest vibration per harmonic and direction, and writes all
+measurements to `motor_harmonics_<stepper>_<name>.csv` in `output_dir`
+(default `/tmp`). With `GRAPH=1` (default from the `graph` config option)
+it also saves a PNG graph next to it. Speeds and acceleration are in mm/s
+of motor travel. X and Y must be homed.
+
+### [phase_stepping]
+
+The following command is available when a
+[phase_stepping config section](Config_Reference.md#phase_stepping)
+is enabled (also see the [phase stepping guide](Phase_Stepping.md)).
+
+#### PHASE_STEPPING_ENABLE
+`PHASE_STEPPING_ENABLE STEPPER=<config_name> [ENABLE=<0|1>]`: Switch
+the stepper to phase stepping (`ENABLE=1`, the default) or back to step
+pulses. The stepper must be enabled and at rest.
+
+#### PHASE_STEPPING_SET_CORRECTION
+`PHASE_STEPPING_SET_CORRECTION STEPPER=<config_name> [HARMONIC=<n>
+MAG=<radians> [PHASE=<radians>]] [DIRECTION=<forward|backward|both>]
+[SAVE=<0|1>]`: Set (or with `MAG=0` remove) the coil angle correction of
+one harmonic, the same at every speed, and report the corrections in
+use. `SAVE=1` stores them for `SAVE_CONFIG`.
+
+#### PHASE_STEPPING_STEP_TEST
+`PHASE_STEPPING_STEP_TEST STEPPER=<config_name> [DISTANCE=<mm>]`: Moves
+the stepper forward and back with step pulses, first normally and then
+with the driver in direct mode, and reports how the driver's microstep
+counter followed. The motor should only move the first time.
+
+#### PHASE_STEPPING_TEST
+`PHASE_STEPPING_TEST STEPPER=<config_name> [DISTANCE=<mm>]
+[VELOCITY=<mm/s>] [ACCEL=<mm/s^2>] [AMPLITUDE=<16-255>]
+[BUS_LOAD=<0|1>]`: Switches the stepper's driver to direct mode, moves
+the motor forward by DISTANCE (default 10) and back again by setting its
+coil currents from the micro-controller, and switches the driver back.
+It reports the update timing on the micro-controller and whether the
+motor returned to its start phase. `BUS_LOAD=1` reads driver registers
+during the move to test sharing of the SPI bus. Distances and speeds are
+in mm of motor travel. X and Y must be homed and the motor enabled.
+
 ### [pid_calibrate]
 
 The pid_calibrate module is automatically loaded if a heater is defined
