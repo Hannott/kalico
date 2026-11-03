@@ -54,8 +54,15 @@ status_led_driver::read_u8_into(uint8_t reg, uint8_t &out) {
 
 bool
 status_led_driver::write_color(color_t color) {
-    return write_u8(0x18, color.r) && write_u8(0x19, color.g) &&
-           write_u8(0x1A, color.b);
+    // Called every 10 ms from the heater task; skip the three I2C writes
+    // when nothing changed so the IR readout and PID loop aren't delayed.
+    if (this->last_written && *this->last_written == color)
+        return true;
+    bool ok = write_u8(0x18, color.r) && write_u8(0x19, color.g) &&
+              write_u8(0x1A, color.b);
+    if (ok)
+        this->last_written = color;
+    return ok;
 }
 
 void
@@ -91,10 +98,11 @@ pattern_executor_t::sample() {
 
     if (this->pattern.breathing_freq != 0.0f) {
         auto tf = (float)t * TICK_RATE;
-        auto scale =
-            (sin(2.0 * std::numbers::pi * tf * this->pattern.breathing_freq) +
-             1.0) *
-            0.5;
+        // Single-precision keeps this on the M4F FPU instead of soft-float
+        auto scale = (sinf(2.0f * std::numbers::pi_v<float> * tf *
+                           this->pattern.breathing_freq) +
+                      1.0f) *
+                     0.5f;
         color = color.scale(scale);
     }
 
