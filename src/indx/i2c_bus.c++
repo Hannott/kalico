@@ -50,6 +50,10 @@ i2c_wait(SercomI2cm *si) {
         if (intflag & SERCOM_I2CM_INTFLAG_ERROR) {
             return false;
         }
+        // A NACK sets MB together with RXNACK, not ERROR
+        if (si->STATUS.reg & SERCOM_I2CM_STATUS_RXNACK) {
+            return false;
+        }
         return true;
     }
     output("i2c timeout");
@@ -86,13 +90,20 @@ noinline static bool
 i2c_recv(SercomI2cm *si, uint8_t *buffer, size_t len) {
     while (len--) {
         auto deadline = timer_read_time() + timer_from_us(500);
-        while (!(si->INTFLAG.bit.SB) &&
-               timer_is_before(timer_read_time(), deadline))
-            ;
-        if (!(si->INTFLAG.bit.SB)) {
-            i2c_end(si);
-            shutdown("timeout");
-            return false;
+        for (;;) {
+            uint32_t intflag = si->INTFLAG.reg;
+            if (intflag & SERCOM_I2CM_INTFLAG_SB)
+                break;
+            // A NACKed read address sets MB instead of SB
+            if (intflag & SERCOM_I2CM_INTFLAG_MB) {
+                i2c_end(si);
+                return false;
+            }
+            if (!timer_is_before(timer_read_time(), deadline)) {
+                output("i2c timeout");
+                i2c_end(si);
+                return false;
+            }
         }
 
         if (len) {
