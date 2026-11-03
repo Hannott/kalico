@@ -10,7 +10,7 @@ extern "C" {
 
 i2c_bus::i2c_bus(SercomI2cm *sercom, uint32_t sercom_gclk, uint32_t sercom_id)
     : si(sercom) {
-    enable_pclock(SERCOM4_GCLK_ID_CORE, ID_SERCOM4);
+    enable_pclock(sercom_gclk, sercom_id);
 
     // Reset and disable
     si->CTRLA.bit.SWRST = 1;
@@ -21,7 +21,7 @@ i2c_bus::i2c_bus(SercomI2cm *sercom, uint32_t sercom_gclk, uint32_t sercom_id)
     si->CTRLA.reg = SERCOM_I2CM_CTRLA_LOWTOUTEN |
                     SERCOM_I2CM_CTRLA_INACTOUT(3) |
                     SERCOM_I2CM_CTRLA_SPEED(0x0) | SERCOM_I2CM_CTRLA_MODE(0x5);
-    uint32_t pfreq = get_pclock_frequency(SERCOM4_GCLK_ID_CORE);
+    uint32_t pfreq = get_pclock_frequency(sercom_gclk);
     uint32_t baud = (pfreq / 400000 - 10 - pfreq * 125 / 1000000000) / 2;
     si->BAUD.reg = baud;
 
