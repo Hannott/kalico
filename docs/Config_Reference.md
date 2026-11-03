@@ -2513,7 +2513,7 @@ accel_chip:
 #   must be provided.
 #point:
 #   An X, Y, Z position to run the test around. The default is the
-#   middle of the bed at the current height.
+#   current toolhead position.
 #speed_min: 30
 #speed_max: 160
 #speed_step: 5
@@ -2539,14 +2539,8 @@ accel_chip:
 #move_speed: 50
 #   The speed (in mm/s) of moves between tests. The default is 50.
 #harmonics: 1, 2, 3, 4
-#   The harmonics of the electrical frequency to measure and calibrate.
-#   The default is 1, 2, 3, 4.
-#belt_pitch: 2.0
-#   The tooth pitch of the belt the motor drives, in mm. The belt's
-#   tooth meshing vibrates at a frequency near the motor's harmonics,
-#   and is fitted out of the measurements so that it does not count as
-#   motor vibration. Set to 0 for a motor without a belt. The default
-#   is 2.0 (GT2).
+#   The harmonics of the electrical frequency to measure. The default
+#   is 1, 2, 3, 4.
 #graph: False
 #   Whether MEASURE_MOTOR_HARMONICS and PHASE_STEPPING_CALIBRATE also
 #   save a PNG graph of their measurements. Requires matplotlib in the
@@ -2582,12 +2576,8 @@ direct mode (TMC2130, TMC2160, TMC5160, TMC2240). See the
 #   Coil angle corrections that cancel the motor's own position error,
 #   as space separated harmonic:magnitude:phase entries (magnitude and
 #   phase in radians of electrical angle), one set per direction of
-#   motion. A harmonic may instead have two entries with a fourth part,
-#   the motor speed in mm/s each applies at: between the two speeds the
-#   correction follows the speed linearly, outside them it holds the
-#   nearer entry. All such entries of a stepper must use the same two
-#   speeds. PHASE_STEPPING_CALIBRATE finds and stores the corrections.
-#   The default is no correction.
+#   motion. PHASE_STEPPING_CALIBRATE finds and stores them. The default
+#   is no correction.
 ```
 
 ## Config file helpers

@@ -68,15 +68,7 @@ Harmonics are only measured up to 40% of the accelerometer's sample
 rate (640 Hz for a LIS2DW at 1600 Hz), because accelerometers filter
 out the band close to half their sample rate.
 
-On a belt driven axis the belt's teeth mesh with the pulleys at a
-frequency close to the motor's harmonics (with a 20 tooth pulley, at
-0.4 times the electrical frequency and its multiples). The belt orders
-are fitted together with the harmonics so that they do not count as
-motor vibration; `belt_pitch` in the config tells the module the belt.
-
-All measurements are written to a CSV file, with the phase of each
-harmonic relative to the motor's electrical angle at the test point in
-the last column. Graph it with:
+All measurements are written to a CSV file. Graph it with:
 
 ```
 ~/klippy-env/bin/python ~/klipper/scripts/graph_motor_harmonics.py /tmp/motor_harmonics_stepper_x_<name>.csv -o /tmp/motor_harmonics.png

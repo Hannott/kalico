@@ -17,10 +17,6 @@ import numpy as np
 # Only trust harmonics well below Nyquist: accelerometers low-pass filter
 # their output, which attenuates the band close to half the sample rate.
 MAX_FREQ_RATIO = 0.4
-# A calibration compares measurements made with the same accelerometer, so
-# its filter's gain and phase cancel and only aliasing matters, which a
-# demodulation at one order does not pick up from the band above Nyquist.
-CALIBRATION_FREQ_RATIO = 0.47
 MIN_WINDOW_CYCLES = 5
 MIN_WINDOW_SAMPLES = 64
 MIN_PEAK_SNR = 3.0
@@ -29,31 +25,14 @@ MIN_PEAK_SNR = 3.0
 RAMP_WINDOW_PERIODS = 8
 # Largest speed change, relative to the speed, across one ramp window
 RAMP_WINDOW_SPAN = 0.25
-# Sinusoids fitted together must differ by this many cycles over the window
-MIN_ORDER_SEPARATION = 1.0
 
-# disp and noise_disp are displacement amplitudes (mm); phasor is the
-# complex displacement in phase with the motor's electrical angle, so that
-# measurements of the same motion can be averaged and compared coherently.
 HarmonicResult = collections.namedtuple(
-    "HarmonicResult",
-    ("harmonic", "freq", "accel", "disp", "noise_disp", "phasor"),
-    defaults=(None,),
+    "HarmonicResult", ("harmonic", "freq", "accel", "disp", "noise_disp")
 )
 # A constant acceleration part of a test move: from start_time (print time)
-# the motor moves start_speed * t + accel * t^2 / 2 in motor_dir, starting
-# start_pos (mm, positive forward) from the test's reference point.
+# the motor moves start_speed * t + accel * t^2 / 2 in motor_dir.
 Ramp = collections.namedtuple(
-    "Ramp",
-    (
-        "motor_dir",
-        "start_time",
-        "start_speed",
-        "accel",
-        "duration",
-        "start_pos",
-    ),
-    defaults=(0.0,),
+    "Ramp", ("motor_dir", "start_time", "start_speed", "accel", "duration")
 )
 
 
@@ -65,14 +44,6 @@ def plan_speeds(speed_min, speed_max, speed_step):
 def motor_travel(speed, accel, cruise_time):
     """Motor travel of one test move: accelerate, cruise, decelerate."""
     return speed * speed / accel + speed * cruise_time
-
-
-def belt_order(period, belt_pitch):
-    """Belt tooth meshing frequency as an order of the electrical frequency,
-    or None without a belt."""
-    if not belt_pitch:
-        return None
-    return period / belt_pitch
 
 
 def project_samples(samples, dir_x, dir_y):
@@ -88,18 +59,15 @@ def window_slice(times, start_time, end_time):
     return slice(lo, hi)
 
 
-def fit_orders(times, values, angle, orders):
-    """Complex amplitudes of values at several orders of a known angle
-    (radians per sample), fitted together by weighted least squares.
+def phase_amplitude(times, values, phase):
+    """Complex amplitude of values along a known phase (radians per sample).
 
-    Fitting the orders together keeps a strong neighbour from leaking into
-    a weak one when a window is too short to separate them in a plain
-    DFT. Uses a Hann window over the sample times, so windows need not be
-    a whole number of periods. Each sample is weighted by the time it
-    covers, capped at the typical sample interval so that the samples next
-    to a dropped accelerometer batch do not stand in for the whole gap.
-    For values = A*cos(o*angle + phi) it returns about A*exp(1j*phi) for
-    order o, also when the angle does not advance at a constant rate.
+    Uses a Hann window over the sample times, so windows need not be a
+    whole number of periods. Each sample is weighted by the time it covers,
+    capped at the typical sample interval so that the samples next to a
+    dropped accelerometer batch do not stand in for the whole gap.
+    For values = A*cos(phase + phi) it returns about A*exp(1j*phi), also
+    when the phase does not advance at a constant rate.
     """
     t = times - times[0]
     duration = t[-1]
@@ -107,24 +75,11 @@ def fit_orders(times, values, angle, orders):
     nominal = np.median(intervals)
     covered = np.minimum(intervals, nominal)
     spacing = 0.5 * (np.append(covered, 0.0) + np.insert(covered, 0, 0.0))
-    weight = (0.5 - 0.5 * np.cos(2.0 * math.pi * t / duration)) * spacing
-    root = np.sqrt(weight)
-    columns = [np.ones_like(t)]
-    for order in orders:
-        columns.append(np.cos(order * angle))
-        columns.append(np.sin(order * angle))
-    design = np.column_stack(columns) * root[:, None]
-    coef = np.linalg.lstsq(design, values * root, rcond=None)[0]
-    return {
-        order: complex(coef[1 + 2 * i], -coef[2 + 2 * i])
-        for i, order in enumerate(orders)
-    }
-
-
-def phase_amplitude(times, values, phase):
-    """Complex amplitude of values along a known phase (radians per
-    sample); see fit_orders()."""
-    return fit_orders(times, values, phase, [1.0])[1.0]
+    window = (0.5 - 0.5 * np.cos(2.0 * math.pi * t / duration)) * spacing
+    centered = values - np.sum(window * values) / np.sum(window)
+    return (
+        2.0 * np.sum(window * centered * np.exp(-1j * phase)) / np.sum(window)
+    )
 
 
 def harmonic_amplitude(times, values, freq, t_ref=None):
@@ -138,66 +93,52 @@ def _accel_to_disp(accel, freq):
     return accel / (2.0 * math.pi * freq) ** 2
 
 
-def _choose_orders(harmonic, harmonics, belt, periods):
-    """Orders to fit together with harmonic in a window of so many
-    electrical periods: all harmonics, the belt tooth orders within an
-    order of harmonic that the window separates from the harmonics, and
-    two noise orders near harmonic that are separated from everything.
-    Returns (orders, noise orders)."""
-    min_gap = MIN_ORDER_SEPARATION / periods
+def analyze_window(times, accel, speed, period, harmonics):
+    """Measure each harmonic of one constant-speed window.
 
-    def separated(order, others):
-        return all(abs(order - o) >= min_gap for o in others)
+    Returns a HarmonicResult per harmonic. accel is in mm/s^2; disp and
+    noise_disp are displacement amplitudes in mm. noise_disp is the mean
+    level at the half orders either side of the harmonic (h-0.5, h+0.5),
+    which no motor harmonic falls on. Harmonics that the window cannot
+    resolve have accel, disp and noise_disp set to None.
+    """
+    count = len(times)
+    duration = times[-1] - times[0] if count > 1 else 0.0
+    sample_rate = (count - 1) / duration if duration > 0.0 else 0.0
+    max_freq = MAX_FREQ_RATIO * sample_rate
+    base_freq = speed / period
 
-    orders = sorted(set(harmonics) | {harmonic})
-    if belt:
-        for k in range(1, int((harmonic + 1.0) / belt) + 1):
-            order = k * belt
-            if abs(order - harmonic) < 1.0 and separated(order, orders):
-                orders.append(order)
-    noise = []
-    for side in (-1.0, 1.0):
-        for shift in (0.5, 0.4, 0.6, 0.3, 0.7):
-            order = harmonic + side * shift
-            if order > 0.0 and separated(order, orders + noise):
-                noise.append(order)
-                break
-    return orders + noise, noise
+    def resolvable(freq):
+        return (
+            count >= MIN_WINDOW_SAMPLES
+            and freq * duration >= MIN_WINDOW_CYCLES
+            and freq <= max_freq
+        )
 
-
-def _unresolved(harmonics, speed, period):
-    return [
-        HarmonicResult(h, h * speed / period, None, None, None)
-        for h in harmonics
-    ]
-
-
-def analyze_window(
-    times,
-    accel,
-    speed,
-    period,
-    harmonics,
-    belt=None,
-    max_freq_ratio=MAX_FREQ_RATIO,
-):
-    """Measure each harmonic of one constant-speed window; the phasors are
-    relative to the first sample. See analyze_ramp()."""
-    if len(times) < 2:
-        return _unresolved(harmonics, speed, period)
-    ramp = Ramp(1, times[0], speed, 0.0, times[-1] - times[0])
-    rows = analyze_ramp(
-        times,
-        accel,
-        ramp,
-        period,
-        harmonics,
-        [speed],
-        0.0,
-        belt,
-        max_freq_ratio,
-    )
-    return [res for _, _, res in rows]
+    results = []
+    for harmonic in harmonics:
+        freq = harmonic * base_freq
+        if not resolvable(freq):
+            results.append(HarmonicResult(harmonic, freq, None, None, None))
+            continue
+        amp = abs(harmonic_amplitude(times, accel, freq))
+        noise_freqs = [
+            (harmonic + offset) * base_freq
+            for offset in (-0.5, 0.5)
+            if resolvable((harmonic + offset) * base_freq)
+        ]
+        noise = None
+        if noise_freqs:
+            noise_amp = sum(
+                abs(harmonic_amplitude(times, accel, f)) for f in noise_freqs
+            ) / len(noise_freqs)
+            noise = _accel_to_disp(noise_amp, freq)
+        results.append(
+            HarmonicResult(
+                harmonic, freq, amp, _accel_to_disp(amp, freq), noise
+            )
+        )
+    return results
 
 
 def plan_ramps(speed_min, speed_max, period, limits, max_travel, settle):
@@ -249,100 +190,64 @@ def ramp_travel(v1, v2, ramp_accel, accel):
     )
 
 
-def analyze_ramp(
-    times,
-    accel,
-    ramp,
-    period,
-    harmonics,
-    speeds,
-    speed_step,
-    belt=None,
-    max_freq_ratio=MAX_FREQ_RATIO,
-):
+def analyze_ramp(times, accel, ramp, period, harmonics, speeds, speed_step):
     """Measure each harmonic around each of speeds that the ramp passes.
 
     Demodulates against the motor's electrical angle, which the planned
     motion gives at every sample, so the frequency may change during the
-    window, and the phasors of all windows of a test refer to the same
-    angle. A window spans speed_step of the ramp where the ramp has room
+    window. A window spans speed_step of the ramp where the ramp has room
     for it, and at least MIN_WINDOW_CYCLES cycles of the harmonic and
-    RAMP_WINDOW_PERIODS electrical periods; a ramp without acceleration
-    (a constant speed pass) is one window. The other harmonics, the belt
-    tooth orders (belt, as an order of the electrical frequency) and the
-    noise orders are fitted together with the harmonic. Harmonics whose
-    window does not fit in the ramp, or whose frequency is above
-    max_freq_ratio of the sample rate, get None. Returns (speed,
-    motor_dir, result) rows.
+    RAMP_WINDOW_PERIODS electrical periods; harmonics whose window does not
+    fit in the ramp get None. Returns (speed, motor_dir, result) rows
+    with analyze_window() results.
     """
     a = ramp.accel
     rows = []
     for speed in speeds:
-        if a:
-            t_center = (speed - ramp.start_speed) / a
-        elif abs(speed - ramp.start_speed) > 1e-6:
-            continue
-        else:
-            t_center = 0.5 * ramp.duration
+        t_center = (speed - ramp.start_speed) / a
         if not 0.0 <= t_center <= ramp.duration:
             continue
         base_freq = speed / period
         results = []
         for harmonic in harmonics:
             freq = harmonic * base_freq
-            needed = 0.5 * MIN_WINDOW_CYCLES / freq
+            # Cover speed_step where the ramp leaves room for it
+            needed = 0.5 * max(
+                MIN_WINDOW_CYCLES / freq, RAMP_WINDOW_PERIODS / base_freq
+            )
             room = min(t_center, ramp.duration - t_center)
-            if a:
-                # Cover speed_step where the ramp leaves room for it
-                needed = max(needed, 0.5 * RAMP_WINDOW_PERIODS / base_freq)
-                half = max(needed, min(0.5 * speed_step / abs(a), room))
-            else:
-                half = room
+            half = max(needed, min(0.5 * speed_step / abs(a), room))
             lo, hi = t_center - half, t_center + half
             sl = window_slice(times, ramp.start_time + lo, ramp.start_time + hi)
             count = sl.stop - sl.start
-            if (
-                half < needed
-                or lo < 0.0
-                or hi > ramp.duration
-                or count < MIN_WINDOW_SAMPLES
-            ):
+            if lo < 0.0 or hi > ramp.duration or count < MIN_WINDOW_SAMPLES:
                 results.append(HarmonicResult(harmonic, freq, None, None, None))
                 continue
             win_times = times[sl]
-            sample_rate = (count - 1) / (win_times[-1] - win_times[0])
-            max_freq = max_freq_ratio * sample_rate
-            if freq > max_freq:
+            if freq > MAX_FREQ_RATIO * (count - 1) / (
+                win_times[-1] - win_times[0]
+            ):
                 results.append(HarmonicResult(harmonic, freq, None, None, None))
                 continue
             t = win_times - ramp.start_time
-            pos = ramp.start_pos + ramp.motor_dir * (
-                ramp.start_speed * t + 0.5 * a * t * t
+            angle = (
+                2.0
+                * math.pi
+                * (ramp.start_speed * t + 0.5 * a * t * t)
+                / period
             )
-            angle = 2.0 * math.pi * pos / period
-            orders, noise_orders = _choose_orders(
-                harmonic, harmonics, belt, 2.0 * half * base_freq
+            amp = abs(phase_amplitude(win_times, accel[sl], harmonic * angle))
+            noise_amp = 0.5 * sum(
+                abs(phase_amplitude(win_times, accel[sl], order * angle))
+                for order in (harmonic - 0.5, harmonic + 0.5)
             )
-            orders = [o for o in orders if o * base_freq <= max_freq]
-            noise_orders = [o for o in noise_orders if o in orders]
-            amps = fit_orders(win_times, accel[sl], angle, orders)
-            amp = amps[harmonic]
-            noise = None
-            if noise_orders:
-                noise_amp = sum(abs(amps[o]) for o in noise_orders) / len(
-                    noise_orders
-                )
-                noise = _accel_to_disp(noise_amp, freq)
-            # The acceleration of a displacement D*cos(h*angle) is
-            # -omega^2 * D * cos(h*angle)
             results.append(
                 HarmonicResult(
                     harmonic,
                     freq,
-                    abs(amp),
-                    _accel_to_disp(abs(amp), freq),
-                    noise,
-                    -_accel_to_disp(amp, freq),
+                    amp,
+                    _accel_to_disp(amp, freq),
+                    _accel_to_disp(noise_amp, freq),
                 )
             )
         rows.extend((speed, ramp.motor_dir, res) for res in results)
@@ -351,10 +256,9 @@ def analyze_ramp(
 
 def merge_rows(rows):
     """Average rows of the same speed, direction and harmonic, such as from
-    ramps up and down, whose lags behind the sweep cancel; the phasors are
-    averaged coherently. Results that could not be measured (a window not
-    fitting in one of two overlapping ramps) are left out; a speed none
-    measured stays None."""
+    ramps up and down, whose lags behind the sweep cancel. Results that
+    could not be measured (a window not fitting in one of two overlapping
+    ramps) are left out; a speed none measured stays None."""
     groups = collections.OrderedDict()
     for speed, motor_dir, res in rows:
         groups.setdefault((speed, motor_dir, res.harmonic), []).append(res)
@@ -365,7 +269,6 @@ def merge_rows(rows):
             merged.append((speed, motor_dir, results[0]))
             continue
         n = float(len(valid))
-        phasors = [r.phasor for r in valid if r.phasor is not None]
         merged.append(
             (
                 speed,
@@ -376,7 +279,6 @@ def merge_rows(rows):
                     sum(r.accel for r in valid) / n,
                     sum(r.disp for r in valid) / n,
                     sum(r.noise_disp for r in valid) / n,
-                    sum(phasors) / len(phasors) if phasors else None,
                 ),
             )
         )
@@ -405,3 +307,95 @@ def peak_per_harmonic(rows, min_snr=MIN_PEAK_SNR):
         if key not in peaks or result.disp > peaks[key][2].disp:
             peaks[key] = row
     return peaks
+
+
+def estimate_correction(r0, r_real, r_imag, c0, delta):
+    """One step towards the correction that cancels a harmonic.
+
+    The vibration at a harmonic responds linearly to a small change of its
+    correction c (complex: magnitude * exp(1j * phase)): r(c) = r0 + G*(c -
+    c0). r_real and r_imag are measured at c0 + delta and c0 + 1j*delta.
+    Returns (new correction, G, nonlinearity), where nonlinearity compares
+    the two estimates of G.
+    """
+    g_real = (r_real - r0) / delta
+    g_imag = (r_imag - r0) / (1j * delta)
+    gain = 0.5 * (g_real + g_imag)
+    if abs(gain) == 0.0:
+        return c0, gain, float("inf")
+    nonlinearity = abs(g_real - g_imag) / abs(gain)
+    return c0 - r0 / gain, gain, nonlinearity
+
+
+def pick_calibration_speeds(rows, harmonic, count, min_snr=5.0, min_disp=1e-4):
+    """Up to count speeds where a harmonic vibrates most in both directions
+    (above min_disp in mm), kept apart so that they cover its peaks."""
+    by_speed = {}
+    for speed, motor_dir, res in rows:
+        if res.harmonic != harmonic or res.disp is None:
+            continue
+        floor = min_disp
+        if res.noise_disp is not None:
+            floor = max(floor, min_snr * res.noise_disp)
+        if res.disp >= floor:
+            by_speed.setdefault(speed, {})[motor_dir] = res.disp
+    usable = {s: min(d.values()) for s, d in by_speed.items() if len(d) == 2}
+    if not usable:
+        return []
+    gap = (max(usable) - min(usable)) / (2.0 * count)
+    picked = []
+    for speed in sorted(usable, key=lambda s: (-usable[s], s)):
+        if len(picked) == count:
+            break
+        if all(abs(speed - p) >= gap for p in picked):
+            picked.append(speed)
+    return sorted(picked)
+
+
+def _weighted_step(c, vib, gains, weights):
+    num = sum(weights[s] * gains[s].conjugate() * vib[s] for s in vib)
+    den = sum(weights[s] * abs(gains[s]) ** 2 for s in vib)
+    return c - num / den if den else c
+
+
+def _minimax_step(c, vib, gains, iterations=100):
+    """Correction that leaves the least worst vibration over all speeds,
+    predicted from vibration vib at correction c (Lawson's algorithm:
+    least squares, reweighted towards the speeds left worst)."""
+    weights = dict.fromkeys(vib, 1.0)
+    step = _weighted_step(c, vib, gains, weights)
+    for _ in range(iterations):
+        left = {
+            s: weights[s] * abs(vib[s] + gains[s] * (step - c)) for s in vib
+        }
+        total = sum(left.values())
+        if not total:
+            break
+        weights = {s: w / total for s, w in left.items()}
+        step = _weighted_step(c, vib, gains, weights)
+    return step
+
+
+def multi_speed_correction(d0, d_real, d_imag, c0, delta):
+    """Correction that best cancels a harmonic over several speeds.
+
+    Each argument d* maps speed to the complex vibration measured with the
+    correction at c0, c0 + delta and c0 + 1j*delta. Every speed responds
+    linearly but differently, so a single correction minimises the worst
+    vibration left at any of them. Returns (correction, gains).
+    """
+    gains = {
+        s: 0.5
+        * ((d_real[s] - d0[s]) / delta + (d_imag[s] - d0[s]) / (1j * delta))
+        for s in d0
+    }
+    return _minimax_step(c0, d0, gains), gains
+
+
+def refine_correction(c, vib, gains):
+    """Step from correction c, which gave vibration vib."""
+    return _minimax_step(c, vib, gains)
+
+
+def worst_vibration(vib):
+    return max(abs(v) for v in vib.values())

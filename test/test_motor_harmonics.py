@@ -1,5 +1,5 @@
 # Tests for motor_harmonics.py: single-motor move directions and the
-# harmonic analysis of constant-speed and ramped accelerometer windows.
+# harmonic analysis of constant-speed accelerometer windows.
 import math
 import os
 import sys
@@ -144,6 +144,37 @@ def test_peak_per_harmonic_picks_largest_per_direction():
     assert (4, -1) not in peaks
 
 
+def test_estimate_correction_finds_the_cancelling_correction():
+    target = 0.031 * np.exp(1j * 2.2)
+    gain = 4000.0 * np.exp(-1j * 0.7)
+
+    def vibration(c):
+        return gain * (c - target)
+
+    c0 = 0.0 + 0.0j
+    new, est_gain, nonlinearity = mh.estimate_correction(
+        vibration(c0), vibration(c0 + 0.02), vibration(c0 + 0.02j), c0, 0.02
+    )
+    assert new == pytest.approx(target)
+    assert est_gain == pytest.approx(gain)
+    assert nonlinearity == pytest.approx(0.0, abs=1e-9)
+
+
+def test_pick_calibration_speed_needs_both_directions():
+    def res(disp, noise=0.01):
+        return mh.HarmonicResult(2, 100.0, 1.0, disp, noise)
+
+    rows = [
+        (20.0, 1, res(5.0)),
+        (20.0, -1, res(0.02)),  # backward barely above noise
+        (40.0, 1, res(3.0)),
+        (40.0, -1, res(2.8)),
+        (60.0, 1, res(9.0)),  # backward missing
+    ]
+    assert mh.pick_calibration_speeds(rows, 2, 1) == [40.0]
+    assert mh.pick_calibration_speeds(rows, 4, 1) == []
+
+
 def test_coherent_amplitude_keeps_phase_relative_to_reference():
     times = np.arange(10.0, 10.5, 1.0 / SAMPLE_RATE)
     values = 2.0 * np.cos(2.0 * math.pi * 80.0 * (times - 10.0) + 0.9)
@@ -151,6 +182,74 @@ def test_coherent_amplitude_keeps_phase_relative_to_reference():
     amp = mh.harmonic_amplitude(late, values[100:], 80.0, t_ref=10.0)
     assert abs(amp) == pytest.approx(2.0, rel=0.02)
     assert np.angle(amp) == pytest.approx(0.9, abs=0.02)
+
+
+def _linear(gains, targets):
+    """Vibration per speed for a correction c: gain * (c - target)."""
+    return lambda c: {s: gains[s] * (c - targets[s]) for s in gains}
+
+
+def test_multi_speed_correction_finds_a_shared_optimum():
+    gains = {20.0: 3e-2 * np.exp(1j * 0.4), 60.0: 8e-3 * np.exp(-1j * 2.0)}
+    target = 0.025 * np.exp(1j * 1.1)
+    vib = _linear(gains, {s: target for s in gains})
+    c0 = 0.0j
+    new, est_gains = mh.multi_speed_correction(
+        vib(c0), vib(c0 + 0.02), vib(c0 + 0.02j), c0, 0.02
+    )
+    assert new == pytest.approx(target)
+    for s in gains:
+        assert est_gains[s] == pytest.approx(gains[s])
+
+
+def test_multi_speed_correction_minimises_the_worst_speed():
+    # The best correction differs per speed, as when the load angle grows,
+    # and one speed vibrates far more than the others
+    gains = {s: 1e-2 * np.exp(1j * 0.3 * s / 10.0) for s in (10.0, 30.0, 50.0)}
+    gains[50.0] *= 5.0
+    targets = {
+        10.0: 0.03 * np.exp(1j * 0.0),
+        30.0: 0.03 * np.exp(1j * 0.6),
+        50.0: 0.03 * np.exp(1j * 1.2),
+    }
+    vib = _linear(gains, targets)
+    c0 = 0.0j
+    d0 = vib(c0)
+    new, est_gains = mh.multi_speed_correction(
+        d0, vib(c0 + 0.02), vib(c0 + 0.02j), c0, 0.02
+    )
+    worst = mh.worst_vibration(vib(new))
+    grid = np.linspace(-0.05, 0.05, 201)
+    best_on_grid = min(
+        mh.worst_vibration(vib(complex(re, im))) for re in grid for im in grid
+    )
+    assert worst <= best_on_grid * 1.001
+    assert worst < 0.25 * mh.worst_vibration(d0)
+    # A step from the optimum stays there
+    assert mh.refine_correction(new, vib(new), est_gains) == (
+        pytest.approx(new, abs=1e-6)
+    )
+
+
+def test_pick_calibration_speeds_covers_the_peaks():
+    def res(disp):
+        return mh.HarmonicResult(2, 100.0, 1.0, disp, 1e-5)
+
+    # Two resonance peaks over a slope, quiet above 110 mm/s
+    level = {s: 1e-3 * (1.0 - s / 200.0) for s in range(30, 161, 5)}
+    level[60] = level[65] = 8e-3
+    level[70] = 6e-3
+    level[95] = 4e-3
+    for s in range(115, 161, 5):
+        level[s] = 1e-6
+    rows = []
+    for speed, disp in level.items():
+        rows += [(float(speed), 1, res(disp)), (float(speed), -1, res(disp))]
+    picked = mh.pick_calibration_speeds(rows, 2, 4)
+    assert picked == [30.0, 60.0, 70.0, 95.0]
+    assert mh.pick_calibration_speeds(rows, 2, 1) == [60.0]
+    assert len(mh.pick_calibration_speeds(rows, 2, 20)) == 17
+    assert mh.pick_calibration_speeds(rows, 4, 4) == []
 
 
 def _synthetic_ramp(ramp, disp_by_harmonic, noise=0.0):
@@ -205,8 +304,8 @@ def test_analyze_ramp_skips_speeds_it_cannot_resolve():
 
 
 def test_merge_rows_averages_ramps_up_and_down():
-    a = mh.HarmonicResult(2, 75.0, 10.0, 2e-3, 1e-5, 2e-3j)
-    b = mh.HarmonicResult(2, 75.0, 20.0, 4e-3, 3e-5, -4e-3j)
+    a = mh.HarmonicResult(2, 75.0, 10.0, 2e-3, 1e-5)
+    b = mh.HarmonicResult(2, 75.0, 20.0, 4e-3, 3e-5)
     none = mh.HarmonicResult(4, 150.0, None, None, None)
     unmeasured = mh.HarmonicResult(2, 75.0, None, None, None)
     rows = [
@@ -217,11 +316,7 @@ def test_merge_rows_averages_ramps_up_and_down():
         (30.0, 1, none),
     ]
     merged = mh.merge_rows(rows)
-    assert merged[0] == (
-        30.0,
-        1,
-        mh.HarmonicResult(2, 75.0, 15.0, 3e-3, 2e-5, -1e-3j),
-    )
+    assert merged[0] == (30.0, 1, mh.HarmonicResult(2, 75.0, 15.0, 3e-3, 2e-5))
     assert merged[1] == (30.0, -1, a)
     assert merged[2][2].disp is None
 
@@ -241,132 +336,3 @@ def test_plan_ramps_covers_the_range_within_the_travel():
     assert segments[0][2] < segments[-1][2]
     with pytest.raises(ValueError):
         mh.plan_ramps(10.0, 160.0, PERIOD, (2000.0, 50.0), 5.0, 0.1)
-
-
-def _motion_samples(ramp, period, errors, noise=0.0, seed=3):
-    """Accelerometer samples of a ramp whose motor has displacement errors
-    Im(C * exp(1j * h * angle)) (mm) per harmonic h, as a correction C of
-    the coil angle would also move it."""
-    rng = np.random.default_rng(seed)
-    times = ramp.start_time + np.arange(0.0, ramp.duration, 1.0 / SAMPLE_RATE)
-    times = times + rng.uniform(-5e-5, 5e-5, len(times))
-    t = times - ramp.start_time
-    pos = ramp.start_pos + ramp.motor_dir * (
-        ramp.start_speed * t + 0.5 * ramp.accel * t * t
-    )
-    rate = 2.0 * math.pi * ramp.motor_dir * (ramp.start_speed + ramp.accel * t)
-    rate /= period
-    rate_change = 2.0 * math.pi * ramp.motor_dir * ramp.accel / period
-    angle = 2.0 * math.pi * pos / period
-    accel = rng.normal(0.0, noise, len(times)) + ramp.motor_dir * ramp.accel
-    for harmonic, c in errors.items():
-        phase = np.exp(1j * harmonic * angle)
-        accel += np.imag(
-            c * phase * (1j * harmonic * rate_change - (harmonic * rate) ** 2)
-        )
-    return times, accel
-
-
-def test_fit_orders_separates_a_close_neighbour():
-    # A belt tooth order at 0.8 next to H1 in an 8 period window: a plain
-    # DFT bin at H1 takes a large part of it, the joint fit does not.
-    speed = 50.0
-    times, accel = _synthetic_window(speed, {1: 1e-3}, duration=0.128)
-    belt = 2.0 * math.pi * 0.8 * speed / PERIOD
-    accel += 8e-3 * belt**2 * np.cos(belt * times + 0.3)
-    angle = 2.0 * math.pi * speed * (times - times[0]) / PERIOD
-    omega = 2.0 * math.pi * speed / PERIOD
-    alone = abs(mh.fit_orders(times, accel, angle, [1.0])[1.0]) / omega**2
-    joint = abs(mh.fit_orders(times, accel, angle, [0.8, 1.0])[1.0]) / omega**2
-    assert abs(alone - 1e-3) > 2e-4
-    assert joint == pytest.approx(1e-3, rel=0.05)
-
-
-def test_choose_orders_keeps_fitted_sinusoids_apart():
-    orders, noise = mh._choose_orders(1, (1, 2, 4), 0.4, 8.0)
-    # Belt orders within an order of H1; 2.0 coincides with a harmonic
-    assert orders[:3] == [1, 2, 4]
-    assert orders[3:-2] == pytest.approx([0.4, 0.8, 1.2, 1.6])
-    # The half orders 0.5 and 1.5 sit within a cycle of the belt orders 0.4
-    # and 1.6 in 8 periods, so the noise orders move away from them
-    assert noise == [0.6, 1.4]
-    for order in noise:
-        assert all(abs(order - o) >= 1.0 / 8.0 for o in orders if o != order)
-    orders, noise = mh._choose_orders(2, (2, 4), 0.4, 8.0)
-    assert orders[2:-2] == pytest.approx([1.2, 1.6, 2.4, 2.8])
-    assert noise == [1.4, 2.6]
-    orders, noise = mh._choose_orders(2, (2,), None, 20.0)
-    assert orders == [2, 1.5, 2.5]
-
-
-def test_analyze_window_fits_the_belt_order_out():
-    speed = 50.0
-    times, accel = _synthetic_window(speed, {1: 1e-3}, duration=0.128)
-    belt = 2.0 * math.pi * 0.8 * speed / PERIOD
-    accel += 8e-3 * belt**2 * np.cos(belt * times + 0.3)
-    plain = mh.analyze_window(times, accel, speed, PERIOD, (1,))[0]
-    fitted = mh.analyze_window(times, accel, speed, PERIOD, (1,), belt=0.4)[0]
-    assert abs(plain.disp - 1e-3) > 2e-4
-    assert fitted.disp == pytest.approx(1e-3, rel=0.05)
-
-
-def test_calibration_ratio_allows_higher_harmonics():
-    # H4 at 150 mm/s is 750 Hz: above 0.4 but below 0.47 of 1600 Hz
-    times, accel = _synthetic_window(150.0, {4: 1e-4})
-    plain = mh.analyze_window(times, accel, 150.0, PERIOD, (4,))[0]
-    cal = mh.analyze_window(
-        times,
-        accel,
-        150.0,
-        PERIOD,
-        (4,),
-        max_freq_ratio=mh.CALIBRATION_FREQ_RATIO,
-    )[0]
-    assert plain.disp is None
-    assert cal.disp == pytest.approx(1e-4, rel=0.05)
-
-
-@pytest.mark.parametrize("motor_dir", [1, -1])
-def test_ramps_up_and_down_give_the_same_phasor(motor_dir):
-    errors = {2: 2e-3 * np.exp(0.9j), 4: 5e-4 * np.exp(-1.4j)}
-    travel = 100.0
-    speeds = [40.0, 70.0, 100.0]
-    rows = []
-    for up in (True, False):
-        v1 = 20.0 if up else 120.0
-        a = 50.0 if up else -50.0
-        start = -motor_dir * 0.5 * travel + motor_dir * (v1 * v1 / 4000.0)
-        ramp = mh.Ramp(motor_dir, 100.0 + 5.0 * up, v1, a, 2.0, start)
-        times, accel = _motion_samples(ramp, PERIOD, errors, noise=50.0)
-        rows += mh.analyze_ramp(
-            times, accel, ramp, PERIOD, (2, 4), speeds, 2.5, belt=0.4
-        )
-    by_key = {}
-    for speed, d, res in rows:
-        by_key.setdefault((speed, res.harmonic), []).append(res.phasor)
-    for (speed, harmonic), phasors in by_key.items():
-        up, down = phasors
-        # Displacement Im(C e^{ih angle}) has the phasor -iC
-        expected = -1j * errors[harmonic]
-        assert up == pytest.approx(expected, rel=0.05, abs=2e-5)
-        assert down == pytest.approx(expected, rel=0.05, abs=2e-5)
-    merged = mh.merge_rows(rows)
-    for speed, d, res in merged:
-        assert d == motor_dir
-        assert res.phasor == pytest.approx(
-            -1j * errors[res.harmonic], rel=0.05, abs=2e-5
-        )
-
-
-def test_constant_speed_window_uses_its_start_position():
-    # The same motion measured from two windows at different positions
-    # gives the same phasor when their start positions are given
-    errors = {2: 1e-3 * np.exp(0.5j)}
-    ramp = mh.Ramp(1, 50.0, 60.0, 0.0, 1.0, -30.0)
-    times, accel = _motion_samples(ramp, PERIOD, errors)
-    first = mh.Ramp(1, 50.0, 60.0, 0.0, 0.4, -30.0)
-    second = mh.Ramp(1, 50.5, 60.0, 0.0, 0.4, 0.0)
-    a = mh.analyze_ramp(times, accel, first, PERIOD, (2,), [60.0], 0.0)[0][2]
-    b = mh.analyze_ramp(times, accel, second, PERIOD, (2,), [60.0], 0.0)[0][2]
-    assert a.phasor == pytest.approx(b.phasor, rel=0.02)
-    assert a.phasor == pytest.approx(-1j * errors[2], rel=0.02)

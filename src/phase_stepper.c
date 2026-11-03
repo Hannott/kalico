@@ -182,16 +182,9 @@ struct phase_stepper {
     uint16_t amplitude, run_amp, hold_amp;
     uint32_t hold_delay, hold_ramp, rest_ticks;
     // Motor direction (0 forward, 1 backward) and per direction angle
-    // corrections in 1/4096 of an electrical period, by phase >> 22, at
-    // the slow and at the fast end of the calibrated speed range. Between
-    // the ends the correction follows the speed linearly; outside them it
-    // holds the nearer end's value.
+    // corrections in 1/4096 of an electrical period, by phase >> 22
     uint8_t dir;
-    int8_t correction[2][2][1024];
-    // The speed (phase units per tick) up to which the slow end applies,
-    // and the scale that maps the speed above it to a 16 bit fraction of
-    // the range; 0 applies the slow end at every speed
-    uint32_t speed_lo, speed_scale;
+    int8_t correction[2][1024];
     // A full 32 bit wrap is one electrical period (4 full steps).
     uint32_t phase;
     int32_t vel, half_accel;
@@ -232,33 +225,15 @@ scaled_sine(uint32_t angle, uint32_t amp)
     return angle & 2048 ? -val : val;
 }
 
-// The motor's own position error is cancelled by shifting the current
-// angle by a correction that depends on the angle, the direction and the
-// speed, as the error of a loaded motor moves with its speed.
-static int32_t
-correction_shift(struct phase_stepper *ps)
-{
-    uint32_t index = ps->phase >> 22;
-    int32_t slow = ps->correction[ps->dir][0][index];
-    if (!ps->speed_scale)
-        return slow;
-    uint32_t speed = ps->vel < 0 ? -(uint32_t)ps->vel : (uint32_t)ps->vel;
-    if (speed <= ps->speed_lo)
-        return slow;
-    uint64_t frac = (uint64_t)(speed - ps->speed_lo) * ps->speed_scale;
-    frac >>= 32;
-    if (frac > 0xffff)
-        frac = 0xffff;
-    int32_t fast = ps->correction[ps->dir][1][index];
-    return slow + (((fast - slow) * (int32_t)frac) >> 16);
-}
-
 // Register value with 9 bit signed coil currents in bits 0-8 and 16-24,
 // the direct mode layout of Trinamic drivers.
 static uint32_t
 coil_value(struct phase_stepper *ps)
 {
-    uint32_t angle = (ps->phase >> 20) + correction_shift(ps);
+    // The motor's own position error is cancelled by shifting the current
+    // angle by a correction that depends on the angle and direction.
+    uint32_t angle = ((ps->phase >> 20)
+                      + ps->correction[ps->dir][ps->phase >> 22]);
     int32_t sin_val = scaled_sine(angle, ps->amplitude);
     int32_t cos_val = scaled_sine(angle + 1024, ps->amplitude);
     if (ps->coil_flags & PC_SWAP_COILS)
@@ -557,31 +532,17 @@ void
 command_phase_stepper_set_correction(uint32_t *args)
 {
     struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
-    uint32_t dir = args[1], end = args[2], offset = args[3], len = args[4];
-    uint8_t *data = command_decode_ptr(args[5]);
-    if (dir > 1 || end > 1
-        || offset + len > ARRAY_SIZE(ps->correction[0][0]))
+    uint32_t dir = args[1], offset = args[2], len = args[3];
+    uint8_t *data = command_decode_ptr(args[4]);
+    if (dir > 1 || offset + len > ARRAY_SIZE(ps->correction[0]))
         shutdown("Invalid phase stepper correction");
     irq_disable();
-    memcpy(&ps->correction[dir][end][offset], data, len);
+    memcpy(&ps->correction[dir][offset], data, len);
     irq_enable();
 }
 DECL_COMMAND(command_phase_stepper_set_correction,
-             "phase_stepper_set_correction oid=%c dir=%c end=%c offset=%hu"
+             "phase_stepper_set_correction oid=%c dir=%c offset=%hu"
              " data=%*s");
-
-void
-command_phase_stepper_set_correction_speed(uint32_t *args)
-{
-    struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
-    irq_disable();
-    ps->speed_lo = args[1];
-    ps->speed_scale = args[2];
-    irq_enable();
-}
-DECL_COMMAND(command_phase_stepper_set_correction_speed,
-             "phase_stepper_set_correction_speed oid=%c speed_lo=%u"
-             " scale=%u");
 
 void
 command_phase_stepper_start(uint32_t *args)
