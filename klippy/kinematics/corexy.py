@@ -202,6 +202,7 @@ class CoreXYPreciseHoming:
             "COREXY_PRECISE_HOMING_CALIBRATE",
             self.cmd_COREXY_PRECISE_HOMING_CALIBRATE,
             desc=self.cmd_COREXY_PRECISE_HOMING_CALIBRATE_help,
+            params=self.cmd_COREXY_PRECISE_HOMING_CALIBRATE_params,
         )
 
     def _handle_connect(self):
@@ -406,6 +407,9 @@ class CoreXYPreciseHoming:
     cmd_COREXY_PRECISE_HOMING_CALIBRATE_help = (
         "Measure the grid origin of the corexy precise homing"
     )
+    cmd_COREXY_PRECISE_HOMING_CALIBRATE_params = {
+        "SAMPLES": {"type": "int", "default": 3},
+    }
 
     def cmd_COREXY_PRECISE_HOMING_CALIBRATE(self, gcmd):
         samples = gcmd.get_int("SAMPLES", 3, minval=1)
