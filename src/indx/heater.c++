@@ -456,8 +456,9 @@ indx_heater_task(void) {
         return;
     }
     if (indx_heater_instance->want_update) {
-        indx_heater_instance->run();
+        // Clear before run() so a request raised during a slow run survives
         indx_heater_instance->want_update = false;
+        indx_heater_instance->run();
     }
 }
 DECL_TASK(indx_heater_task);
