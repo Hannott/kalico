@@ -332,6 +332,18 @@ conjunction with other calibration commands to store the results of
 calibration tests.
 If RESTART is set to 0, no restart will be performed !!USE WITH CAUTION!!.
 
+### [corexy_precise_homing]
+
+The following command is available when a
+[corexy_precise_homing config section](Config_Reference.md#corexy_precise_homing)
+is enabled.
+
+#### COREXY_PRECISE_HOMING_CALIBRATE
+`COREXY_PRECISE_HOMING_CALIBRATE [SAMPLES=<count>]`: Measure the grid
+origin of the machine SAMPLES times (default 3) and arrange for it to
+be written to the config file (in conjunction with the SAVE_CONFIG
+command). The X and Y axes must be homed first.
+
 ### [delayed_gcode]
 
 The following command is enabled if a

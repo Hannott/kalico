@@ -36,6 +36,7 @@
 - [`[tmcXXXX] current_change_dwell_time`](./Config_Reference.md#tmc-stepper-driver-configuration) will add a delay before homing
 - [`[stepper_X] homing_retract_dist, homing_retract_speed`](./Config_Reference.md#stepper) add a short retraction and a second homing for better accuracy
 - [`[stepper_X] min_home_dist`](./Config_Reference.md#stepper) will move away from the endstop before homing
+- [`[corexy_precise_homing]`](./Config_Reference.md#corexy_precise_homing) refines a sensorless CoreXY home by bumping the stops with one motor and snapping the result to the full-step grid
 
 ## Probes and Probing
 
