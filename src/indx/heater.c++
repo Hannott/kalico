@@ -347,6 +347,11 @@ command_indx_tune_coil(uint32_t *args) {
     if (!indx_heater_instance)
         return;
 
+    // A set target with a momentarily zero PID output would otherwise pass
+    // the coil's idle check and then fault on the next heater update.
+    if (indx_heater_instance->pid.set_point().has_value()) {
+        shutdown("INDX coil tune requested while heater target set");
+    }
     indx_heater_instance->coil_driver_inst.start_tune(args[0] != 0);
 }
 DECL_COMMAND(command_indx_tune_coil, "indx_tune_coil debug=%c");
