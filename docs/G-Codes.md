@@ -541,13 +541,36 @@ changes the active hotend.
 
 #### SET_PRESSURE_ADVANCE
 `SET_PRESSURE_ADVANCE [EXTRUDER=<config_name>]
-[ADVANCE=<pressure_advance>]
-[SMOOTH_TIME=<pressure_advance_smooth_time>]`: Set pressure advance
+[MODEL=linear|tanh|recipr] [ADVANCE=<pressure_advance>]
+[OFFSET=<nonlinear_offset>] [VELOCITY=<linearization_velocity>]
+[SMOOTH_TIME=<pressure_advance_smooth_time>]
+[TIME_OFFSET=<pressure_advance_time_offset>]`: Set pressure advance
 parameters of an extruder stepper (as defined in an
 [extruder](Config_Reference.md#extruder) or
 [extruder_stepper](Config_Reference.md#extruder_stepper) config section).
 If EXTRUDER is not specified, it defaults to the stepper defined in
-the active hotend.
+the active hotend. OFFSET and VELOCITY only apply to the non-linear
+models, see [Nonlinear Pressure Advance](Nonlinear_Pressure_Advance.md).
+
+#### PA_SOLVE
+`PA_SOLVE [EXTRUDER=<config_name>] SLOW_VELOCITY=<mm/s>
+SLOW_ADVANCE=<pressure_advance> FAST_VELOCITY=<mm/s>
+FAST_ADVANCE=<pressure_advance> [MODEL=tanh|recipr]
+[VELOCITY=<linearization_velocity>] [APPLY=1]`: Compute the
+`linear_advance` and `nonlinear_offset` of a non-linear pressure advance
+model from two linear pressure advance values: the one that looked best
+at slow velocity transitions (SLOW_ADVANCE at SLOW_VELOCITY) and the one
+that looked best at fast transitions (FAST_ADVANCE at FAST_VELOCITY),
+typically read from the left and the front face of a single linear
+pressure advance tower. The resulting model advances the same amount of
+filament as those linear values at those two velocities. MODEL defaults
+to the active model (`recipr` when the linear model is active) and
+VELOCITY to the active `linearization_velocity` (1.0 when none is set).
+The command reports the parameters, the advance curve and the matching
+SET_PRESSURE_ADVANCE command; with APPLY=1 the model is applied at once.
+It fails with a hint when the two values cannot be met with non-negative
+parameters. See the
+[tuning procedure](Nonlinear_Pressure_Advance.md#tuning-procedure).
 
 #### SET_EXTRUDER_ROTATION_DISTANCE
 `SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=<config_name>
