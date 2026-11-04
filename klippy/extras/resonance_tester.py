@@ -269,16 +269,24 @@ class ResonanceTestExecutor:
         last_v = last_t = last_freq = 0.0
         for next_t, accel, freq in test_seq:
             t_seg = next_t - last_t
-            toolhead.set_max_velocities(None, abs(accel), None, None)
-            v = last_v + accel * t_seg
-            abs_v = abs(v)
-            if abs_v < 0.000001:
-                v = abs_v = 0.0
             abs_last_v = abs(last_v)
-            v2 = v * v
             last_v2 = last_v * last_v
-            half_inv_accel = 0.5 / accel
-            d = (v2 - last_v2) * half_inv_accel
+            if abs(accel) < 0.000001:
+                v, abs_v = last_v, abs_last_v
+                if abs_v < 0.000001:
+                    toolhead.dwell(t_seg)
+                    last_t, last_freq = next_t, freq
+                    continue
+                half_inv_accel = 0.0
+                d = v * t_seg
+            else:
+                toolhead.set_max_velocities(None, abs(accel), None, None)
+                v = last_v + accel * t_seg
+                abs_v = abs(v)
+                if abs_v < 0.000001:
+                    v = abs_v = 0.0
+                half_inv_accel = 0.5 / accel
+                d = (v * v - last_v2) * half_inv_accel
             dX, dY = axis.get_point(d)
             nX = X + dX
             nY = Y + dY
@@ -366,6 +374,10 @@ class ResonanceTester:
         for chip_axis, chip_name in self.accel_chip_names:
             try:
                 chip = self.printer.lookup_object(chip_name)
+                if not hasattr(chip, "start_internal_client"):
+                    raise self.printer.config_error(
+                        "'%s' is not an accelerometer" % (chip_name,)
+                    )
                 self.accel_chips.append((chip_axis, chip))
             except self.printer.config_error as e:
                 logging.exception(
@@ -453,7 +465,16 @@ class ResonanceTester:
             return None
         parsed_chips = []
         for chip_name in accel_chips.split(","):
-            chip = self.printer.lookup_object(chip_name.strip())
+            chip_name = chip_name.strip()
+            chip = self.printer.lookup_object(chip_name, None)
+            if chip is None:
+                raise self.printer.command_error(
+                    "Name '%s' is not valid for CHIPS parameter" % (chip_name,)
+                )
+            if not hasattr(chip, "start_internal_client"):
+                raise self.printer.command_error(
+                    "'%s' is not an accelerometer" % (chip_name,)
+                )
             parsed_chips.append(chip)
         return parsed_chips
 
