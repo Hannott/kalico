@@ -337,6 +337,7 @@ class ExtruderStepper:
                 None,
                 self.cmd_default_PA_SOLVE,
                 desc=self.cmd_PA_SOLVE_help,
+                params=self.cmd_PA_SOLVE_params,
             )
         gcode.register_mux_command(
             "SET_PRESSURE_ADVANCE",
@@ -352,6 +353,7 @@ class ExtruderStepper:
             self.name,
             self.cmd_PA_SOLVE,
             desc=self.cmd_PA_SOLVE_help,
+            params=self.cmd_PA_SOLVE_params,
         )
         gcode.register_mux_command(
             "SET_EXTRUDER_ROTATION_DISTANCE",
@@ -524,6 +526,16 @@ class ExtruderStepper:
     cmd_PA_SOLVE_help = (
         "Solve non-linear pressure advance from two linear advance values"
     )
+    cmd_PA_SOLVE_params = {
+        "EXTRUDER": {"type": "string", "required": True},
+        "SLOW_VELOCITY": {"type": "float", "required": True},
+        "SLOW_ADVANCE": {"type": "float", "required": True},
+        "FAST_VELOCITY": {"type": "float", "required": True},
+        "FAST_ADVANCE": {"type": "float", "required": True},
+        "MODEL": {"type": "string", "required": False},
+        "VELOCITY": {"type": "float", "required": False},
+        "APPLY": {"type": "int", "default": 0},
+    }
 
     def cmd_default_PA_SOLVE(self, gcmd):
         for extruder_stepper in self._active_extruder_steppers(gcmd):
