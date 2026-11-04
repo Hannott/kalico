@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from klippy.kinematics import extruder
@@ -92,3 +94,14 @@ def test_rejects_fast_velocity_not_above_slow_velocity():
         extruder.solve_nonlinear_pa(
             extruder.PAReciprModel, 50.0, 0.06, 50.0, 0.02, 1.0
         )
+
+
+def test_filament_velocity_scales_with_line_cross_section():
+    filament_area = math.pi * (1.75 * 0.5) ** 2
+    # A 0.4 x 0.2 line at 150 mm/s pushes about 5 mm/s of 1.75 mm filament
+    assert extruder.filament_velocity(
+        150.0, 0.4, 0.2, filament_area
+    ) == pytest.approx(4.989, abs=1e-3)
+    assert extruder.filament_velocity(
+        150.0, 0.8, 0.2, filament_area
+    ) == pytest.approx(2 * 4.989, abs=2e-3)
