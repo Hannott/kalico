@@ -10,6 +10,11 @@ struct color_t {
     constexpr color_t(uint8_t r, uint8_t g, uint8_t b) : r(r), g(g), b(b) {}
     uint8_t r, g, b;
 
+    bool
+    operator==(const color_t &other) const {
+        return r == other.r && g == other.g && b == other.b;
+    }
+
     color_t
     scale(float scale) {
         return color_t{(uint8_t)((float)r * scale), (uint8_t)((float)g * scale),
@@ -131,6 +136,7 @@ struct status_led_driver {
     bool good;
     pattern_executor_t current_pattern;
     std::optional<color_t> override_color;
+    std::optional<color_t> last_written;
 };
 
 #endif

@@ -10,7 +10,7 @@ extern "C" {
 
 i2c_bus::i2c_bus(SercomI2cm *sercom, uint32_t sercom_gclk, uint32_t sercom_id)
     : si(sercom) {
-    enable_pclock(SERCOM4_GCLK_ID_CORE, ID_SERCOM4);
+    enable_pclock(sercom_gclk, sercom_id);
 
     // Reset and disable
     si->CTRLA.bit.SWRST = 1;
@@ -21,7 +21,7 @@ i2c_bus::i2c_bus(SercomI2cm *sercom, uint32_t sercom_gclk, uint32_t sercom_id)
     si->CTRLA.reg = SERCOM_I2CM_CTRLA_LOWTOUTEN |
                     SERCOM_I2CM_CTRLA_INACTOUT(3) |
                     SERCOM_I2CM_CTRLA_SPEED(0x0) | SERCOM_I2CM_CTRLA_MODE(0x5);
-    uint32_t pfreq = get_pclock_frequency(SERCOM4_GCLK_ID_CORE);
+    uint32_t pfreq = get_pclock_frequency(sercom_gclk);
     uint32_t baud = (pfreq / 400000 - 10 - pfreq * 125 / 1000000000) / 2;
     si->BAUD.reg = baud;
 
@@ -48,6 +48,10 @@ i2c_wait(SercomI2cm *si) {
             continue;
         }
         if (intflag & SERCOM_I2CM_INTFLAG_ERROR) {
+            return false;
+        }
+        // A NACK sets MB together with RXNACK, not ERROR
+        if (si->STATUS.reg & SERCOM_I2CM_STATUS_RXNACK) {
             return false;
         }
         return true;
@@ -86,13 +90,20 @@ noinline static bool
 i2c_recv(SercomI2cm *si, uint8_t *buffer, size_t len) {
     while (len--) {
         auto deadline = timer_read_time() + timer_from_us(500);
-        while (!(si->INTFLAG.bit.SB) &&
-               timer_is_before(timer_read_time(), deadline))
-            ;
-        if (!(si->INTFLAG.bit.SB)) {
-            i2c_end(si);
-            shutdown("timeout");
-            return false;
+        for (;;) {
+            uint32_t intflag = si->INTFLAG.reg;
+            if (intflag & SERCOM_I2CM_INTFLAG_SB)
+                break;
+            // A NACKed read address sets MB instead of SB
+            if (intflag & SERCOM_I2CM_INTFLAG_MB) {
+                i2c_end(si);
+                return false;
+            }
+            if (!timer_is_before(timer_read_time(), deadline)) {
+                output("i2c timeout");
+                i2c_end(si);
+                return false;
+            }
         }
 
         if (len) {
