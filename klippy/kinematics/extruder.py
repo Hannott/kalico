@@ -87,6 +87,9 @@ class PALinearModel:
     def enabled(self):
         return self.pressure_advance > 0.0
 
+    def advance(self, velocity):
+        return self.pressure_advance * velocity
+
     def get_pa_params(self):
         return (self.pressure_advance,)
 
@@ -142,6 +145,20 @@ class PANonLinearModel:
     def enabled(self):
         return self.linear_advance > 0.0 or self.nonlinear_offset > 0.0
 
+    def advance(self, velocity):
+        advance = self.linear_advance * velocity
+        if self.nonlinear_offset:
+            advance += self.nonlinear_offset * self.nonlinear_term(
+                velocity / self.linearization_velocity
+            )
+        return advance
+
+    @staticmethod
+    def nonlinear_term(rel_velocity):
+        # The velocity-dependent factor of nonlinear_offset; must match the
+        # model function in kin_extruder.c
+        raise NotImplementedError
+
     def get_pa_params(self):
         # The order must match the order of parameters in the
         # pressure_advance_params struct in kin_extruder.c
@@ -180,6 +197,10 @@ class PATanhModel(PANonLinearModel):
     def __init__(self, config=None):
         PANonLinearModel.__init__(self, config)
 
+    @staticmethod
+    def nonlinear_term(rel_velocity):
+        return math.tanh(rel_velocity)
+
     def get_func(self):
         ffi_main, ffi_lib = chelper.get_ffi()
         return ffi_lib.pressure_advance_tanh_model_func
@@ -191,9 +212,71 @@ class PAReciprModel(PANonLinearModel):
     def __init__(self, config=None):
         PANonLinearModel.__init__(self, config)
 
+    @staticmethod
+    def nonlinear_term(rel_velocity):
+        return 1.0 - 1.0 / (1.0 + rel_velocity)
+
     def get_func(self):
         ffi_main, ffi_lib = chelper.get_ffi()
         return ffi_lib.pressure_advance_recipr_model_func
+
+
+def solve_nonlinear_pa(
+    pa_model_class,
+    slow_velocity,
+    slow_advance,
+    fast_velocity,
+    fast_advance,
+    linearization_velocity,
+):
+    """Return (linear_advance, nonlinear_offset) of a non-linear model that
+    advances as much filament as linear pressure advance `slow_advance`
+    does at `slow_velocity` and as `fast_advance` does at `fast_velocity`.
+
+    With linearization_velocity fixed both models are linear in the two
+    unknowns, so this is a 2x2 linear solve. Raises ValueError with a
+    tuning hint when the measurements have no non-negative solution.
+    """
+    if fast_velocity <= slow_velocity:
+        raise ValueError("FAST_VELOCITY must be greater than SLOW_VELOCITY")
+    g_slow = pa_model_class.nonlinear_term(
+        slow_velocity / linearization_velocity
+    )
+    g_fast = pa_model_class.nonlinear_term(
+        fast_velocity / linearization_velocity
+    )
+    slow_total = slow_advance * slow_velocity
+    fast_total = fast_advance * fast_velocity
+    det = slow_velocity * g_fast - g_slow * fast_velocity
+    if abs(det) < 1e-9 * slow_velocity * fast_velocity:
+        raise ValueError(
+            "VELOCITY=%.3f is far above both test velocities, so the linear"
+            " and offset terms cannot be separated; lower VELOCITY"
+            % (linearization_velocity,)
+        )
+    linear_advance = (slow_total * g_fast - g_slow * fast_total) / det
+    nonlinear_offset = (
+        slow_velocity * fast_total - fast_velocity * slow_total
+    ) / det
+    if nonlinear_offset < 0.0:
+        raise ValueError(
+            "SLOW_ADVANCE is not higher than FAST_ADVANCE, so no non-linear"
+            " offset is needed; use the linear model with ADVANCE=%.6f"
+            % (fast_advance,)
+        )
+    if linear_advance < 0.0:
+        if slow_total > fast_total:
+            raise ValueError(
+                "The slow point needs more total advance (%.4f mm) than the"
+                " fast point (%.4f mm); no model reduces advance with"
+                " velocity. Lower SLOW_ADVANCE or raise FAST_ADVANCE"
+                % (slow_total, fast_total)
+            )
+        raise ValueError(
+            "VELOCITY=%.3f is too high for these measurements; lower it"
+            % (linearization_velocity,)
+        )
+    return linear_advance, nonlinear_offset
 
 
 class ExtruderStepper:
@@ -240,6 +323,14 @@ class ExtruderStepper:
                 desc=self.cmd_SET_PRESSURE_ADVANCE_help,
                 params=self.cmd_SET_PRESSURE_ADVANCE_params,
             )
+            gcode.register_mux_command(
+                "PA_SOLVE",
+                "EXTRUDER",
+                None,
+                self.cmd_default_PA_SOLVE,
+                desc=self.cmd_PA_SOLVE_help,
+                params=self.cmd_PA_SOLVE_params,
+            )
         gcode.register_mux_command(
             "SET_PRESSURE_ADVANCE",
             "EXTRUDER",
@@ -247,6 +338,14 @@ class ExtruderStepper:
             self.cmd_SET_PRESSURE_ADVANCE,
             desc=self.cmd_SET_PRESSURE_ADVANCE_help,
             params=self.cmd_SET_PRESSURE_ADVANCE_params,
+        )
+        gcode.register_mux_command(
+            "PA_SOLVE",
+            "EXTRUDER",
+            self.name,
+            self.cmd_PA_SOLVE,
+            desc=self.cmd_PA_SOLVE_help,
+            params=self.cmd_PA_SOLVE_params,
         )
         gcode.register_mux_command(
             "SET_EXTRUDER_ROTATION_DISTANCE",
@@ -353,18 +452,7 @@ class ExtruderStepper:
         self.smoother.update_extruder_kinematics(self.sk_extruder)
         return failed_shapers
 
-    cmd_SET_PRESSURE_ADVANCE_help = "Set pressure advance parameters"
-    cmd_SET_PRESSURE_ADVANCE_params = {
-        "EXTRUDER": {"type": "string", "required": True},
-        "MODEL": {"type": "string", "required": False},
-        "ADVANCE": {"type": "float", "required": False},
-        "OFFSET": {"type": "float", "required": False},
-        "VELOCITY": {"type": "float", "required": False},
-        "SMOOTH_TIME": {"type": "float", "required": False},
-        "TIME_OFFSET": {"type": "float", "required": False},
-    }
-
-    def cmd_default_SET_PRESSURE_ADVANCE(self, gcmd):
+    def _active_extruder_steppers(self, gcmd):
         extruder = self.printer.lookup_object("toolhead").get_extruder()
         extruder_steppers = extruder.get_extruder_steppers()
         if not extruder_steppers:
@@ -373,23 +461,9 @@ class ExtruderStepper:
             strapq = extruder_stepper.stepper.get_trapq()
             if strapq is not extruder.get_trapq():
                 raise gcmd.error("Unable to infer active extruder stepper")
-            extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
+        return extruder_steppers
 
-    def cmd_SET_PRESSURE_ADVANCE(self, gcmd):
-        time_offset = gcmd.get_float(
-            "TIME_OFFSET",
-            self.pressure_advance_time_offset,
-            minval=-0.2,
-            maxval=0.2,
-        )
-        pa_model_name = gcmd.get("MODEL", self.pa_model.name)
-        if pa_model_name not in self.pa_models:
-            raise gcmd.error("Invalid MODEL='%s' choice" % (pa_model_name,))
-        pa_model = self.pa_model
-        if pa_model_name != self.pa_model.name:
-            pa_model = self.pa_models[pa_model_name]()
-        pa_model.update(gcmd)
-        smoother_updated = self.smoother.update(gcmd)
+    def _apply_pa_model(self, gcmd, pa_model, time_offset, smoother_updated):
         if (
             self.pressure_advance_time_offset != time_offset
             or self.pa_enabled != pa_model.enabled()
@@ -408,6 +482,139 @@ class ExtruderStepper:
                 self.name, "%s: %s" % (self.name, (" ".join(msg)))
             )
             gcmd.respond_info("\n".join(msg), log=False)
+
+    cmd_SET_PRESSURE_ADVANCE_help = "Set pressure advance parameters"
+    cmd_SET_PRESSURE_ADVANCE_params = {
+        "EXTRUDER": {"type": "string", "required": True},
+        "MODEL": {"type": "string", "required": False},
+        "ADVANCE": {"type": "float", "required": False},
+        "OFFSET": {"type": "float", "required": False},
+        "VELOCITY": {"type": "float", "required": False},
+        "SMOOTH_TIME": {"type": "float", "required": False},
+        "TIME_OFFSET": {"type": "float", "required": False},
+    }
+
+    def cmd_default_SET_PRESSURE_ADVANCE(self, gcmd):
+        for extruder_stepper in self._active_extruder_steppers(gcmd):
+            extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
+
+    def cmd_SET_PRESSURE_ADVANCE(self, gcmd):
+        time_offset = gcmd.get_float(
+            "TIME_OFFSET",
+            self.pressure_advance_time_offset,
+            minval=-0.2,
+            maxval=0.2,
+        )
+        pa_model_name = gcmd.get("MODEL", self.pa_model.name)
+        if pa_model_name not in self.pa_models:
+            raise gcmd.error("Invalid MODEL='%s' choice" % (pa_model_name,))
+        pa_model = self.pa_model
+        if pa_model_name != self.pa_model.name:
+            pa_model = self.pa_models[pa_model_name]()
+        pa_model.update(gcmd)
+        smoother_updated = self.smoother.update(gcmd)
+        self._apply_pa_model(gcmd, pa_model, time_offset, smoother_updated)
+
+    cmd_PA_SOLVE_help = (
+        "Solve non-linear pressure advance from two linear advance values"
+    )
+    cmd_PA_SOLVE_params = {
+        "EXTRUDER": {"type": "string", "required": True},
+        "SLOW_VELOCITY": {"type": "float", "required": True},
+        "SLOW_ADVANCE": {"type": "float", "required": True},
+        "FAST_VELOCITY": {"type": "float", "required": True},
+        "FAST_ADVANCE": {"type": "float", "required": True},
+        "MODEL": {"type": "string", "required": False},
+        "VELOCITY": {"type": "float", "required": False},
+        "APPLY": {"type": "int", "default": 0},
+    }
+
+    def cmd_default_PA_SOLVE(self, gcmd):
+        for extruder_stepper in self._active_extruder_steppers(gcmd):
+            extruder_stepper.cmd_PA_SOLVE(gcmd)
+
+    def cmd_PA_SOLVE(self, gcmd):
+        slow_velocity = gcmd.get_float("SLOW_VELOCITY", above=0.0)
+        slow_advance = gcmd.get_float("SLOW_ADVANCE", minval=0.0)
+        fast_velocity = gcmd.get_float("FAST_VELOCITY", above=slow_velocity)
+        fast_advance = gcmd.get_float("FAST_ADVANCE", minval=0.0)
+        default_model = self.pa_model.name
+        if default_model == PALinearModel.name:
+            default_model = PAReciprModel.name
+        pa_model_name = gcmd.get("MODEL", default_model)
+        if (
+            pa_model_name not in self.pa_models
+            or pa_model_name == PALinearModel.name
+        ):
+            raise gcmd.error(
+                "Invalid MODEL='%s' choice, must be one of: %s"
+                % (
+                    pa_model_name,
+                    ", ".join(
+                        name
+                        for name in self.pa_models
+                        if name != PALinearModel.name
+                    ),
+                )
+            )
+        default_velocity = (
+            getattr(self.pa_model, "linearization_velocity", 0.0) or 1.0
+        )
+        linearization_velocity = gcmd.get_float(
+            "VELOCITY", default_velocity, above=0.0
+        )
+        pa_model = self.pa_models[pa_model_name]()
+        try:
+            linear_advance, nonlinear_offset = solve_nonlinear_pa(
+                type(pa_model),
+                slow_velocity,
+                slow_advance,
+                fast_velocity,
+                fast_advance,
+                linearization_velocity,
+            )
+        except ValueError as e:
+            raise gcmd.error("PA_SOLVE: %s" % (e,))
+        pa_model.linear_advance = linear_advance
+        pa_model.nonlinear_offset = nonlinear_offset
+        pa_model.linearization_velocity = linearization_velocity
+        lines = [
+            "Non-linear pressure advance matching linear %.5f at %.1f mm/s"
+            " and %.5f at %.1f mm/s"
+            % (slow_advance, slow_velocity, fast_advance, fast_velocity),
+            "pressure_advance_model: %s" % (pa_model.name,),
+            pa_model.get_msg(),
+            "Advance in mm of filament at a velocity (linear equivalent):",
+        ]
+        for velocity in (
+            0.25 * slow_velocity,
+            slow_velocity,
+            0.5 * (slow_velocity + fast_velocity),
+            fast_velocity,
+        ):
+            advance = pa_model.advance(velocity)
+            lines.append(
+                "  %6.1f mm/s: %.4f mm (%.5f)"
+                % (velocity, advance, advance / velocity)
+            )
+        if gcmd.get_int("APPLY", 0):
+            self._apply_pa_model(
+                gcmd, pa_model, self.pressure_advance_time_offset, False
+            )
+            lines.append("Applied to extruder '%s'" % (self.name,))
+        else:
+            lines.append(
+                "Apply with: SET_PRESSURE_ADVANCE EXTRUDER=%s MODEL=%s"
+                " ADVANCE=%.6f OFFSET=%.6f VELOCITY=%.6f"
+                % (
+                    self.name,
+                    pa_model.name,
+                    linear_advance,
+                    nonlinear_offset,
+                    linearization_velocity,
+                )
+            )
+        gcmd.respond_info("\n".join(lines))
 
     cmd_SET_E_ROTATION_DISTANCE_help = "Set extruder rotation distance"
     cmd_SET_E_ROTATION_DISTANCE_params = {
