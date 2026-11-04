@@ -532,6 +532,8 @@ class ExtruderStepper:
         "SLOW_ADVANCE": {"type": "float", "required": True},
         "FAST_VELOCITY": {"type": "float", "required": True},
         "FAST_ADVANCE": {"type": "float", "required": True},
+        "LINE_WIDTH": {"type": "float", "required": False},
+        "LAYER_HEIGHT": {"type": "float", "required": False},
         "MODEL": {"type": "string", "required": False},
         "VELOCITY": {"type": "float", "required": False},
         "APPLY": {"type": "int", "default": 0},
