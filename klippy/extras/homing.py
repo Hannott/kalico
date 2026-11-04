@@ -278,7 +278,7 @@ class Homing:
     def set_homed_position(self, pos):
         self.toolhead.set_position(self._fill_coord(pos))
 
-    def _set_homing_accel(self, accel, pre_homing):
+    def set_homing_accel(self, accel, pre_homing):
         if accel is None:
             return
         if pre_homing:
@@ -289,7 +289,7 @@ class Homing:
             self.toolhead.set_accel(self.saved_accel)
             self.saved_accel = None
 
-    def _set_homing_current(self, homing_axes, pre_homing):
+    def set_homing_current(self, homing_axes, pre_homing):
         print_time = self.toolhead.get_last_move_time()
         affected_rails = set()
         for axis in homing_axes:
@@ -309,7 +309,7 @@ class Homing:
         if dwell_time:
             self.toolhead.dwell(dwell_time)
 
-    def _reset_endstop_states(self, endstops):
+    def reset_endstop_states(self, endstops):
         # re-querying a tmc endstop seems to reset the state
         # otherwise it triggers almost immediately upon second home
         # this seems to be an adequate substitute for a 2 second dwell.
@@ -332,9 +332,9 @@ class Homing:
         hmove = HomingMove(self.printer, endstops)
 
         try:
-            self._set_homing_accel(hi.accel, pre_homing=True)
-            self._set_homing_current(homing_axes, pre_homing=True)
-            self._reset_endstop_states(endstops)
+            self.set_homing_accel(hi.accel, pre_homing=True)
+            self.set_homing_current(homing_axes, pre_homing=True)
+            self.reset_endstop_states(endstops)
             hmove.homing_move(homepos, hi.speed)
 
             needs_rehome = False
@@ -363,7 +363,7 @@ class Homing:
                         for rp, ad in zip(retractpos, axes_d)
                     ]
                     self.toolhead.set_position(startpos)
-                    self._reset_endstop_states(endstops)
+                    self.reset_endstop_states(endstops)
 
                     hmove = HomingMove(self.printer, endstops)
                     hmove.homing_move(homepos, hi.second_homing_speed)
@@ -397,8 +397,8 @@ class Homing:
                         ]
                         self.toolhead.move(retractpos, hi.retract_speed)
         finally:
-            self._set_homing_accel(hi.accel, pre_homing=False)
-            self._set_homing_current(homing_axes, pre_homing=False)
+            self.set_homing_accel(hi.accel, pre_homing=False)
+            self.set_homing_current(homing_axes, pre_homing=False)
 
         # Signal home operation complete
         self.toolhead.flush_step_generation()
