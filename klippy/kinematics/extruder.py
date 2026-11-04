@@ -279,6 +279,14 @@ def solve_nonlinear_pa(
     return linear_advance, nonlinear_offset
 
 
+def filament_velocity(
+    toolhead_velocity, line_width, layer_height, filament_area
+):
+    # The pressure advance models work on the velocity of the filament
+    # entering the extruder, which is what the extruder axis moves at
+    return toolhead_velocity * line_width * layer_height / filament_area
+
+
 class ExtruderStepper:
     pa_models = {
         PALinearModel.name: PALinearModel,
@@ -533,11 +541,46 @@ class ExtruderStepper:
         for extruder_stepper in self._active_extruder_steppers(gcmd):
             extruder_stepper.cmd_PA_SOLVE(gcmd)
 
+    def _get_extruder(self, gcmd):
+        extruder = None
+        if self.motion_queue:
+            extruder = self.printer.lookup_object(self.motion_queue, None)
+        if extruder is None:
+            extruder = self.printer.lookup_object("toolhead").get_extruder()
+        if not hasattr(extruder, "filament_area"):
+            raise gcmd.error(
+                "Extruder stepper '%s' is not linked to an extruder"
+                % (self.name,)
+            )
+        return extruder
+
     def cmd_PA_SOLVE(self, gcmd):
         slow_velocity = gcmd.get_float("SLOW_VELOCITY", above=0.0)
         slow_advance = gcmd.get_float("SLOW_ADVANCE", minval=0.0)
         fast_velocity = gcmd.get_float("FAST_VELOCITY", above=slow_velocity)
         fast_advance = gcmd.get_float("FAST_ADVANCE", minval=0.0)
+        extruder = self._get_extruder(gcmd)
+        line_width = gcmd.get_float(
+            "LINE_WIDTH", extruder.nozzle_diameter, above=0.0
+        )
+        pa_test = self.printer.lookup_object("pa_test", None)
+        default_layer_height = None
+        if pa_test is not None:
+            default_layer_height = pa_test.layer_height
+        layer_height = gcmd.get_float(
+            "LAYER_HEIGHT", default_layer_height, above=0.0
+        )
+        if layer_height is None:
+            raise gcmd.error(
+                "LAYER_HEIGHT must be given when no [pa_test] section"
+                " provides the tower's layer height"
+            )
+
+        def to_filament(velocity):
+            return filament_velocity(
+                velocity, line_width, layer_height, extruder.filament_area
+            )
+
         default_model = self.pa_model.name
         if default_model == PALinearModel.name:
             default_model = PAReciprModel.name
@@ -567,9 +610,9 @@ class ExtruderStepper:
         try:
             linear_advance, nonlinear_offset = solve_nonlinear_pa(
                 type(pa_model),
-                slow_velocity,
+                to_filament(slow_velocity),
                 slow_advance,
-                fast_velocity,
+                to_filament(fast_velocity),
                 fast_advance,
                 linearization_velocity,
             )
@@ -580,11 +623,22 @@ class ExtruderStepper:
         pa_model.linearization_velocity = linearization_velocity
         lines = [
             "Non-linear pressure advance matching linear %.5f at %.1f mm/s"
-            " and %.5f at %.1f mm/s"
-            % (slow_advance, slow_velocity, fast_advance, fast_velocity),
+            " and %.5f at %.1f mm/s toolhead speed (%.2f x %.2f mm line,"
+            " %.3f and %.3f mm/s of filament)"
+            % (
+                slow_advance,
+                slow_velocity,
+                fast_advance,
+                fast_velocity,
+                line_width,
+                layer_height,
+                to_filament(slow_velocity),
+                to_filament(fast_velocity),
+            ),
             "pressure_advance_model: %s" % (pa_model.name,),
             pa_model.get_msg(),
-            "Advance in mm of filament at a velocity (linear equivalent):",
+            "Advance in mm of filament at a toolhead speed"
+            " (linear equivalent):",
         ]
         for velocity in (
             0.25 * slow_velocity,
@@ -592,10 +646,10 @@ class ExtruderStepper:
             0.5 * (slow_velocity + fast_velocity),
             fast_velocity,
         ):
-            advance = pa_model.advance(velocity)
+            advance = pa_model.advance(to_filament(velocity))
             lines.append(
                 "  %6.1f mm/s: %.4f mm (%.5f)"
-                % (velocity, advance, advance / velocity)
+                % (velocity, advance, advance / to_filament(velocity))
             )
         if gcmd.get_int("APPLY", 0):
             self._apply_pa_model(

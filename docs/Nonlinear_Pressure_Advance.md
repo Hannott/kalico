@@ -47,6 +47,9 @@ In this example, the same amount of total advance occurs once the toolhead reach
 The rise at low speed is controlled by two parameters in the firmware: `nonlinear_offset` and `linearization_velocity`.
 The linear slope that occurs past the linearization velocity is controlled by `linear_advance`.
 
+All velocities in the model are filament velocities, in mm/s of filament entering the extruder, not toolhead speeds.
+For a 0.4 mm wide, 0.2 mm high line of 1.75 mm filament, 1 mm/s of filament corresponds to about 30 mm/s of toolhead speed, so a `linearization_velocity` of 1 puts the rise of the offset below typical overhang and seam speeds.
+
 To be perfectly clear, due to the implementation, they are not perfectly independent.
 The advance at low speed is affected slightly by the `linear_advance` setting, and likewise the advance at high speed is affected by the offset and linearization velocity.
 
@@ -212,6 +215,7 @@ The `PA_SOLVE` command does that computation.
 
    If both faces look best in the same band, linear pressure advance is sufficient for this filament: set `linear_advance` to that value and stop here.
 6. Run `PA_SOLVE SLOW_VELOCITY=<slow_velocity of [pa_test]> SLOW_ADVANCE=<value> FAST_VELOCITY=<fast_velocity of [pa_test]> FAST_ADVANCE=<value>`.
+   The velocities are the toolhead speeds of the tower; the command converts them to filament velocity using the nozzle diameter and the `layer_height` of `[pa_test]`, which is how the tower was printed. Pass `LINE_WIDTH` and `LAYER_HEIGHT` if the values were read from something else.
    It prints `linear_advance` and `nonlinear_offset`, the resulting advance at a few velocities, and the `SET_PRESSURE_ADVANCE` command that applies them. Put the values in your configuration and restart (or add `APPLY=1` to try them right away).
 7. Verify with a narrow offset tower: run the macro with `TESTPARAM=1 PA_VALUE=<solved nonlinear_offset> PA_RANGE=<about half of it>`.
    The left face should look best in the band closest to the solved value while the front face stays good throughout.
