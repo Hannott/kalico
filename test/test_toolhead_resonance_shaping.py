@@ -164,9 +164,11 @@ class FakeMove:
         self.timing_callbacks = []
 
 
-def make_process_moves_toolhead(f_lo, f_hi):
+def make_process_moves_toolhead(f_lo, f_hi, max_slide=2.0):
     th = object.__new__(toolhead.ToolHead)
     th.resonance_shaping = True
+    th.resonance_max_notch_slide = max_slide
+    th._resonance_stats = {"shaped": 0, "slid": 0, "fallback": 0}
     th.resonance_jerk_dt = 0.001
     th._resonance_notch_pair = (f_lo, f_hi)
     th.special_queuing_state = ""
@@ -203,6 +205,7 @@ def test_process_moves_falls_back_when_the_ramp_does_not_fit():
     # Far too short a move for the ramp's own minimum runway.
     move = FakeMove(0.0, 300.0, 0.0, 0.5, 20000.0, has_extrude=True)
     process_moves(th, [move])
+    assert th._resonance_stats == {"shaped": 0, "slid": 0, "fallback": 1}
     assert len(th.trapq_calls) == 1
     at, ct, dt = (
         th.trapq_calls[0][2],
@@ -229,6 +232,45 @@ def test_process_moves_stock_path_when_shaping_disabled():
     )
 
 
+def test_process_moves_slides_the_pair_for_a_short_move():
+    # Needs (0+100)/f_eq*... of runway: 100/55 + 100/75 ~= 3.15 mm at the
+    # pair as chosen; 2.5 mm fits once the pair is raised by ~1.3x.
+    th = make_process_moves_toolhead(55.0, 75.0)
+    move = FakeMove(0.0, 100.0, 0.0, 2.5, 20000.0, has_extrude=True)
+    process_moves(th, [move])
+    assert th._resonance_stats == {"shaped": 0, "slid": 1, "fallback": 0}
+    assert len(th.trapq_calls) > 1
+    assert len(th.extra_axes[0].move_segment_calls) == len(th.trapq_calls)
+    print("  a slightly short move is shaped with a raised notch pair OK")
+
+
+def test_process_moves_slide_is_bounded():
+    th = make_process_moves_toolhead(55.0, 75.0, max_slide=1.1)
+    move = FakeMove(0.0, 100.0, 0.0, 2.5, 20000.0, has_extrude=True)
+    process_moves(th, [move])
+    assert th._resonance_stats == {"shaped": 0, "slid": 0, "fallback": 1}
+    assert len(th.trapq_calls) == 1
+    print("  the slide never exceeds resonance_max_notch_slide OK")
+
+
+def test_process_moves_skips_moves_without_xy_motion():
+    th = make_process_moves_toolhead(55.0, 75.0)
+    move = FakeMove(0.0, 20.0, 0.0, 5.0, 500.0)
+    move.axes_r = [0.0, 0.0, 1.0, 0.0]
+    move.axes_d = [0.0, 0.0, 5.0, 0.0]
+    process_moves(th, [move])
+    assert th._resonance_stats == {"shaped": 0, "slid": 0, "fallback": 0}
+    assert len(th.trapq_calls) == 1
+    print("  a Z-only move is emitted as the stock trapezoid OK")
+
+
+def test_shaped_moves_are_counted():
+    th = make_process_moves_toolhead(55.0, 75.0)
+    process_moves(th, [FakeMove(0.0, 100.0, 0.0, 50.0, 20000.0)])
+    assert th._resonance_stats == {"shaped": 1, "slid": 0, "fallback": 0}
+    print("  shaped moves are counted for status OK")
+
+
 def main():
     test_connect_resolves_pair_from_the_model()
     test_connect_stays_inert_when_shaping_disabled()
@@ -237,6 +279,10 @@ def main():
     test_process_moves_uses_the_shaped_profile_when_it_fits()
     test_process_moves_falls_back_when_the_ramp_does_not_fit()
     test_process_moves_stock_path_when_shaping_disabled()
+    test_process_moves_slides_the_pair_for_a_short_move()
+    test_process_moves_slide_is_bounded()
+    test_process_moves_skips_moves_without_xy_motion()
+    test_shaped_moves_are_counted()
     print("ALL PASS")
 
 
