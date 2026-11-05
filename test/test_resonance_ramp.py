@@ -197,6 +197,73 @@ def test_build_notch_profile_no_speed_change_is_pure_cruise():
     print("  a move with no speed change emits a single cruise segment OK")
 
 
+def test_saturated_rise_freq_keeps_the_quieter_zero():
+    f_lo, f_hi, a = 55.0, 75.0, 8000.0
+    seen = set()
+    for dv in (120.0, 150.0, 200.0, 300.0, 400.0, 600.0):
+        f_rise = rr.saturated_rise_freq(dv, f_lo, f_hi, a)
+        assert f_rise in (f_lo, f_hi)
+        plateau = dv / a
+        other = f_lo if f_rise == f_hi else f_hi
+        kept = abs(rr._sinc(other / f_rise) * rr._sinc(other * plateau))
+        dropped = abs(rr._sinc(f_rise / other) * rr._sinc(f_rise * plateau))
+        assert kept <= dropped + 1e-12, (dv, f_rise, kept, dropped)
+        seen.add(f_rise)
+    assert seen == {f_lo, f_hi}
+    assert rr.saturated_rise_freq(300.0, 55.0, 55.0, a) == 55.0
+    print("  saturation keeps whichever zero leaves less residual OK")
+
+
+def test_saturated_jerk_and_duration_follow_the_chosen_zero():
+    f_lo, f_hi, a, dv = 55.0, 75.0, 8000.0, 300.0
+    f_rise = rr.saturated_rise_freq(dv, f_lo, f_hi, a)
+    assert abs(rr.ramp_jerk(dv, f_lo, f_hi, a) - a * f_rise) < 1e-9
+    want = dv / a + 1.0 / f_rise
+    assert abs(rr.notch_duration(dv, f_lo, f_hi, a) - want) < 1e-12
+    # The fixed-step integrator lands short of the closed form by about
+    # one step per edge, so check at a fine step.
+    segs, ok = rr._ramp_up(0.0, dv, f_lo, f_hi, a, 0.0001, 4096)
+    assert ok
+    assert abs(sum(s[0] for s in segs) - want) < 0.0005
+    assert abs(max(s[5] for s in segs) - a) < 1e-9
+    print("  saturated jerk and duration follow the chosen zero OK")
+
+
+def test_slide_notch_pair_finds_the_smallest_factor_that_fits():
+    vs, vc, ve, f_lo, f_hi, a = 0.0, 100.0, 0.0, 55.0, 75.0, 20000.0
+    need = rr.profile_dist(vs, vc, ve, f_lo, f_hi, a)
+    assert rr.slide_notch_pair(vs, vc, ve, 1.01 * need, f_lo, f_hi, a, 2.0) == (
+        (f_lo, f_hi),
+        1.0,
+    )
+    move_d = 0.8 * need
+    (s_lo, s_hi), k = rr.slide_notch_pair(
+        vs, vc, ve, move_d, f_lo, f_hi, a, 2.0
+    )
+    assert 1.0 < k <= 2.0
+    assert abs(s_lo / f_lo - k) < 1e-9 and abs(s_hi / f_hi - k) < 1e-9
+    assert rr.profile_dist(vs, vc, ve, s_lo, s_hi, a) <= move_d
+    k_tight = 0.999 * k
+    assert rr.profile_dist(vs, vc, ve, f_lo * k_tight, f_hi * k_tight, a) > (
+        move_d * rr.SLIDE_FIT_MARGIN
+    )
+    segs = rr.build_notch_profile(vs, vc, ve, move_d, s_lo, s_hi, a, 0.0002)
+    check_segs(segs, move_d, vs, ve, "slid")
+    print("  the slide picks the smallest factor that fits the move OK")
+
+
+def test_slide_notch_pair_is_bounded():
+    vs, vc, ve, f_lo, f_hi, a = 0.0, 100.0, 0.0, 55.0, 75.0, 20000.0
+    need = rr.profile_dist(vs, vc, ve, f_lo, f_hi, a)
+    assert (
+        rr.slide_notch_pair(vs, vc, ve, 0.3 * need, f_lo, f_hi, a, 2.0) is None
+    )
+    assert (
+        rr.slide_notch_pair(vs, vc, ve, 0.8 * need, f_lo, f_hi, a, 1.0) is None
+    )
+    print("  the slide refuses past max_slide and when disabled OK")
+
+
 def test_finer_jerk_dt_still_lands_exactly():
     for dt in (0.001, 0.0005, 0.0002):
         segs = rr.build_notch_profile(
@@ -222,6 +289,10 @@ def main():
     test_build_notch_profile_respects_max_accel()
     test_build_notch_profile_infeasible_move_returns_none()
     test_build_notch_profile_no_speed_change_is_pure_cruise()
+    test_saturated_rise_freq_keeps_the_quieter_zero()
+    test_saturated_jerk_and_duration_follow_the_chosen_zero()
+    test_slide_notch_pair_finds_the_smallest_factor_that_fits()
+    test_slide_notch_pair_is_bounded()
     test_finer_jerk_dt_still_lands_exactly()
     print("ALL PASS")
 

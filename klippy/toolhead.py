@@ -276,7 +276,11 @@ class ToolHead:
         self.resonance_jerk_dt = config.getfloat(
             "resonance_jerk_dt", 0.001, minval=0.0001, maxval=0.01
         )
+        self.resonance_max_notch_slide = config.getfloat(
+            "resonance_max_notch_slide", 2.0, minval=1.0, maxval=10.0
+        )
         self._resonance_notch_pair = None
+        self._resonance_stats = {"shaped": 0, "slid": 0, "fallback": 0}
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
         self.orig_cfg["max_accel"] = self.max_accel
@@ -398,18 +402,9 @@ class ToolHead:
                     self.resonance_shaping
                     and self._resonance_notch_pair
                     and move.is_kinematic_move
+                    and (move.axes_d[0] or move.axes_d[1])
                 ):
-                    f_lo, f_hi = self._resonance_notch_pair
-                    segs = resonance_ramp.build_notch_profile(
-                        move.start_v,
-                        move.cruise_v,
-                        move.end_v,
-                        move.move_d,
-                        f_lo,
-                        f_hi,
-                        move.accel,
-                        self.resonance_jerk_dt,
-                    )
+                    segs = self._build_resonance_profile(move)
                 if segs is not None:
                     # The shaped ramp fits within this move's own already
                     # planned length: emit it as a chain of constant-accel
@@ -731,9 +726,45 @@ class ToolHead:
                 "max_accel": self.max_accel,
                 "minimum_cruise_ratio": self.min_cruise_ratio,
                 "square_corner_velocity": self.square_corner_velocity,
+                "resonance_notch_pair": self._resonance_notch_pair,
+                "resonance_shaped_moves": self._resonance_stats["shaped"],
+                "resonance_slid_moves": self._resonance_stats["slid"],
+                "resonance_fallback_moves": self._resonance_stats["fallback"],
             }
         )
         return res
+
+    def _build_resonance_profile(self, move):
+        f_lo, f_hi = self._resonance_notch_pair
+        args = (move.start_v, move.cruise_v, move.end_v, move.move_d)
+        segs = resonance_ramp.build_notch_profile(
+            *args, f_lo, f_hi, move.accel, self.resonance_jerk_dt
+        )
+        if segs is not None:
+            self._resonance_stats["shaped"] += 1
+            return segs
+        # The integrated ramp lands a little off the closed form the slide
+        # is sized on, so retry with more margin before giving up.
+        for fit_margin in (0.999, 0.97, 0.9):
+            slid = resonance_ramp.slide_notch_pair(
+                *args,
+                f_lo,
+                f_hi,
+                move.accel,
+                self.resonance_max_notch_slide,
+                fit_margin,
+            )
+            if slid is None:
+                break
+            (s_lo, s_hi), _factor = slid
+            segs = resonance_ramp.build_notch_profile(
+                *args, s_lo, s_hi, move.accel, self.resonance_jerk_dt
+            )
+            if segs is not None:
+                self._resonance_stats["slid"] += 1
+                return segs
+        self._resonance_stats["fallback"] += 1
+        return None
 
     def _handle_shutdown(self):
         self.can_pause = False
