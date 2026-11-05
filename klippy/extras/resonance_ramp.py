@@ -283,6 +283,77 @@ def slide_notch_pair(
     return (f_lo * hi, f_hi * hi), hi
 
 
+def _max_feasible(fits, lo, hi, iterations=40):
+    # Largest x in [lo, hi] with fits(x), given fits(lo).
+    if fits(hi):
+        return hi
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def notch_reach(v1, dist, f_lo, f_hi, max_accel=None):
+    """Highest speed v0 >= v1 the ideal shaped ramp can connect to v1
+    within dist of path; notch_dist is symmetric in its speeds, so this
+    serves both the accelerating and the decelerating direction. The
+    unsaturated ramp gives v0 = 2*dist/T - v1 directly. Past saturation
+    the plateau term makes it a quadratic in dv per candidate rise edge;
+    each root is verified against notch_dist, and the bisection only runs
+    when the rise edge switches between the two inside the range."""
+    v1 = max(v1, 0.0)
+    if dist <= 0.0 or f_lo <= 0.0 or f_hi <= 0.0:
+        return v1
+    period = 1.0 / f_lo + 1.0 / f_hi
+    v0 = 2.0 * dist / period - v1
+    if v0 <= v1:
+        return v1
+    if not _is_saturated(v0 - v1, f_lo, max_accel):
+        return v0
+    limit = dist * (1.0 + 1e-9)
+    best = v1
+    for f_rise in (f_lo, f_hi):
+        qa = 1.0 / max_accel
+        qb = 2.0 * v1 / max_accel + 1.0 / f_rise
+        qc = 2.0 * v1 / f_rise - 2.0 * dist
+        disc = qb * qb - 4.0 * qa * qc
+        if disc < 0.0:
+            continue
+        dv = (-qb + math.sqrt(disc)) / (2.0 * qa)
+        if dv > 0.0 and notch_dist(v1 + dv, v1, f_lo, f_hi, max_accel) <= limit:
+            best = max(best, v1 + dv)
+    # The rise edge can switch between the two zeros inside [best, v0],
+    # which shortens the ramp again, so the verified root is only a
+    # lower bound; refine upward from it.
+    return _max_feasible(
+        lambda v: notch_dist(v, v1, f_lo, f_hi, max_accel) <= limit, best, v0
+    )
+
+
+def notch_peak(vs, ve, dist, f_lo, f_hi, max_accel=None):
+    """Highest cruise speed vc >= max(vs, ve) whose two shaped ramps from
+    vs and down to ve both fit in dist. Assumes the boundary pair itself
+    fits (the lookahead guarantees that through notch_reach)."""
+    floor = max(vs, ve, 0.0)
+    if dist <= 0.0 or f_lo <= 0.0 or f_hi <= 0.0:
+        return floor
+    period = 1.0 / f_lo + 1.0 / f_hi
+    vc = 0.5 * (2.0 * dist / period - vs - ve)
+    if vc <= floor:
+        return floor
+    limit = dist * (1.0 + 1e-9)
+    if profile_dist(vs, vc, ve, f_lo, f_hi, max_accel) <= limit:
+        return vc
+    return _max_feasible(
+        lambda v: profile_dist(vs, v, ve, f_lo, f_hi, max_accel) <= limit,
+        floor,
+        vc,
+    )
+
+
 def _ramp_up(v0, v1, f_lo, f_hi, max_accel, jerk_dt, max_slices):
     # Jerk-limited acceleration ramp v0 -> v1 (v1 >= v0), integrated at
     # fixed jerk_dt: acceleration rises from ~0 toward a_peak in steps

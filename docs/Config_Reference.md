@@ -250,10 +250,11 @@ max_accel:
 #   a jerk-limited ramp whose notch frequency pair is chosen automatically
 #   from a [resonance_model] saved after SHAPER_CALIBRATE, instead of a
 #   fixed manually configured frequency. Only moves with X or Y motion are
-#   shaped. A move that does not fit the shaped ramp within its own
-#   already-planned length (very short/fast segments) first has its notch
-#   pair raised by up to resonance_max_notch_slide, and falls back to the
-#   stock hard trapezoid unchanged if that is still not enough. Requires a
+#   shaped. The lookahead plans junction and cruise speeds that the shaped
+#   ramp can reach within each move, so short segments are printed slower
+#   rather than unshaped. A move that still does not fit first has its
+#   notch pair raised by up to resonance_max_notch_slide, and falls back
+#   to the stock hard trapezoid unchanged if that is not enough. Requires a
 #   [resonance_model] section with saved peaks (see SAVE_RESONANCE_MODEL in
 #   G-Codes.md); without one, this option has no effect and moves use the
 #   stock trapezoid. The toolhead status reports how many moves were

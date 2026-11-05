@@ -271,6 +271,97 @@ def test_shaped_moves_are_counted():
     print("  shaped moves are counted for status OK")
 
 
+def make_planning_toolhead(pair, max_accel=5000.0):
+    th = object.__new__(toolhead.ToolHead)
+    th.max_velocity = 300.0
+    th.max_accel = max_accel
+    th.max_accel_to_decel = max_accel * 0.5
+    th.junction_deviation = 0.01
+    th.extra_axes = []
+    th.resonance_shaping = pair is not None
+    th._resonance_notch_pair = pair
+    return th
+
+
+def plan(th, points, speed):
+    queue = toolhead.LookAheadQueue()
+    pos = (0.0, 0.0, 0.0, 0.0)
+    moves = []
+    for x, y in points:
+        end = (x, y, 0.0, 0.0)
+        move = toolhead.Move(th, pos, end, speed)
+        queue.add_move(move)
+        moves.append(move)
+        pos = end
+    flushed = queue.flush()
+    assert flushed == moves
+    return moves
+
+
+def shaped_speeds_fit(moves, pair, max_accel):
+    f_lo, f_hi = pair
+    return [
+        resonance_ramp.profile_dist(
+            m.start_v, m.cruise_v, m.end_v, f_lo, f_hi, max_accel
+        )
+        <= m.move_d * (1.0 + 1e-6)
+        for m in moves
+    ]
+
+
+def chord_path(n, length):
+    return [((i + 1) * length, 0.0) for i in range(n)]
+
+
+def test_lookahead_plans_speeds_the_shaped_ramp_can_render():
+    pair = (45.2, 76.4)
+    for path in (
+        chord_path(40, 0.2),
+        chord_path(6, 3.0),
+        [(50.0, 0.0), (50.0, 50.0), (0.0, 50.0), (0.0, 0.0)],
+        [(2.0, 0.0), (2.5, 0.3), (3.0, 0.9), (3.3, 1.8), (3.3, 3.0)],
+    ):
+        th = make_planning_toolhead(pair)
+        moves = plan(th, path, 200.0)
+        assert all(shaped_speeds_fit(moves, pair, th.max_accel)), path
+        for prev, move in zip(moves, moves[1:]):
+            assert abs(prev.end_v - move.start_v) < 1e-9
+        assert moves[-1].end_v < 1e-9
+        for m in moves:
+            assert m.cruise_v >= m.start_v - 1e-9
+            assert m.cruise_v >= m.end_v - 1e-9
+            segs = resonance_ramp.build_notch_profile(
+                m.start_v,
+                m.cruise_v,
+                m.end_v,
+                m.move_d,
+                pair[0],
+                pair[1],
+                m.accel,
+                0.001,
+            )
+            assert segs is not None
+    print("  the lookahead only plans speeds the shaped ramp can render OK")
+
+
+def test_stock_lookahead_plans_speeds_the_ramp_cannot_render():
+    pair = (45.2, 76.4)
+    th = make_planning_toolhead(None)
+    moves = plan(th, chord_path(40, 0.2), 200.0)
+    assert not all(shaped_speeds_fit(moves, pair, th.max_accel))
+    print("  without the notch reach, short chords would need the fallback OK")
+
+
+def test_lookahead_without_shaping_is_unchanged():
+    th = make_planning_toolhead(None)
+    moves = plan(th, [(50.0, 0.0), (50.0, 50.0)], 200.0)
+    first = moves[0]
+    assert first.notch_pair is None
+    assert abs(first.cruise_v - 200.0) < 1e-9
+    assert first.start_v == 0.0
+    print("  the stock planner is untouched when shaping is off OK")
+
+
 def main():
     test_connect_resolves_pair_from_the_model()
     test_connect_stays_inert_when_shaping_disabled()
@@ -283,6 +374,9 @@ def main():
     test_process_moves_slide_is_bounded()
     test_process_moves_skips_moves_without_xy_motion()
     test_shaped_moves_are_counted()
+    test_lookahead_plans_speeds_the_shaped_ramp_can_render()
+    test_stock_lookahead_plans_speeds_the_ramp_cannot_render()
+    test_lookahead_without_shaping_is_unchanged()
     print("ALL PASS")
 
 

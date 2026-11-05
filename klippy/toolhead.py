@@ -48,6 +48,7 @@ class Move:
         else:
             inv_move_d = 1.0 / move_d
         self.axes_r = [d * inv_move_d for d in axes_d]
+        self.notch_pair = toolhead.notch_pair_for(self)
         self.min_move_t = move_d / velocity
         # Junction speeds are tracked in velocity squared.  The
         # delta_v2 is the maximum amount of this squared-velocity that
@@ -71,6 +72,32 @@ class Move:
     def limit_next_junction_speed(self, speed):
         self.next_junction_v2 = min(self.next_junction_v2, speed**2)
 
+    def reach_v2(self, end_v2):
+        # Highest squared speed at one end of this move that can still
+        # connect to end_v2 at the other end
+        if self.notch_pair is None:
+            return end_v2 + self.delta_v2
+        f_lo, f_hi = self.notch_pair
+        v = resonance_ramp.notch_reach(
+            math.sqrt(end_v2), self.move_d, f_lo, f_hi, self.accel
+        )
+        return v * v
+
+    def peak_v2(self, start_v2, end_v2):
+        # Highest squared cruise speed between the given boundary speeds
+        if self.notch_pair is None:
+            return 0.5 * (start_v2 + end_v2 + self.delta_v2)
+        f_lo, f_hi = self.notch_pair
+        v = resonance_ramp.notch_peak(
+            math.sqrt(start_v2),
+            math.sqrt(end_v2),
+            self.move_d,
+            f_lo,
+            f_hi,
+            self.accel,
+        )
+        return v * v
+
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
         m = "%s: %.3f %.3f %.3f [%.3f]" % (msg, ep[0], ep[1], ep[2], ep[3])
@@ -89,7 +116,7 @@ class Move:
                 self.max_cruise_v2,
                 prev_move.max_cruise_v2,
                 prev_move.next_junction_v2,
-                prev_move.max_start_v2 + prev_move.delta_v2,
+                prev_move.reach_v2(prev_move.max_start_v2),
             ]
             + ea_v2
         )
@@ -177,7 +204,7 @@ class LookAheadQueue:
         next_end_v2 = next_smoothed_v2 = peak_cruise_v2 = 0.0
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
-            reachable_start_v2 = next_end_v2 + move.delta_v2
+            reachable_start_v2 = move.reach_v2(next_end_v2)
             start_v2 = min(move.max_start_v2, reachable_start_v2)
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
@@ -208,7 +235,7 @@ class LookAheadQueue:
                         del delayed[:]
                 if not update_flush_count and i < flush_count:
                     cruise_v2 = min(
-                        (start_v2 + reachable_start_v2) * 0.5,
+                        move.peak_v2(start_v2, next_end_v2),
                         move.max_cruise_v2,
                         peak_cruise_v2,
                     )
@@ -398,12 +425,7 @@ class ToolHead:
         with self.reactor.assert_no_pause():
             for move in moves:
                 segs = None
-                if (
-                    self.resonance_shaping
-                    and self._resonance_notch_pair
-                    and move.is_kinematic_move
-                    and (move.axes_d[0] or move.axes_d[1])
-                ):
+                if self.notch_pair_for(move) is not None:
                     segs = self._build_resonance_profile(move)
                 if segs is not None:
                     # The shaped ramp fits within this move's own already
@@ -733,6 +755,18 @@ class ToolHead:
             }
         )
         return res
+
+    def notch_pair_for(self, move):
+        # The pair this move is planned and emitted with, or None for the
+        # stock trapezoid. The lookahead and the emitter must agree on it.
+        if (
+            self.resonance_shaping
+            and self._resonance_notch_pair
+            and move.is_kinematic_move
+            and (move.axes_d[0] or move.axes_d[1])
+        ):
+            return self._resonance_notch_pair
+        return None
 
     def _build_resonance_profile(self, move):
         f_lo, f_hi = self._resonance_notch_pair
