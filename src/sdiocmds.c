@@ -138,11 +138,13 @@ command_sdio_read_data_buffer(uint32_t *args)
     uint32_t offset = args[1];
     uint8_t len = args[2];
     struct sdiodev_s *sdio = sdiodev_oid_lookup(oid);
-    uint8_t *buf = &(sdio->data_buffer[offset]);
 
-    if (offset + len > sizeof(sdio->data_buffer)) {
+    if (offset > sizeof(sdio->data_buffer)
+        || len > sizeof(sdio->data_buffer) - offset) {
+        offset = 0;
         len = 0;
     }
+    uint8_t *buf = &(sdio->data_buffer[offset]);
     sendf("sdio_read_data_buffer_response oid=%c data=%*s", oid, len, buf);
 }
 DECL_COMMAND(command_sdio_read_data_buffer
@@ -156,10 +158,10 @@ command_sdio_write_data_buffer(uint32_t *args)
     uint8_t write_data_len = args[2];
     uint8_t *write_data = command_decode_ptr(args[3]);
     struct sdiodev_s *sdio = sdiodev_oid_lookup(oid);
-    uint8_t *buf = &(sdio->data_buffer[offset]);
 
-    if (offset + write_data_len <= sizeof(sdio->data_buffer)) {
-        memcpy(buf, write_data, write_data_len);
+    if (offset <= sizeof(sdio->data_buffer)
+        && write_data_len <= sizeof(sdio->data_buffer) - offset) {
+        memcpy(&(sdio->data_buffer[offset]), write_data, write_data_len);
     }
 }
 DECL_COMMAND(command_sdio_write_data_buffer
