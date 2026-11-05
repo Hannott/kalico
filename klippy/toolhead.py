@@ -8,6 +8,7 @@ import logging
 import math
 
 from . import chelper
+from .extras import resonance_ramp
 from .extras.danger_options import get_danger_options
 from .kinematics import extruder as kinematics_extruder
 
@@ -47,6 +48,7 @@ class Move:
         else:
             inv_move_d = 1.0 / move_d
         self.axes_r = [d * inv_move_d for d in axes_d]
+        self.notch_pair = toolhead.notch_pair_for(self)
         self.min_move_t = move_d / velocity
         # Junction speeds are tracked in velocity squared.  The
         # delta_v2 is the maximum amount of this squared-velocity that
@@ -70,6 +72,32 @@ class Move:
     def limit_next_junction_speed(self, speed):
         self.next_junction_v2 = min(self.next_junction_v2, speed**2)
 
+    def reach_v2(self, end_v2):
+        # Highest squared speed at one end of this move that can still
+        # connect to end_v2 at the other end
+        if self.notch_pair is None:
+            return end_v2 + self.delta_v2
+        f_lo, f_hi = self.notch_pair
+        v = resonance_ramp.notch_reach(
+            math.sqrt(end_v2), self.move_d, f_lo, f_hi, self.accel
+        )
+        return v * v
+
+    def peak_v2(self, start_v2, end_v2):
+        # Highest squared cruise speed between the given boundary speeds
+        if self.notch_pair is None:
+            return 0.5 * (start_v2 + end_v2 + self.delta_v2)
+        f_lo, f_hi = self.notch_pair
+        v = resonance_ramp.notch_peak(
+            math.sqrt(start_v2),
+            math.sqrt(end_v2),
+            self.move_d,
+            f_lo,
+            f_hi,
+            self.accel,
+        )
+        return v * v
+
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
         m = "%s: %.3f %.3f %.3f [%.3f]" % (msg, ep[0], ep[1], ep[2], ep[3])
@@ -88,7 +116,7 @@ class Move:
                 self.max_cruise_v2,
                 prev_move.max_cruise_v2,
                 prev_move.next_junction_v2,
-                prev_move.max_start_v2 + prev_move.delta_v2,
+                prev_move.reach_v2(prev_move.max_start_v2),
             ]
             + ea_v2
         )
@@ -176,7 +204,7 @@ class LookAheadQueue:
         next_end_v2 = next_smoothed_v2 = peak_cruise_v2 = 0.0
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
-            reachable_start_v2 = next_end_v2 + move.delta_v2
+            reachable_start_v2 = move.reach_v2(next_end_v2)
             start_v2 = min(move.max_start_v2, reachable_start_v2)
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
@@ -207,7 +235,7 @@ class LookAheadQueue:
                         del delayed[:]
                 if not update_flush_count and i < flush_count:
                     cruise_v2 = min(
-                        (start_v2 + reachable_start_v2) * 0.5,
+                        move.peak_v2(start_v2, next_end_v2),
                         move.max_cruise_v2,
                         peak_cruise_v2,
                     )
@@ -261,6 +289,25 @@ class ToolHead:
         self.square_corner_velocity = config.getfloat(
             "square_corner_velocity", 5.0, minval=0.0
         )
+        # Resonance-weighted acceleration shaping (opt-in): reshape ordinary
+        # moves into a jerk-limited ramp whose (f_lo, f_hi) notch pair was
+        # chosen by resonance_ramp.best_notch_pair against a [resonance_model]
+        # saved from an actual SHAPER_CALIBRATE run, instead of a fixed
+        # config value. See _handle_resonance_shaping_connect for where that
+        # pair is resolved (lazily, once resonance_model is available) and
+        # _process_moves for where it is applied -- a move that does not fit
+        # the shaped ramp within its own planned length falls back to the
+        # stock hard trapezoid unchanged, rather than trying to re-plan
+        # boundary speeds the lookahead already committed to.
+        self.resonance_shaping = config.getboolean("resonance_shaping", False)
+        self.resonance_jerk_dt = config.getfloat(
+            "resonance_jerk_dt", 0.001, minval=0.0001, maxval=0.01
+        )
+        self.resonance_max_notch_slide = config.getfloat(
+            "resonance_max_notch_slide", 2.0, minval=1.0, maxval=10.0
+        )
+        self._resonance_notch_pair = None
+        self._resonance_stats = {"shaped": 0, "slid": 0, "fallback": 0}
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
         self.orig_cfg["max_accel"] = self.max_accel
@@ -330,6 +377,9 @@ class ToolHead:
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
         )
+        self.printer.register_event_handler(
+            "klippy:connect", self._handle_resonance_shaping_connect
+        )
 
     def get_active_rails_for_axis(self, axis):
         # axis is 'x,y,z'
@@ -374,29 +424,75 @@ class ToolHead:
         next_move_time = self.print_time
         with self.reactor.assert_no_pause():
             for move in moves:
-                if move.is_kinematic_move:
-                    self.trapq_append(
-                        self.trapq,
-                        next_move_time,
-                        move.accel_t,
-                        move.cruise_t,
-                        move.decel_t,
-                        move.start_pos[0],
-                        move.start_pos[1],
-                        move.start_pos[2],
-                        move.axes_r[0],
-                        move.axes_r[1],
-                        move.axes_r[2],
-                        move.start_v,
-                        move.cruise_v,
-                        move.accel,
+                segs = None
+                if self.notch_pair_for(move) is not None:
+                    segs = self._build_resonance_profile(move)
+                if segs is not None:
+                    # The shaped ramp fits within this move's own already
+                    # planned length: emit it as a chain of constant-accel
+                    # slices instead of one hard trapezoid, the extruder
+                    # synced per slice (PrinterExtruder.move_segment). The
+                    # profile's duration can differ slightly from the
+                    # nominal trapezoid's, so next_move_time advances by the
+                    # slices' actual total duration.
+                    t = next_move_time
+                    pos = 0.0
+                    for at, ct, dt, sv, cv, a, dist in segs:
+                        self.trapq_append(
+                            self.trapq,
+                            t,
+                            at,
+                            ct,
+                            dt,
+                            move.start_pos[0] + move.axes_r[0] * pos,
+                            move.start_pos[1] + move.axes_r[1] * pos,
+                            move.start_pos[2] + move.axes_r[2] * pos,
+                            move.axes_r[0],
+                            move.axes_r[1],
+                            move.axes_r[2],
+                            sv,
+                            cv,
+                            a,
+                        )
+                        if move.axes_d[3]:
+                            self.extra_axes[0].move_segment(
+                                t, move, at, ct, dt, sv, cv, a, dist
+                            )
+                        t += at + ct + dt
+                        pos += dist
+                    # Further extra axes are not shaped; they get the move
+                    # as planned
+                    for e_index, ea in enumerate(self.extra_axes):
+                        if e_index and move.axes_d[e_index + 3]:
+                            ea.process_move(next_move_time, move, e_index + 3)
+                    next_move_time = t
+                else:
+                    if move.is_kinematic_move:
+                        self.trapq_append(
+                            self.trapq,
+                            next_move_time,
+                            move.accel_t,
+                            move.cruise_t,
+                            move.decel_t,
+                            move.start_pos[0],
+                            move.start_pos[1],
+                            move.start_pos[2],
+                            move.axes_r[0],
+                            move.axes_r[1],
+                            move.axes_r[2],
+                            move.start_v,
+                            move.cruise_v,
+                            move.accel,
+                        )
+                    for e_index, ea in enumerate(self.extra_axes):
+                        if move.axes_d[e_index + 3]:
+                            ea.process_move(next_move_time, move, e_index + 3)
+                    next_move_time = (
+                        next_move_time
+                        + move.accel_t
+                        + move.cruise_t
+                        + move.decel_t
                     )
-                for e_index, ea in enumerate(self.extra_axes):
-                    if move.axes_d[e_index + 3]:
-                        ea.process_move(next_move_time, move, e_index + 3)
-                next_move_time = (
-                    next_move_time + move.accel_t + move.cruise_t + move.decel_t
-                )
                 for cb in move.timing_callbacks:
                     cb(next_move_time)
         # Generate steps for moves
@@ -652,13 +748,93 @@ class ToolHead:
                 "max_accel": self.max_accel,
                 "minimum_cruise_ratio": self.min_cruise_ratio,
                 "square_corner_velocity": self.square_corner_velocity,
+                "resonance_notch_pair": self._resonance_notch_pair,
+                "resonance_shaped_moves": self._resonance_stats["shaped"],
+                "resonance_slid_moves": self._resonance_stats["slid"],
+                "resonance_fallback_moves": self._resonance_stats["fallback"],
             }
         )
         return res
 
+    def notch_pair_for(self, move):
+        # The pair this move is planned and emitted with, or None for the
+        # stock trapezoid. The lookahead and the emitter must agree on it.
+        if (
+            self.resonance_shaping
+            and self._resonance_notch_pair
+            and move.is_kinematic_move
+            and (move.axes_d[0] or move.axes_d[1])
+        ):
+            return self._resonance_notch_pair
+        return None
+
+    def _build_resonance_profile(self, move):
+        f_lo, f_hi = self._resonance_notch_pair
+        args = (move.start_v, move.cruise_v, move.end_v, move.move_d)
+        segs = resonance_ramp.build_notch_profile(
+            *args, f_lo, f_hi, move.accel, self.resonance_jerk_dt
+        )
+        if segs is not None:
+            self._resonance_stats["shaped"] += 1
+            return segs
+        # The integrated ramp lands a little off the closed form the slide
+        # is sized on, so retry with more margin before giving up.
+        for fit_margin in (0.999, 0.97, 0.9):
+            slid = resonance_ramp.slide_notch_pair(
+                *args,
+                f_lo,
+                f_hi,
+                move.accel,
+                self.resonance_max_notch_slide,
+                fit_margin,
+            )
+            if slid is None:
+                break
+            (s_lo, s_hi), _factor = slid
+            segs = resonance_ramp.build_notch_profile(
+                *args, s_lo, s_hi, move.accel, self.resonance_jerk_dt
+            )
+            if segs is not None:
+                self._resonance_stats["slid"] += 1
+                return segs
+        self._resonance_stats["fallback"] += 1
+        return None
+
     def _handle_shutdown(self):
         self.can_pause = False
         self.lookahead.reset()
+
+    def _handle_resonance_shaping_connect(self):
+        self._resonance_notch_pair = None
+        if not self.resonance_shaping:
+            return
+        resonance_model = self.printer.lookup_object("resonance_model", None)
+        if resonance_model is None:
+            logging.warning(
+                "resonance_shaping is enabled but no [resonance_model]"
+                " section is configured; moves will use the stock hard"
+                " trapezoid until one is added"
+            )
+            return
+        peaks = list(resonance_model.get_model("x").peaks) + list(
+            resonance_model.get_model("y").peaks
+        )
+        pair = resonance_ramp.best_notch_pair(resonance_ramp.PeakModel(peaks))
+        if pair is None:
+            logging.warning(
+                "resonance_shaping is enabled but [resonance_model] has no"
+                " saved peaks; run SHAPER_CALIBRATE and SAVE_RESONANCE_MODEL"
+                " first. Moves will use the stock hard trapezoid until it"
+                " does"
+            )
+            return
+        self._resonance_notch_pair = pair
+        logging.info(
+            "resonance_shaping: shaping moves against a %.2f/%.2f Hz"
+            " notch pair from the saved resonance model",
+            pair[0],
+            pair[1],
+        )
 
     def get_kinematics(self):
         return self.kin
