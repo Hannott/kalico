@@ -264,6 +264,62 @@ def test_slide_notch_pair_is_bounded():
     print("  the slide refuses past max_slide and when disabled OK")
 
 
+def test_notch_reach_is_tight_and_the_emitter_can_render_it():
+    pairs = ((55.0, 55.0), (45.2, 76.4), (55.0, 75.0), (30.0, 120.0))
+    checked = 0
+    for f_lo, f_hi in pairs:
+        for a in (3000.0, 8000.0, 20000.0):
+            for v1 in (0.0, 5.0, 40.0, 150.0):
+                for d in (0.2, 1.0, 5.0, 30.0, 200.0):
+                    v0 = rr.notch_reach(v1, d, f_lo, f_hi, a)
+                    assert v0 >= v1
+                    need = rr.notch_dist(v0, v1, f_lo, f_hi, a)
+                    assert need <= d * (1.0 + 1e-6), (f_lo, f_hi, a, v1, d)
+                    if v0 > v1 + 1e-6:
+                        # Tight, except where the saturated rise edge
+                        # switches zeros just above v0 and the ramp
+                        # distance drops discontinuously.
+                        v_more = v0 * 1.001 + 0.01
+                        over = rr.notch_dist(v_more, v1, f_lo, f_hi, a)
+                        switched = rr.ramp_jerk(
+                            v_more - v1, f_lo, f_hi, a
+                        ) != rr.ramp_jerk(v0 - v1, f_lo, f_hi, a)
+                        assert over > d or switched, (f_lo, f_hi, a, v1, d)
+                        segs = rr.build_notch_profile(
+                            v0, v0, v1, d, f_lo, f_hi, a, 0.001
+                        )
+                        assert segs is not None, (f_lo, f_hi, a, v1, d, v0)
+                        check_segs(segs, d, v0, v1, "reach")
+                    checked += 1
+    assert checked == 240
+    print("  notch_reach is tight and always renderable OK")
+
+
+def test_notch_peak_is_tight_and_the_emitter_can_render_it():
+    f_lo, f_hi = 45.2, 76.4
+    for a in (3000.0, 20000.0):
+        for vs, ve in ((0.0, 0.0), (20.0, 60.0), (100.0, 10.0), (80.0, 80.0)):
+            for d in (2.0, 10.0, 60.0, 400.0):
+                need = rr.notch_dist(vs, ve, f_lo, f_hi, a)
+                if need > d:
+                    continue
+                vc = rr.notch_peak(vs, ve, d, f_lo, f_hi, a)
+                assert vc >= max(vs, ve)
+                used = rr.profile_dist(vs, vc, ve, f_lo, f_hi, a)
+                assert used <= d * (1.0 + 1e-6)
+                if vc > max(vs, ve) + 1e-6:
+                    over = rr.profile_dist(
+                        vs, vc * 1.001 + 0.01, ve, f_lo, f_hi, a
+                    )
+                    assert over > d
+                segs = rr.build_notch_profile(
+                    vs, vc, ve, d, f_lo, f_hi, a, 0.001
+                )
+                assert segs is not None, (a, vs, ve, d, vc)
+                check_segs(segs, d, vs, ve, "peak")
+    print("  notch_peak is tight and always renderable OK")
+
+
 def test_finer_jerk_dt_still_lands_exactly():
     for dt in (0.001, 0.0005, 0.0002):
         segs = rr.build_notch_profile(
@@ -293,6 +349,8 @@ def main():
     test_saturated_jerk_and_duration_follow_the_chosen_zero()
     test_slide_notch_pair_finds_the_smallest_factor_that_fits()
     test_slide_notch_pair_is_bounded()
+    test_notch_reach_is_tight_and_the_emitter_can_render_it()
+    test_notch_peak_is_tight_and_the_emitter_can_render_it()
     test_finer_jerk_dt_still_lands_exactly()
     print("ALL PASS")
 
