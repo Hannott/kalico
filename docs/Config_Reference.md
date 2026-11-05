@@ -249,16 +249,25 @@ max_accel:
 #   ordinary moves. When enabled, this reshapes a move's acceleration into
 #   a jerk-limited ramp whose notch frequency pair is chosen automatically
 #   from a [resonance_model] saved after SHAPER_CALIBRATE, instead of a
-#   fixed manually configured frequency. A move that does not fit the
-#   shaped ramp within its own already-planned length (very short/fast
-#   segments) falls back to the stock hard trapezoid unchanged. Requires a
+#   fixed manually configured frequency. Only moves with X or Y motion are
+#   shaped. The lookahead plans junction and cruise speeds that the shaped
+#   ramp can reach within each move, so short segments are printed slower
+#   rather than unshaped. A move that still does not fit first has its
+#   notch pair raised by up to resonance_max_notch_slide, and falls back
+#   to the stock hard trapezoid unchanged if that is not enough. Requires a
 #   [resonance_model] section with saved peaks (see SAVE_RESONANCE_MODEL in
 #   G-Codes.md); without one, this option has no effect and moves use the
-#   stock trapezoid. The default is False.
+#   stock trapezoid. The toolhead status reports how many moves were
+#   shaped, slid and fell back. The default is False.
 #resonance_jerk_dt: 0.001
 #   Integration time step in seconds for the emitted jerk-limited slices
 #   when resonance_shaping is enabled. Smaller values create more
 #   motion-queue entries. The default is 0.001.
+#resonance_max_notch_slide: 2.0
+#   Largest factor the notch pair may be raised by to fit a shaped ramp
+#   into a short move before falling back to the stock trapezoid. A slid
+#   ramp keeps the jerk-limited shape but no longer nulls the measured
+#   resonances exactly. 1.0 disables sliding. The default is 2.0.
 ```
 
 ### [stepper]

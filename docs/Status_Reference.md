@@ -652,6 +652,14 @@ The following information is available in the `toolhead` object
 - `stalls`: The total number of times (since the last restart) that
   the printer had to be paused because the toolhead moved faster than
   moves could be read from the G-Code input.
+- `resonance_notch_pair`: The (f_lo, f_hi) notch frequencies in Hz
+  that `resonance_shaping` shapes moves against, or None when shaping
+  is off or no [resonance_model] peaks are saved.
+- `resonance_shaped_moves`, `resonance_slid_moves`,
+  `resonance_fallback_moves`: Counts (since the last restart) of moves
+  emitted with the notch pair as chosen, with the pair raised to fit a
+  short move, and left as the stock trapezoid because the ramp did not
+  fit even after sliding.
 
 ## dual_carriage
 

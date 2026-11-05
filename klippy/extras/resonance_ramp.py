@@ -169,6 +169,25 @@ def best_notch_pair(peak_model, min_freq=5.0):
     return best
 
 
+def _is_saturated(dv, f_lo, max_accel):
+    return bool(max_accel) and max_accel > 0.0 and dv > max_accel / f_lo
+
+
+def saturated_rise_freq(dv, f_lo, f_hi, max_accel):
+    """Which of the pair's zeros to keep once the ramp saturates at
+    max_accel. The saturated shape is rect(1/f_rise) * rect(dv/max_accel),
+    so only the rise edge's zero is free and the other mode is left with
+    residual |sinc(f_other/f_rise) * sinc(f_other*dv/max_accel)|. Which
+    choice leaves less is not constant -- it depends on dv through the
+    plateau term -- so it is decided per ramp."""
+    if f_lo == f_hi:
+        return f_hi
+    plateau = dv / max_accel
+    keep_hi = abs(_sinc(f_lo / f_hi) * _sinc(f_lo * plateau))
+    keep_lo = abs(_sinc(f_hi / f_lo) * _sinc(f_hi * plateau))
+    return f_lo if keep_lo < keep_hi else f_hi
+
+
 def ramp_jerk(dv, f_lo, f_hi, max_accel=None):
     """Per-ramp jerk (mm/s^3) for the ideal single/dual-zero shape.
 
@@ -177,15 +196,15 @@ def ramp_jerk(dv, f_lo, f_hi, max_accel=None):
     to the single-zero triangle (J = dv*f_n^2, a_peak = dv*f_n).
 
     Past max_accel, the plateau is forced wider than 1/f_lo and only the
-    rise edge is free; J = max_accel*f_hi keeps that edge's zero parked at
-    f_hi while the plateau supplies the rest of the speed change at
-    max_accel.
+    rise edge is free; J = max_accel*f_rise keeps that edge's zero parked
+    on whichever mode saturated_rise_freq picks while the plateau supplies
+    the rest of the speed change at max_accel.
     """
     dv = abs(dv)
     if dv <= 1e-12 or f_lo <= 0.0 or f_hi <= 0.0:
         return None
-    if max_accel and max_accel > 0.0 and dv > max_accel / f_lo:
-        j = max_accel * f_hi
+    if _is_saturated(dv, f_lo, max_accel):
+        j = max_accel * saturated_rise_freq(dv, f_lo, f_hi, max_accel)
     else:
         j = dv * f_lo * f_hi
     return j if j > 0.0 else None
@@ -193,13 +212,14 @@ def ramp_jerk(dv, f_lo, f_hi, max_accel=None):
 
 def notch_duration(dv, f_lo, f_hi, max_accel=None):
     """Total ramp duration (s) for a |dv| speed change under the ideal
-    shape -- 1/f_lo + 1/f_hi unsaturated, or dv/max_accel + 1/f_hi past
+    shape -- 1/f_lo + 1/f_hi unsaturated, or dv/max_accel + 1/f_rise past
     saturation (the widened plateau plus the one edge still free)."""
     dv = abs(dv)
     if dv <= 1e-12:
         return 0.0
-    if max_accel and max_accel > 0.0 and dv > max_accel / f_lo:
-        return dv / max_accel + 1.0 / f_hi
+    if _is_saturated(dv, f_lo, max_accel):
+        f_rise = saturated_rise_freq(dv, f_lo, f_hi, max_accel)
+        return dv / max_accel + 1.0 / f_rise
     return 1.0 / f_lo + 1.0 / f_hi
 
 
@@ -211,6 +231,127 @@ def notch_dist(v0, v1, f_lo, f_hi, max_accel=None):
     if dv <= 1e-12:
         return 0.0
     return 0.5 * (v0 + v1) * notch_duration(dv, f_lo, f_hi, max_accel)
+
+
+def profile_dist(vs, vc, ve, f_lo, f_hi, max_accel=None):
+    """Path distance the ideal shaped profile needs for a move with the
+    planned boundary speeds (vs, vc, ve): both ramps, no cruise."""
+    return notch_dist(vs, vc, f_lo, f_hi, max_accel) + notch_dist(
+        vc, ve, f_lo, f_hi, max_accel
+    )
+
+
+# Fraction of move_d the slid pair is sized for, so the integrated ramp
+# (which lands slightly off the closed form) still fits.
+SLIDE_FIT_MARGIN = 0.999
+
+
+def slide_notch_pair(
+    vs,
+    vc,
+    ve,
+    move_d,
+    f_lo,
+    f_hi,
+    max_accel,
+    max_slide,
+    fit_margin=SLIDE_FIT_MARGIN,
+):
+    """Scale the notch pair up by the smallest factor that lets the shaped
+    profile fit in fit_margin*move_d, up to max_slide. Returns the scaled
+    (f_lo, f_hi) and the factor, or None when even max_slide does not fit
+    (or when sliding is disabled by max_slide <= 1). Ramp distance falls as
+    the pair rises, so the factor is found by bisection on the closed-form
+    distance. A slid pair no longer nulls the measured modes exactly, but
+    keeps the jerk-limited shape; the caller counts it so the loss is
+    visible."""
+    if max_slide is None or max_slide <= 1.0 or move_d <= 0.0:
+        return None
+    target = move_d * fit_margin
+    if profile_dist(vs, vc, ve, f_lo, f_hi, max_accel) <= target:
+        return (f_lo, f_hi), 1.0
+    hi = max_slide
+    if profile_dist(vs, vc, ve, f_lo * hi, f_hi * hi, max_accel) > target:
+        return None
+    lo = 1.0
+    for _ in range(24):
+        mid = 0.5 * (lo + hi)
+        if profile_dist(vs, vc, ve, f_lo * mid, f_hi * mid, max_accel) > target:
+            lo = mid
+        else:
+            hi = mid
+    return (f_lo * hi, f_hi * hi), hi
+
+
+def _max_feasible(fits, lo, hi, iterations=40):
+    # Largest x in [lo, hi] with fits(x), given fits(lo).
+    if fits(hi):
+        return hi
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def notch_reach(v1, dist, f_lo, f_hi, max_accel=None):
+    """Highest speed v0 >= v1 the ideal shaped ramp can connect to v1
+    within dist of path; notch_dist is symmetric in its speeds, so this
+    serves both the accelerating and the decelerating direction. The
+    unsaturated ramp gives v0 = 2*dist/T - v1 directly. Past saturation
+    the plateau term makes it a quadratic in dv per candidate rise edge;
+    each root is verified against notch_dist, and the bisection only runs
+    when the rise edge switches between the two inside the range."""
+    v1 = max(v1, 0.0)
+    if dist <= 0.0 or f_lo <= 0.0 or f_hi <= 0.0:
+        return v1
+    period = 1.0 / f_lo + 1.0 / f_hi
+    v0 = 2.0 * dist / period - v1
+    if v0 <= v1:
+        return v1
+    if not _is_saturated(v0 - v1, f_lo, max_accel):
+        return v0
+    limit = dist * (1.0 + 1e-9)
+    best = v1
+    for f_rise in (f_lo, f_hi):
+        qa = 1.0 / max_accel
+        qb = 2.0 * v1 / max_accel + 1.0 / f_rise
+        qc = 2.0 * v1 / f_rise - 2.0 * dist
+        disc = qb * qb - 4.0 * qa * qc
+        if disc < 0.0:
+            continue
+        dv = (-qb + math.sqrt(disc)) / (2.0 * qa)
+        if dv > 0.0 and notch_dist(v1 + dv, v1, f_lo, f_hi, max_accel) <= limit:
+            best = max(best, v1 + dv)
+    # The rise edge can switch between the two zeros inside [best, v0],
+    # which shortens the ramp again, so the verified root is only a
+    # lower bound; refine upward from it.
+    return _max_feasible(
+        lambda v: notch_dist(v, v1, f_lo, f_hi, max_accel) <= limit, best, v0
+    )
+
+
+def notch_peak(vs, ve, dist, f_lo, f_hi, max_accel=None):
+    """Highest cruise speed vc >= max(vs, ve) whose two shaped ramps from
+    vs and down to ve both fit in dist. Assumes the boundary pair itself
+    fits (the lookahead guarantees that through notch_reach)."""
+    floor = max(vs, ve, 0.0)
+    if dist <= 0.0 or f_lo <= 0.0 or f_hi <= 0.0:
+        return floor
+    period = 1.0 / f_lo + 1.0 / f_hi
+    vc = 0.5 * (2.0 * dist / period - vs - ve)
+    if vc <= floor:
+        return floor
+    limit = dist * (1.0 + 1e-9)
+    if profile_dist(vs, vc, ve, f_lo, f_hi, max_accel) <= limit:
+        return vc
+    return _max_feasible(
+        lambda v: profile_dist(vs, v, ve, f_lo, f_hi, max_accel) <= limit,
+        floor,
+        vc,
+    )
 
 
 def _ramp_up(v0, v1, f_lo, f_hi, max_accel, jerk_dt, max_slices):
