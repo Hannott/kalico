@@ -258,7 +258,10 @@ max_accel:
 #   [resonance_model] section with saved peaks (see SAVE_RESONANCE_MODEL in
 #   G-Codes.md); without one, this option has no effect and moves use the
 #   stock trapezoid. The toolhead status reports how many moves were
-#   shaped, slid and fell back. The default is False.
+#   shaped, slid and fell back. Like [input_shaper], shaping is
+#   suspended while TEST_RESONANCES or SHAPER_CALIBRATE runs, unless
+#   INPUT_SHAPING=1 is given, so the test excites the axis unshaped.
+#   The default is False.
 #resonance_jerk_dt: 0.001
 #   Integration time step in seconds for the emitted jerk-limited slices
 #   when resonance_shaping is enabled. Smaller values create more

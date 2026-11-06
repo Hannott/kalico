@@ -68,6 +68,13 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping, gcmd):
     else:
         input_shaper = None
     toolhead = printer.lookup_object("toolhead")
+    resonance_shaping = False
+    if not input_shaping:
+        resonance_shaping = toolhead.disable_resonance_shaping()
+        if resonance_shaping:
+            gcode.respond_info(
+                "Disabled resonance_shaping for resonance testing"
+            )
     systime = printer.get_reactor().monotonic()
     toolhead_info = toolhead.get_status(systime)
     old_max_accel = toolhead_info["max_accel"]
@@ -106,6 +113,9 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping, gcmd):
         if input_shaper is not None:
             input_shaper.enable_shaping()
             gcode.respond_info("Re-enabled [input_shaper]")
+        if resonance_shaping:
+            toolhead.enable_resonance_shaping()
+            gcode.respond_info("Re-enabled resonance_shaping")
         # Restore the original acceleration values
         gcmd.run_script(
             "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=%.3f VELOCITY=%.3f"

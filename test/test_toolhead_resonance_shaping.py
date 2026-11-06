@@ -68,6 +68,7 @@ def make_toolhead(resonance_shaping, resonance_model=None):
     th.resonance_single_axis_ratio = 0.2
     th._resonance_notch_pair = None
     th._resonance_axis_pairs = (None, None)
+    th._resonance_shaping_suspended = False
     objects = {}
     if resonance_model is not None:
         objects["resonance_model"] = resonance_model
@@ -200,6 +201,7 @@ def make_process_moves_toolhead(f_lo, f_hi, max_slide=2.0):
     th.resonance_max_notch_slide = max_slide
     th.resonance_single_axis_ratio = 0.2
     th._resonance_axis_pairs = (None, None)
+    th._resonance_shaping_suspended = False
     th._resonance_stats = {"shaped": 0, "slid": 0, "fallback": 0}
     th.resonance_jerk_dt = 0.001
     th._resonance_notch_pair = (f_lo, f_hi)
@@ -218,8 +220,72 @@ def make_process_moves_toolhead(f_lo, f_hi, max_slide=2.0):
 
 
 def process_moves(th, moves):
+    for move in moves:
+        if not hasattr(move, "notch_pair"):
+            move.notch_pair = th.notch_pair_for(move)
     th.lookahead.moves = list(moves)
     th._process_lookahead()
+
+
+def test_suspending_shaping_only_affects_new_moves():
+    th = make_process_moves_toolhead(55.0, 75.0)
+    planned_before = FakeMove(0.0, 100.0, 0.0, 50.0, 20000.0)
+    planned_before.notch_pair = th.notch_pair_for(planned_before)
+    assert planned_before.notch_pair == (55.0, 75.0)
+    assert th.disable_resonance_shaping() is True
+    assert th.disable_resonance_shaping() is False
+    planned_after = FakeMove(0.0, 100.0, 0.0, 50.0, 20000.0)
+    planned_after.notch_pair = th.notch_pair_for(planned_after)
+    assert planned_after.notch_pair is None
+    process_moves(th, [planned_before, planned_after])
+    assert th._resonance_stats["shaped"] == 1
+    th.enable_resonance_shaping()
+    assert th.notch_pair_for(planned_after) == (55.0, 75.0)
+    th.resonance_shaping = False
+    assert th.disable_resonance_shaping() is False
+    print("  suspending shaping keeps queued moves on their planned pair OK")
+
+
+class FakeGcode:
+    def __init__(self):
+        self.messages = []
+        self.scripts = []
+
+    def respond_info(self, msg):
+        self.messages.append(msg)
+
+    def run_script_from_command(self, script):
+        self.scripts.append(script)
+
+
+class FakeReactorTime:
+    def monotonic(self):
+        return 0.0
+
+
+def test_resonance_test_suspends_shaping_unless_input_shaping_is_kept():
+    resonance_tester = importlib.import_module("klippy.extras.resonance_tester")
+    th = make_process_moves_toolhead(55.0, 75.0)
+    th.max_velocity, th.max_accel, th.min_cruise_ratio = 300.0, 5000.0, 0.0
+    th.get_status = lambda eventtime: {
+        "max_accel": 5000.0,
+        "minimum_cruise_ratio": 0.0,
+        "max_velocity": 300.0,
+    }
+    th.get_kinematics = lambda: object()
+    gcode = FakeGcode()
+    printer = FakePrinter({"toolhead": th, "gcode": gcode})
+    printer.get_reactor = lambda: FakeReactorTime()
+    with resonance_tester.suspend_limits(printer, 1000.0, 50.0, 0):
+        assert th._resonance_shaping_suspended
+    assert not th._resonance_shaping_suspended
+    assert any("Disabled resonance_shaping" in m for m in gcode.messages)
+    assert any("Re-enabled resonance_shaping" in m for m in gcode.messages)
+    gcode.messages = []
+    with resonance_tester.suspend_limits(printer, 1000.0, 50.0, 1):
+        assert not th._resonance_shaping_suspended
+    assert not any("resonance_shaping" in m for m in gcode.messages)
+    print("  resonance tests suspend shaping unless INPUT_SHAPING=1 OK")
 
 
 def test_process_moves_uses_the_shaped_profile_when_it_fits():
@@ -324,6 +390,7 @@ def test_single_axis_moves_use_their_own_pair():
     assert th.notch_pair_for(along_x) == (40.537, 56.127)
     th.resonance_single_axis_ratio = 0.2
     th._resonance_axis_pairs = (None, None)
+    th._resonance_shaping_suspended = False
     assert th.notch_pair_for(along_x) == (40.537, 56.127)
     print("  single-axis moves pick their axis's pair, others the mixed one OK")
 
@@ -350,6 +417,7 @@ def make_planning_toolhead(pair, max_accel=5000.0):
     th = object.__new__(toolhead.ToolHead)
     th.resonance_single_axis_ratio = 0.2
     th._resonance_axis_pairs = (None, None)
+    th._resonance_shaping_suspended = False
     th.max_velocity = 300.0
     th.max_accel = max_accel
     th.max_accel_to_decel = max_accel * 0.5
@@ -455,6 +523,8 @@ def main():
     test_shaped_moves_are_counted()
     test_single_axis_moves_use_their_own_pair()
     test_emitter_shapes_with_the_moves_own_pair()
+    test_suspending_shaping_only_affects_new_moves()
+    test_resonance_test_suspends_shaping_unless_input_shaping_is_kept()
     test_lookahead_plans_speeds_the_shaped_ramp_can_render()
     test_stock_lookahead_plans_speeds_the_ramp_cannot_render()
     test_lookahead_without_shaping_is_unchanged()
