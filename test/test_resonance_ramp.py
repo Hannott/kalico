@@ -78,6 +78,40 @@ def test_a_second_real_peak_is_not_outvoted_by_the_tallest_peaks_skirt():
     )
 
 
+def test_search_prefers_the_shortest_ramp_among_good_nulls():
+    x = rr.PeakModel(
+        [(56.127, 0.0638, 1.0), (110.696, 0.0788, 0.7205), (148.114, 0.1, 0.43)]
+    )
+    pair = rr.best_notch_pair(x)
+    assert pair[0] == 56.127 and pair[1] > 56.127
+    assert rr.score_pair(*pair, x) <= rr.NOTCH_SCORE_TOLERANCE
+    for other in ((56.127, 56.127), (56.127, 110.696), (56.127, 148.114)):
+        if rr.score_pair(*other, x) <= rr.NOTCH_SCORE_TOLERANCE:
+            assert (
+                1.0 / pair[0] + 1.0 / pair[1] <= 1.0 / other[0] + 1.0 / other[1]
+            )
+    y = rr.PeakModel([(40.537, 0.0685, 1.0), (148.115, 0.0157, 0.155)])
+    assert rr.best_notch_pair(y) == (40.537, 148.115)
+    both = rr.PeakModel(x.peaks + y.peaks)
+    assert rr.best_notch_pair(both) == (40.537, 56.127)
+    print("  the search takes the shortest ramp among good nulls OK")
+
+
+def test_search_falls_back_to_the_best_score_when_nothing_is_good():
+    x = rr.PeakModel(
+        [(56.127, 0.0638, 1.0), (110.696, 0.0788, 0.7205), (148.114, 0.1, 0.43)]
+    )
+    saved = rr.NOTCH_SCORE_TOLERANCE
+    rr.NOTCH_SCORE_TOLERANCE = 0.0
+    try:
+        pair = rr.best_notch_pair(x)
+    finally:
+        rr.NOTCH_SCORE_TOLERANCE = saved
+    assert pair == (56.127, 56.127)
+    assert rr.score_pair(*pair, x) < rr.score_pair(56.127, 148.114, x)
+    print("  with no good null the lowest residual still wins OK")
+
+
 def test_search_ignores_frequencies_below_the_floor():
     model = rr.PeakModel([(3.0, 0.05, 1.0), (60.0, 0.05, 0.5)])
     pair = rr.best_notch_pair(model, min_freq=5.0)
@@ -336,6 +370,8 @@ def main():
     test_single_peak_search_returns_its_own_frequency()
     test_two_peak_search_beats_either_peak_alone()
     test_a_second_real_peak_is_not_outvoted_by_the_tallest_peaks_skirt()
+    test_search_prefers_the_shortest_ramp_among_good_nulls()
+    test_search_falls_back_to_the_best_score_when_nothing_is_good()
     test_search_ignores_frequencies_below_the_floor()
     test_search_returns_none_for_an_empty_model()
     test_ramp_spectrum_null_at_configured_frequencies()

@@ -160,13 +160,26 @@ def best_notch_pair(peak_model, min_freq=5.0):
     for i, fa in enumerate(peaks):
         for fb in peaks[i + 1 :]:
             candidates.append((min(fa, fb), max(fa, fb)))
-    best = None
-    best_score = None
-    for f_lo, f_hi in candidates:
-        s = score_pair(f_lo, f_hi, peak_model)
-        if best_score is None or s < best_score:
-            best, best_score = (f_lo, f_hi), s
-    return best
+    scored = [
+        (
+            score_pair(f_lo, f_hi, peak_model),
+            1.0 / f_lo + 1.0 / f_hi,
+            (f_lo, f_hi),
+        )
+        for f_lo, f_hi in candidates
+    ]
+    good = [c for c in scored if c[0] <= NOTCH_SCORE_TOLERANCE]
+    if good:
+        return min(good, key=lambda c: c[1])[2]
+    return min(scored, key=lambda c: c[0])[2]
+
+
+# Candidates whose weighted residual is at or below this count as equally
+# good nulls, and the shortest ramp among them wins. Every ramp costs its
+# full duration however small the speed change, so on a print of short
+# moves the ramp length is what sets the print time. 0.002 of the unshaped
+# energy is under 5% amplitude at the edges of a peak's half-power band.
+NOTCH_SCORE_TOLERANCE = 0.002
 
 
 def _is_saturated(dv, f_lo, max_accel):
