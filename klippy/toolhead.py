@@ -311,6 +311,7 @@ class ToolHead:
         )
         self._resonance_notch_pair = None
         self._resonance_axis_pairs = (None, None)
+        self._resonance_shaping_suspended = False
         self._resonance_stats = {"shaped": 0, "slid": 0, "fallback": 0}
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
@@ -429,7 +430,7 @@ class ToolHead:
         with self.reactor.assert_no_pause():
             for move in moves:
                 segs = None
-                if self.notch_pair_for(move) is not None:
+                if move.notch_pair is not None:
                     segs = self._build_resonance_profile(move)
                 if segs is not None:
                     # The shaped ramp fits within this move's own already
@@ -762,11 +763,26 @@ class ToolHead:
         )
         return res
 
+    def disable_resonance_shaping(self):
+        # Moves already queued keep the pair they were planned with; only
+        # moves created from now on take the stock trapezoid
+        was_active = (
+            self.resonance_shaping
+            and self._resonance_notch_pair is not None
+            and not self._resonance_shaping_suspended
+        )
+        self._resonance_shaping_suspended = True
+        return was_active
+
+    def enable_resonance_shaping(self):
+        self._resonance_shaping_suspended = False
+
     def notch_pair_for(self, move):
-        # The pair this move is planned and emitted with, or None for the
-        # stock trapezoid. The lookahead and the emitter must agree on it.
+        # The pair a new move is planned with and stored on it, or None for
+        # the stock trapezoid; the emitter reads the stored pair back
         if not (
             self.resonance_shaping
+            and not self._resonance_shaping_suspended
             and self._resonance_notch_pair
             and move.is_kinematic_move
             and (move.axes_d[0] or move.axes_d[1])
@@ -784,7 +800,7 @@ class ToolHead:
         return self._resonance_notch_pair
 
     def _build_resonance_profile(self, move):
-        f_lo, f_hi = self.notch_pair_for(move)
+        f_lo, f_hi = move.notch_pair
         args = (move.start_v, move.cruise_v, move.end_v, move.move_d)
         segs = resonance_ramp.build_notch_profile(
             *args, f_lo, f_hi, move.accel, self.resonance_jerk_dt
