@@ -653,8 +653,13 @@ The following information is available in the `toolhead` object
   the printer had to be paused because the toolhead moved faster than
   moves could be read from the G-Code input.
 - `resonance_notch_pair`: The (f_lo, f_hi) notch frequencies in Hz
-  that `resonance_shaping` shapes moves against, or None when shaping
-  is off or no [resonance_model] peaks are saved.
+  that `resonance_shaping` shapes moves with motion on both X and Y
+  against, or None when shaping is off or no [resonance_model] peaks
+  are saved.
+- `resonance_notch_pair_x`, `resonance_notch_pair_y`: The pairs used
+  for moves that run (almost) only along X or only along Y, see
+  `resonance_single_axis_ratio`; None when that axis has no saved
+  peaks.
 - `resonance_shaped_moves`, `resonance_slid_moves`,
   `resonance_fallback_moves`: Counts (since the last restart) of moves
   emitted with the notch pair as chosen, with the pair raised to fit a

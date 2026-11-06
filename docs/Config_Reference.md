@@ -263,6 +263,13 @@ max_accel:
 #   Integration time step in seconds for the emitted jerk-limited slices
 #   when resonance_shaping is enabled. Smaller values create more
 #   motion-queue entries. The default is 0.001.
+#resonance_single_axis_ratio: 0.2
+#   A move whose unit direction has at most this much motion along one
+#   of X or Y is shaped against the other axis's own notch pair instead
+#   of the pair chosen for both axes together. The single-axis pairs
+#   have shorter ramps, which is where the print time goes on short
+#   moves. 0.0 shapes every move against the combined pair. The default
+#   is 0.2.
 #resonance_max_notch_slide: 2.0
 #   Largest factor the notch pair may be raised by to fit a shaped ramp
 #   into a short move before falling back to the stock trapezoid. A slid
