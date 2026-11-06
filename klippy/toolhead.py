@@ -306,7 +306,12 @@ class ToolHead:
         self.resonance_max_notch_slide = config.getfloat(
             "resonance_max_notch_slide", 2.0, minval=1.0, maxval=10.0
         )
+        self.resonance_single_axis_ratio = config.getfloat(
+            "resonance_single_axis_ratio", 0.2, minval=0.0, maxval=1.0
+        )
         self._resonance_notch_pair = None
+        self._resonance_axis_pairs = (None, None)
+        self._resonance_shaping_suspended = False
         self._resonance_stats = {"shaped": 0, "slid": 0, "fallback": 0}
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
@@ -425,7 +430,7 @@ class ToolHead:
         with self.reactor.assert_no_pause():
             for move in moves:
                 segs = None
-                if self.notch_pair_for(move) is not None:
+                if move.notch_pair is not None:
                     segs = self._build_resonance_profile(move)
                 if segs is not None:
                     # The shaped ramp fits within this move's own already
@@ -597,6 +602,14 @@ class ToolHead:
             last_move.limit_next_junction_speed(speed)
 
     def move(self, newpos, speed):
+        if self.printer.is_shutdown():
+            # A command that generates its own moves in a loop (resonance
+            # test, probing sequences) would otherwise keep feeding the
+            # queue without pausing, since nothing pauses after a shutdown,
+            # and hold the reactor until it ran out of moves
+            raise self.printer.command_error(
+                "Move rejected: printer is shutdown"
+            )
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return
@@ -749,6 +762,8 @@ class ToolHead:
                 "minimum_cruise_ratio": self.min_cruise_ratio,
                 "square_corner_velocity": self.square_corner_velocity,
                 "resonance_notch_pair": self._resonance_notch_pair,
+                "resonance_notch_pair_x": self._resonance_axis_pairs[0],
+                "resonance_notch_pair_y": self._resonance_axis_pairs[1],
                 "resonance_shaped_moves": self._resonance_stats["shaped"],
                 "resonance_slid_moves": self._resonance_stats["slid"],
                 "resonance_fallback_moves": self._resonance_stats["fallback"],
@@ -756,20 +771,44 @@ class ToolHead:
         )
         return res
 
-    def notch_pair_for(self, move):
-        # The pair this move is planned and emitted with, or None for the
-        # stock trapezoid. The lookahead and the emitter must agree on it.
-        if (
+    def disable_resonance_shaping(self):
+        # Moves already queued keep the pair they were planned with; only
+        # moves created from now on take the stock trapezoid
+        was_active = (
             self.resonance_shaping
+            and self._resonance_notch_pair is not None
+            and not self._resonance_shaping_suspended
+        )
+        self._resonance_shaping_suspended = True
+        return was_active
+
+    def enable_resonance_shaping(self):
+        self._resonance_shaping_suspended = False
+
+    def notch_pair_for(self, move):
+        # The pair a new move is planned with and stored on it, or None for
+        # the stock trapezoid; the emitter reads the stored pair back
+        if not (
+            self.resonance_shaping
+            and not self._resonance_shaping_suspended
             and self._resonance_notch_pair
             and move.is_kinematic_move
             and (move.axes_d[0] or move.axes_d[1])
         ):
-            return self._resonance_notch_pair
-        return None
+            return None
+        # A move with (almost) no motion along one axis does not drive
+        # that axis's modes, so it only needs the other axis's pair
+        ratio = self.resonance_single_axis_ratio
+        if ratio > 0.0:
+            pair_x, pair_y = self._resonance_axis_pairs
+            if pair_x is not None and abs(move.axes_r[1]) <= ratio:
+                return pair_x
+            if pair_y is not None and abs(move.axes_r[0]) <= ratio:
+                return pair_y
+        return self._resonance_notch_pair
 
     def _build_resonance_profile(self, move):
-        f_lo, f_hi = self._resonance_notch_pair
+        f_lo, f_hi = move.notch_pair
         args = (move.start_v, move.cruise_v, move.end_v, move.move_d)
         segs = resonance_ramp.build_notch_profile(
             *args, f_lo, f_hi, move.accel, self.resonance_jerk_dt
@@ -806,6 +845,7 @@ class ToolHead:
 
     def _handle_resonance_shaping_connect(self):
         self._resonance_notch_pair = None
+        self._resonance_axis_pairs = (None, None)
         if not self.resonance_shaping:
             return
         resonance_model = self.printer.lookup_object("resonance_model", None)
@@ -816,10 +856,11 @@ class ToolHead:
                 " trapezoid until one is added"
             )
             return
-        peaks = list(resonance_model.get_model("x").peaks) + list(
-            resonance_model.get_model("y").peaks
+        model_x = resonance_model.get_model("x")
+        model_y = resonance_model.get_model("y")
+        pair = resonance_ramp.best_notch_pair(
+            resonance_ramp.PeakModel(model_x.peaks + model_y.peaks)
         )
-        pair = resonance_ramp.best_notch_pair(resonance_ramp.PeakModel(peaks))
         if pair is None:
             logging.warning(
                 "resonance_shaping is enabled but [resonance_model] has no"
@@ -829,11 +870,16 @@ class ToolHead:
             )
             return
         self._resonance_notch_pair = pair
+        self._resonance_axis_pairs = (
+            resonance_ramp.best_notch_pair(model_x),
+            resonance_ramp.best_notch_pair(model_y),
+        )
         logging.info(
-            "resonance_shaping: shaping moves against a %.2f/%.2f Hz"
-            " notch pair from the saved resonance model",
-            pair[0],
-            pair[1],
+            "resonance_shaping: notch pairs from the saved resonance model:"
+            " mixed %s, x-only %s, y-only %s Hz",
+            pair,
+            self._resonance_axis_pairs[0],
+            self._resonance_axis_pairs[1],
         )
 
     def get_kinematics(self):
