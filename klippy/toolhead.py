@@ -602,6 +602,14 @@ class ToolHead:
             last_move.limit_next_junction_speed(speed)
 
     def move(self, newpos, speed):
+        if self.printer.is_shutdown():
+            # A command that generates its own moves in a loop (resonance
+            # test, probing sequences) would otherwise keep feeding the
+            # queue without pausing, since nothing pauses after a shutdown,
+            # and hold the reactor until it ran out of moves
+            raise self.printer.command_error(
+                "Move rejected: printer is shutdown"
+            )
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return

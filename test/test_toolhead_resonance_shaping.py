@@ -41,9 +41,19 @@ for name in STUB_MODULES:
         sys.modules[name] = saved_modules[name]
 
 
+class FakeCommandError(Exception):
+    pass
+
+
 class FakePrinter:
-    def __init__(self, objects):
+    command_error = FakeCommandError
+
+    def __init__(self, objects, shutdown=False):
         self._objects = objects
+        self.shutdown = shutdown
+
+    def is_shutdown(self):
+        return self.shutdown
 
     def lookup_object(self, name, default=0):
         if name in self._objects:
@@ -497,6 +507,21 @@ def test_stock_lookahead_plans_speeds_the_ramp_cannot_render():
     print("  without the notch reach, short chords would need the fallback OK")
 
 
+def test_move_is_rejected_once_the_printer_is_shut_down():
+    th = make_planning_toolhead(None)
+    th.printer = FakePrinter({}, shutdown=True)
+    th.commanded_pos = [0.0, 0.0, 0.0, 0.0]
+    th.lookahead = toolhead.LookAheadQueue()
+    try:
+        th.move([10.0, 0.0, 0.0, 0.0], 100.0)
+    except FakeCommandError as e:
+        assert "shutdown" in str(e)
+    else:
+        raise AssertionError("move() must raise after a shutdown")
+    assert th.lookahead.queue == []
+    print("  move() raises after a shutdown instead of queuing OK")
+
+
 def test_lookahead_without_shaping_is_unchanged():
     th = make_planning_toolhead(None)
     moves = plan(th, [(50.0, 0.0), (50.0, 50.0)], 200.0)
@@ -528,6 +553,7 @@ def main():
     test_lookahead_plans_speeds_the_shaped_ramp_can_render()
     test_stock_lookahead_plans_speeds_the_ramp_cannot_render()
     test_lookahead_without_shaping_is_unchanged()
+    test_move_is_rejected_once_the_printer_is_shut_down()
     print("ALL PASS")
 
 

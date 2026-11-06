@@ -435,9 +435,12 @@ class ResonanceTester:
 
                 # Generate moves
                 test_seq = self.generator.gen_test()
-                self.executor.run_test(test_seq, axis, gcmd)
+                try:
+                    self.executor.run_test(test_seq, axis, gcmd)
+                finally:
+                    for chip_axis, aclient, chip_name in raw_values:
+                        aclient.finish_measurements()
                 for chip_axis, aclient, chip_name in raw_values:
-                    aclient.finish_measurements()
                     if raw_name_suffix is not None:
                         raw_name = self.get_filename(
                             "raw_data",
