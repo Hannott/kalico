@@ -542,15 +542,21 @@ models, see [Nonlinear Pressure Advance](Nonlinear_Pressure_Advance.md).
 
 #### PA_SOLVE
 `PA_SOLVE [EXTRUDER=<config_name>] SLOW_VELOCITY=<mm/s>
-SLOW_ADVANCE=<pressure_advance> FAST_VELOCITY=<mm/s>
-FAST_ADVANCE=<pressure_advance> [LINE_WIDTH=<mm>] [LAYER_HEIGHT=<mm>]
-[MODEL=tanh|recipr] [VELOCITY=<linearization_velocity>] [APPLY=1]`:
+SLOW_ADVANCE=<pressure_advance>|SLOW_BAND=<band> FAST_VELOCITY=<mm/s>
+FAST_ADVANCE=<pressure_advance>|FAST_BAND=<band> [LINE_WIDTH=<mm>]
+[LAYER_HEIGHT=<mm>] [MODEL=tanh|recipr] [VELOCITY=<linearization_velocity>]
+[APPLY=1]`:
 Compute the `linear_advance` and `nonlinear_offset` of a non-linear
 pressure advance model from two linear pressure advance values: the one
 that looked best at slow velocity transitions (SLOW_ADVANCE at toolhead
 speed SLOW_VELOCITY) and the one that looked best at fast transitions
 (FAST_ADVANCE at toolhead speed FAST_VELOCITY), typically read from the
-left and the front face of a single linear pressure advance tower. The
+left and the front face of a single linear pressure advance tower.
+Instead of a value, each side can take the number of the band it was
+read from (SLOW_BAND, FAST_BAND, counting from 0 at the bottom of the
+tower): the value is then taken from the last
+`TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE` test run
+since the last restart, which must have used STEP_HEIGHT or BAND. The
 toolhead speeds are converted to filament velocity, which is what the
 models and `linearization_velocity` use, with the line geometry they
 were printed at: LINE_WIDTH defaults to the extruder's nozzle diameter

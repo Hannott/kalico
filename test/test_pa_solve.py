@@ -1,7 +1,11 @@
 import math
+import threading
+from unittest import mock
 
 import pytest
 
+from klippy import gcode as gcode_module
+from klippy.extras import tuning_tower
 from klippy.kinematics import extruder
 
 MODELS = [extruder.PATanhModel, extruder.PAReciprModel]
@@ -105,3 +109,114 @@ def test_filament_velocity_scales_with_line_cross_section():
     assert extruder.filament_velocity(
         150.0, 0.8, 0.2, filament_area
     ) == pytest.approx(2 * 4.989, abs=2e-3)
+
+
+def _tower(step_delta=0.005, step_height=5.0, start=0.0, skip=0.0):
+    tower = tuning_tower.TuningTower.__new__(tuning_tower.TuningTower)
+    tower.command, tower.parameter = "SET_PRESSURE_ADVANCE", "ADVANCE"
+    tower.start, tower.factor, tower.band = start, 0.0, 0.0
+    tower.step_delta, tower.step_height, tower.skip = (
+        step_delta,
+        step_height,
+        skip,
+    )
+    return tower
+
+
+class _Printer:
+    def __init__(self, **objects):
+        self.objects = objects
+
+    def lookup_object(self, name, default=None):
+        return self.objects.get(name, default)
+
+
+def _stepper(**objects):
+    stepper = extruder.ExtruderStepper.__new__(extruder.ExtruderStepper)
+    stepper.printer = _Printer(**objects)
+    return stepper
+
+
+def _gcmd(**params):
+    gcode = mock.Mock()
+    return gcode_module.GCodeCommand(
+        gcode,
+        "PA_SOLVE",
+        "",
+        {k: str(v) for k, v in params.items()},
+        None,
+        gcode_module.GCodeContextScope(
+            gcode_module.GCodeContextRoot(threading.Lock())
+        ),
+    )
+
+
+def test_band_value_in_step_mode():
+    tower = _tower()
+    assert tower.get_band_value(
+        "SET_PRESSURE_ADVANCE", "ADVANCE", 6
+    ) == pytest.approx(0.030)
+    assert tower.get_band_value(
+        "SET_PRESSURE_ADVANCE", "ADVANCE", 0
+    ) == pytest.approx(0.0)
+
+
+def test_band_value_counts_bands_after_skip():
+    tower = _tower(start=0.02, skip=3.0)
+    assert tower.get_band_value(
+        "SET_PRESSURE_ADVANCE", "ADVANCE", 2
+    ) == pytest.approx(0.03)
+
+
+def test_band_value_in_factor_mode_uses_the_band_center():
+    tower = _tower(step_delta=0.0, step_height=0.0)
+    tower.factor, tower.band = 0.001, 5.0
+    assert tower.get_band_value(
+        "SET_PRESSURE_ADVANCE", "ADVANCE", 1
+    ) == pytest.approx(0.0075)
+
+
+def test_band_value_needs_the_same_command_and_bands():
+    tower = _tower()
+    assert tower.get_band_value("SET_PRESSURE_ADVANCE", "OFFSET", 1) is None
+    tower.step_delta = tower.step_height = 0.0
+    tower.factor = 0.001
+    assert tower.get_band_value("SET_PRESSURE_ADVANCE", "ADVANCE", 1) is None
+    tower.command = None
+    assert tower.get_band_value("SET_PRESSURE_ADVANCE", "ADVANCE", 1) is None
+
+
+def test_band_reads_the_value_from_the_last_tower():
+    stepper = _stepper(tuning_tower=_tower(), pa_test=mock.Mock(height=50.0))
+    assert stepper._get_tower_advance(
+        _gcmd(SLOW_BAND=6), "SLOW"
+    ) == pytest.approx((0.030, 6))
+
+
+def test_advance_value_is_used_as_given():
+    stepper = _stepper()
+    assert stepper._get_tower_advance(_gcmd(FAST_ADVANCE=0.025), "FAST") == (
+        0.025,
+        None,
+    )
+
+
+@pytest.mark.parametrize("params", [{}, {"SLOW_BAND": 6, "SLOW_ADVANCE": 0.03}])
+def test_needs_exactly_one_of_band_and_advance(params):
+    stepper = _stepper(tuning_tower=_tower())
+    with pytest.raises(gcode_module.CommandError, match="either"):
+        stepper._get_tower_advance(_gcmd(**params), "SLOW")
+
+
+def test_band_without_a_tower_since_restart_is_rejected():
+    tower = _tower()
+    tower.command = None
+    stepper = _stepper(tuning_tower=tower)
+    with pytest.raises(gcode_module.CommandError, match="SLOW_ADVANCE"):
+        stepper._get_tower_advance(_gcmd(SLOW_BAND=6), "SLOW")
+
+
+def test_band_above_the_tower_is_rejected():
+    stepper = _stepper(tuning_tower=_tower(), pa_test=mock.Mock(height=50.0))
+    with pytest.raises(gcode_module.CommandError, match="above the top"):
+        stepper._get_tower_advance(_gcmd(SLOW_BAND=10), "SLOW")

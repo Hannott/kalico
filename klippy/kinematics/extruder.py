@@ -529,11 +529,51 @@ class ExtruderStepper:
             )
         return extruder
 
+    def _get_tower_advance(self, gcmd, prefix):
+        advance_name = prefix + "_ADVANCE"
+        band_name = prefix + "_BAND"
+        advance = gcmd.get_float(advance_name, None, minval=0.0)
+        band = gcmd.get_int(band_name, None, minval=0)
+        if (advance is None) == (band is None):
+            raise gcmd.error(
+                "PA_SOLVE needs either %s or %s" % (advance_name, band_name)
+            )
+        if band is None:
+            return advance, None
+        tuning_tower = self.printer.lookup_object("tuning_tower", None)
+        if tuning_tower is not None:
+            advance = tuning_tower.get_band_value(
+                "SET_PRESSURE_ADVANCE", "ADVANCE", band
+            )
+        if advance is None:
+            raise gcmd.error(
+                "%s needs a pressure advance tower printed since the last"
+                " restart (TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE"
+                " PARAMETER=ADVANCE with STEP_HEIGHT or BAND); pass the"
+                " band's value as %s instead" % (band_name, advance_name)
+            )
+        pa_test = self.printer.lookup_object("pa_test", None)
+        band_height = tuning_tower.step_height or tuning_tower.band
+        if (
+            pa_test is not None
+            and tuning_tower.skip + band * band_height >= pa_test.height
+        ):
+            raise gcmd.error(
+                "%s=%d is above the top of the %.1f mm tower"
+                % (band_name, band, pa_test.height)
+            )
+        if advance < 0.0:
+            raise gcmd.error(
+                "%s=%d has a negative advance (%.5f)"
+                % (band_name, band, advance)
+            )
+        return advance, band
+
     def cmd_PA_SOLVE(self, gcmd):
         slow_velocity = gcmd.get_float("SLOW_VELOCITY", above=0.0)
-        slow_advance = gcmd.get_float("SLOW_ADVANCE", minval=0.0)
         fast_velocity = gcmd.get_float("FAST_VELOCITY", above=slow_velocity)
-        fast_advance = gcmd.get_float("FAST_ADVANCE", minval=0.0)
+        slow_advance, slow_band = self._get_tower_advance(gcmd, "SLOW")
+        fast_advance, fast_band = self._get_tower_advance(gcmd, "FAST")
         extruder = self._get_extruder(gcmd)
         line_width = gcmd.get_float(
             "LINE_WIDTH", extruder.nozzle_diameter, above=0.0
@@ -597,6 +637,14 @@ class ExtruderStepper:
         pa_model.nonlinear_offset = nonlinear_offset
         pa_model.linearization_velocity = linearization_velocity
         lines = [
+            "%s band %d of the last tower: ADVANCE=%.5f" % (name, band, advance)
+            for name, band, advance in (
+                ("SLOW", slow_band, slow_advance),
+                ("FAST", fast_band, fast_advance),
+            )
+            if band is not None
+        ]
+        lines += [
             "Non-linear pressure advance matching linear %.5f at %.1f mm/s"
             " and %.5f at %.1f mm/s toolhead speed (%.2f x %.2f mm line,"
             " %.3f and %.3f mm/s of filament)"
