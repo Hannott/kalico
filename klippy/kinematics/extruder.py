@@ -529,9 +529,11 @@ class ExtruderStepper:
     cmd_PA_SOLVE_params = {
         "EXTRUDER": {"type": "string", "required": True},
         "SLOW_VELOCITY": {"type": "float", "required": True},
-        "SLOW_ADVANCE": {"type": "float", "required": True},
+        "SLOW_ADVANCE": {"type": "float", "required": False},
+        "SLOW_BAND": {"type": "int", "required": False},
         "FAST_VELOCITY": {"type": "float", "required": True},
-        "FAST_ADVANCE": {"type": "float", "required": True},
+        "FAST_ADVANCE": {"type": "float", "required": False},
+        "FAST_BAND": {"type": "int", "required": False},
         "LINE_WIDTH": {"type": "float", "required": False},
         "LAYER_HEIGHT": {"type": "float", "required": False},
         "MODEL": {"type": "string", "required": False},
