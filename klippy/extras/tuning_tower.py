@@ -16,6 +16,7 @@ class TuningTower:
         self.last_z = self.start = self.factor = self.band = 0.0
         self.last_command_value = None
         self.command_fmt = ""
+        self.command = self.parameter = None
         self.gcode_move = self.printer.load_object(config, "gcode_move")
         # Register command
         self.gcode = self.printer.lookup_object("gcode")
@@ -44,6 +45,7 @@ class TuningTower:
         # Get parameters
         command = gcmd.get("COMMAND")
         parameter = gcmd.get("PARAMETER")
+        self.command = self.parameter = None
         self.start = gcmd.get_float("START", 0.0)
         self.factor = gcmd.get_float("FACTOR", 0.0)
         self.band = gcmd.get_float("BAND", 0.0, minval=0.0)
@@ -61,6 +63,7 @@ class TuningTower:
             self.command_fmt = "%s %s%%.9f" % (command, parameter)
         else:
             self.command_fmt = "%s %s=%%.9f" % (command, parameter)
+        self.command, self.parameter = command.upper(), parameter.upper()
         nt = self.gcode_move.set_move_transform(self, force=True)
         self.normal_transform = nt
         self.last_z = -99999999.9
@@ -96,6 +99,14 @@ class TuningTower:
         if self.band:
             z = (math.floor(z / self.band) + 0.5) * self.band
         return self.start + z * self.factor
+
+    def get_band_value(self, command, parameter, band):
+        if (self.command, self.parameter) != (command, parameter):
+            return None
+        band_height = self.step_height or self.band
+        if not band_height:
+            return None
+        return self.calc_value(self.skip + (band + 0.5) * band_height)
 
     def move(self, newpos, speed):
         normal_transform = self.normal_transform

@@ -209,12 +209,14 @@ The `PA_SOLVE` command does that computation.
 3. In your printer configuration, set `pressure_advance_model` to `recipr`, `linear_advance` to 0, `nonlinear_offset` to 0, `linearization_velocity` to 1 (2 or 3 for Bowden printers, see below) and `pressure_advance_smooth_time` to 0.02, then restart.
    With `nonlinear_offset` at 0 the model behaves exactly like linear pressure advance, so the first tower is a plain linear tower.
 4. Run the PA test macro with `NOZZLE`, `TARGET_TEMP` and `TESTPARAM=0`. Note the band table the macro prints.
-5. Read two values off the tower:
-    1. the band where the left face looks best gives the linear value for the slow transitions, `SLOW_ADVANCE`;
-    2. the band where the front face looks best gives the linear value for the fast transitions, `FAST_ADVANCE`.
+5. Read two bands off the tower:
+    1. the band where the left face looks best is the slow band, `SLOW_BAND`;
+    2. the band where the front face looks best is the fast band, `FAST_BAND`.
 
-   If both faces look best in the same band, linear pressure advance is sufficient for this filament: set `linear_advance` to that value and stop here.
-6. Run `PA_SOLVE SLOW_VELOCITY=<slow_velocity of [pa_test]> SLOW_ADVANCE=<value> FAST_VELOCITY=<fast_velocity of [pa_test]> FAST_ADVANCE=<value>`.
+   If both faces look best in the same band, linear pressure advance is sufficient for this filament: set `linear_advance` to that band's value from the table and stop here.
+6. Run `PA_SOLVE SLOW_VELOCITY=<slow_velocity of [pa_test]> SLOW_BAND=<band> FAST_VELOCITY=<fast_velocity of [pa_test]> FAST_BAND=<band>`.
+   The band numbers are those of the table the macro printed, counting from 0 at the bottom, and `PA_SOLVE` looks up their values from the tower that was printed.
+   After a restart it no longer knows the tower: pass the values from the table as `SLOW_ADVANCE` and `FAST_ADVANCE` instead.
    The velocities are the toolhead speeds of the tower; the command converts them to filament velocity using the nozzle diameter and the `layer_height` of `[pa_test]`, which is how the tower was printed. Pass `LINE_WIDTH` and `LAYER_HEIGHT` if the values were read from something else.
    It prints `linear_advance` and `nonlinear_offset`, the resulting advance at a few velocities, and the `SET_PRESSURE_ADVANCE` command that applies them. Put the values in your configuration and restart (or add `APPLY=1` to try them right away).
 7. Verify with a narrow offset tower: run the macro with `TESTPARAM=1 PA_VALUE=<solved nonlinear_offset> PA_RANGE=<about half of it>`.
