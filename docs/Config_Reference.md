@@ -1918,6 +1918,47 @@ gcode:
 #   axis. The default is to not force a position for an axis.
 ```
 
+### [corexy_precise_homing]
+
+Refine the X and Y home position of a CoreXY printer that uses
+sensorless homing. After the regular homing, one motor alone bumps
+the X stop and the Y stop along a diagonal, and the measured
+distances are snapped to the full-step grid of the motors. This
+removes most of the trigger jitter of sensorless homing. Both X and Y
+must use sensorless homing with TMC drivers. Run
+COREXY_PRECISE_HOMING_CALIBRATE once, followed by SAVE_CONFIG, to
+store the grid origin of the machine; until then the origin is taken
+from the first homing after each restart. See the
+[command reference](G-Codes.md#corexy_precise_homing) for additional
+information.
+
+```
+[corexy_precise_homing]
+#speed:
+#   Speed (in mm/s) of the moves that bump the stops. The default is
+#   the homing_speed of the stepper that performs the bumps.
+#backoff_distance: 5.0
+#   Distance (in mm) from each endstop to the start point of the
+#   measurement. Each bump travels twice this distance, so both axes
+#   need a travel of at least four times this value. The default is
+#   5.0.
+#samples: 2
+#   Number of bumps against each stop. The default is 2.
+#tolerance:
+#   Maximum spread (in mm) between the samples of one stop. If the
+#   spread is larger, the measurement is repeated. The default is one
+#   full step of the motor that performs the bumps.
+#retries: 3
+#   Number of times to repeat a measurement that is out of tolerance
+#   or that falls between two grid nodes before the homing fails. The
+#   default is 3.
+#origin:
+#   The grid origin of the machine, as two numbers between -0.5 and
+#   0.5. This is set by COREXY_PRECISE_HOMING_CALIBRATE and
+#   SAVE_CONFIG. The default is to measure it on the first homing
+#   after a restart.
+```
+
 ### [endstop_phase]
 
 Stepper phase adjusted endstops. To use this feature, define a config
