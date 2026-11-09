@@ -250,7 +250,11 @@ class TemplateWrapperJinja:
             logging.exception(msg)
             raise self.gcode.error(msg)
 
+    def run_gcode(self, gcmd, context=None):
+        gcmd.run_script(self.render(context))
+
     def run_gcode_from_command(self, context=None):
+        # Compatibility entry point without an inherited execution context.
         self.gcode.run_script_from_command(self.render(context))
 
 
@@ -277,10 +281,13 @@ class TemplateWrapperPython:
             logging.exception(msg)
             raise self.gcode.error(msg)
 
-    def run_gcode_from_command(self, context=None):
+    def run_gcode(self, gcmd, context=None):
+        self._run_gcode(gcmd.run_script, context)
+
+    def _run_gcode(self, run_script, context=None):
         helpers = {
             "printer": GetStatusWrapperPython(self.printer),
-            "emit": self._action_emit,
+            "emit": run_script,
             "wait_while": self._action_wait_while,
             "wait_until": self._action_wait_until,
             "wait_moves": self._action_wait_moves,
@@ -321,8 +328,9 @@ class TemplateWrapperPython:
             logging.exception(msg)
             raise self.gcode.error(msg)
 
-    def _action_emit(self, gcode):
-        self.gcode.run_script_from_command(gcode)
+    def run_gcode_from_command(self, context=None):
+        # Compatibility entry point without an inherited execution context.
+        self._run_gcode(self.gcode.run_script_from_command, context)
 
     def _action_wait_while(self, check):
         def inner(eventtime):
@@ -624,7 +632,7 @@ class GCodeMacro:
         kwparams["rawparams"] = gcmd.get_raw_command_parameters()
         self.in_script = True
         try:
-            self.template.run_gcode_from_command(kwparams)
+            self.template.run_gcode(gcmd, kwparams)
         finally:
             self.in_script = False
 

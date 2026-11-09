@@ -144,7 +144,7 @@ class PhaseCalibrate:
                         % (end[0], end[1])
                     )
 
-    def _suspend_limits(self, test):
+    def _suspend_limits(self, test, gcmd):
         """Test limits and no input shaping for a whole command, so that
         its many test runs don't each announce the change."""
         scale = test["scale"]
@@ -153,6 +153,7 @@ class PhaseCalibrate:
             test["accel"] * scale,
             test["max_speed"] * scale,
             False,
+            gcmd,
         )
 
     @contextlib.contextmanager
@@ -607,7 +608,7 @@ class PhaseCalibrate:
             " %.0f mm/s"
             % (stepper.get_name(), period, how, speeds[0], speeds[-1])
         )
-        with self._suspend_limits(test):
+        with self._suspend_limits(test, gcmd):
             if ramp:
                 rows = self._measure_ramp_rows(
                     gcmd, test, harmonics, speeds, speed_step
@@ -722,7 +723,7 @@ class PhaseCalibrate:
         # correction would leave out the speeds it already cancels, and the
         # new correction could then make them worse.
         uncorrected = self._uncorrected(phase_stepping, harmonics)
-        with uncorrected, self._suspend_limits(search):
+        with uncorrected, self._suspend_limits(search, gcmd):
             gcmd.respond_info("Finding calibration speeds for %s" % (name,))
             rows = sweep()
             period = search["period"]

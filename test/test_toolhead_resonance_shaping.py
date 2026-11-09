@@ -264,7 +264,7 @@ class FakeGcode:
     def respond_info(self, msg):
         self.messages.append(msg)
 
-    def run_script_from_command(self, script):
+    def run_script(self, script):
         self.scripts.append(script)
 
 
@@ -286,13 +286,13 @@ def test_resonance_test_suspends_shaping_unless_input_shaping_is_kept():
     gcode = FakeGcode()
     printer = FakePrinter({"toolhead": th, "gcode": gcode})
     printer.get_reactor = lambda: FakeReactorTime()
-    with resonance_tester.suspend_limits(printer, 1000.0, 50.0, 0):
+    with resonance_tester.suspend_limits(printer, 1000.0, 50.0, 0, gcode):
         assert th._resonance_shaping_suspended
     assert not th._resonance_shaping_suspended
     assert any("Disabled resonance_shaping" in m for m in gcode.messages)
     assert any("Re-enabled resonance_shaping" in m for m in gcode.messages)
     gcode.messages = []
-    with resonance_tester.suspend_limits(printer, 1000.0, 50.0, 1):
+    with resonance_tester.suspend_limits(printer, 1000.0, 50.0, 1, gcode):
         assert not th._resonance_shaping_suspended
     assert not any("resonance_shaping" in m for m in gcode.messages)
     print("  resonance tests suspend shaping unless INPUT_SHAPING=1 OK")

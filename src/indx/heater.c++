@@ -246,9 +246,9 @@ command_indx_set_target(uint32_t *args) {
         sched_del_timer(&indx_heater_instance->timeout_timer);
     } else {
         indx_heater_instance->pid.update_set_point(set_point);
-        sched_del_timer(&indx_heater_instance->timeout_timer);
         indx_heater_instance->timeout_timer.waketime =
             timer_read_time() + timer_from_us(HEATER_TIMEOUT_US);
+        sched_del_timer(&indx_heater_instance->timeout_timer);
         sched_add_timer(&indx_heater_instance->timeout_timer);
     }
 }
@@ -347,11 +347,6 @@ command_indx_tune_coil(uint32_t *args) {
     if (!indx_heater_instance)
         return;
 
-    // A set target with a momentarily zero PID output would otherwise pass
-    // the coil's idle check and then fault on the next heater update.
-    if (indx_heater_instance->pid.set_point().has_value()) {
-        shutdown("INDX coil tune requested while heater target set");
-    }
     indx_heater_instance->coil_driver_inst.start_tune(args[0] != 0);
 }
 DECL_COMMAND(command_indx_tune_coil, "indx_tune_coil debug=%c");
@@ -456,9 +451,8 @@ indx_heater_task(void) {
         return;
     }
     if (indx_heater_instance->want_update) {
-        // Clear before run() so a request raised during a slow run survives
-        indx_heater_instance->want_update = false;
         indx_heater_instance->run();
+        indx_heater_instance->want_update = false;
     }
 }
 DECL_TASK(indx_heater_task);

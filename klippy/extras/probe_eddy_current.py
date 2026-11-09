@@ -357,7 +357,7 @@ class EddyEndstopWrapper:
     def probing_move(self, pos, speed, gcmd):
         # Perform probing move
         phoming = self._printer.lookup_object("homing")
-        trig_pos = phoming.probing_move(self, pos, speed)
+        trig_pos = phoming.probing_move(self, pos, speed, gcmd)
         if not self._trigger_time:
             return trig_pos
         # Wait for samples to arrive
@@ -403,14 +403,14 @@ class EddyEndstopWrapper:
     def begin_collect_distance(self):
         return EddyDistanceCollector(self)
 
-    def multi_probe_begin(self):
+    def multi_probe_begin(self, context):
         if not self._calibration.is_calibrated():
             raise self._printer.command_error(
                 "Must calibrate probe_eddy_current first"
             )
         self._start_measurements()
 
-    def multi_probe_end(self):
+    def multi_probe_end(self, context):
         self._stop_measurements()
 
     def probe_prepare(self, hmove):

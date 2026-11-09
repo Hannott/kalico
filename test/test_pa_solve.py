@@ -1,4 +1,5 @@
 import math
+import threading
 from unittest import mock
 
 import pytest
@@ -139,7 +140,14 @@ def _stepper(**objects):
 def _gcmd(**params):
     gcode = mock.Mock()
     return gcode_module.GCodeCommand(
-        gcode, "PA_SOLVE", "", {k: str(v) for k, v in params.items()}, False
+        gcode,
+        "PA_SOLVE",
+        "",
+        {k: str(v) for k, v in params.items()},
+        None,
+        gcode_module.GCodeContextScope(
+            gcode_module.GCodeContextRoot(threading.Lock())
+        ),
     )
 
 

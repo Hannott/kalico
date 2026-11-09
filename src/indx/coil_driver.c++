@@ -879,9 +879,7 @@ tuner_state::start(bool want_details) {
     phase = tune_phase::on_first;
     status = tune_status::running;
     on_first_ticks = TUNE_ON_FIRST_SEED;
-    // Give the coil the same settle time before the first burst as between
-    // bursts, so a residual current can't trip COMP1 early.
-    next_fire_time = timer_read_time() + timer_from_us(TUNE_SETTLE_US);
+    next_fire_time = timer_read_time();
     ov_count_at_start = state.overvoltage_count();
     deadline = timer_read_time() + timer_from_us(TUNE_TOTAL_TIMEOUT_US);
     // The test bursts overwrite the published drive timings, so any previously
@@ -1132,11 +1130,6 @@ coil_driver::start_tune(bool want_details) {
     }
     if (state.pending_on_cycles != 0) {
         shutdown("INDX coil tune requested while heater active");
-    }
-    // The current frame keeps firing until the timer stops at its boundary
-    bool idle = DRIVE_TCC->STATUS.bit.STOP || DRIVE_TCC->STATUS.bit.FAULT0;
-    if (!idle) {
-        shutdown("INDX coil tune requested while coil still driven");
     }
     tuner.start(want_details);
 }
