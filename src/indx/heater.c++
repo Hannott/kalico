@@ -34,14 +34,18 @@ indx_heater::run() {
 
     switch (this->state.nozzle_temperature.error) {
     case ir_sensor_error::ok:
-        if (this->state.nozzle_temperature.object_temperature >
-            HEATER_MAX_TEMPERATURE) {
+        // Written so that NaN fails the check instead of passing it
+        if (!(this->state.nozzle_temperature.object_temperature <=
+              HEATER_MAX_TEMPERATURE)) {
             shutdown("Heater maximum safe temperature passed");
         }
 
         output =
             this->pid.step(this->state.nozzle_temperature.object_temperature,
                            this->update_interval);
+        if (!std::isfinite(output)) {
+            shutdown("Heater PID output is not finite");
+        }
         break;
     case ir_sensor_error::no_radiance:
         if (this->pid.set_point().has_value()) {
