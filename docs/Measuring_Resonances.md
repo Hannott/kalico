@@ -436,9 +436,9 @@ noisy imbalanced fans on a 3D printer.
 Before the sweep for an axis, `TEST_RESONANCES` and `SHAPER_CALIBRATE` run a
 few slow, deliberately sub-resonance back-and-forth moves along that axis
 alone and check how much of that motion registers on the perpendicular
-accelerometer channel. Since the moves are too slow to excite any real
-mechanical resonance, any signal seen on the other axis is attributable to
-the accelerometer not being mounted exactly orthogonally to the frame, and
+accelerometer channel. The readings are low-passed to keep only the slow
+commanded motion, so signal seen on the other axis is attributed to the
+accelerometer not being mounted exactly orthogonally to the frame, and
 it is subtracted out for the rest of the run so it doesn't skew shaper
 calibration. You'll see a line like:
 ```

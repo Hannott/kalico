@@ -46,11 +46,29 @@ def _gen_fixed_freq_test(freq, accel, num_periods):
     res = []
     sign = 1.0
     t = 0.0
-    for _ in range(int(round(num_periods * 4))):
+    for i in range(int(round(num_periods * 4))):
         t += t_seg
         res.append((t, sign * accel, freq))
-        sign = -sign
+        if i % 2 == 0:
+            sign = -sign
     return res
+
+
+CROSSTALK_LOWPASS_HZ = 10.0
+
+
+def _lowpass_zero_phase(values, alpha, passes=2):
+    out = list(values)
+    y0 = sum(out) / len(out)
+    for _ in range(passes):
+        y = y0
+        for i in range(len(out)):
+            y += alpha * (out[i] - y)
+            out[i] = y
+        for i in range(len(out) - 1, -1, -1):
+            y += alpha * (out[i] - y)
+            out[i] = y
+    return out
 
 
 def _crosstalk_ratio(samples, axis_name):
@@ -58,13 +76,21 @@ def _crosstalk_ratio(samples, axis_name):
     # the perpendicular-axis reading vs. the primary-axis reading: the
     # fraction of primary-axis motion that leaks into the perpendicular
     # channel, attributable to the accelerometer not being mounted exactly
-    # orthogonally to the frame.
+    # orthogonally to the frame. Both channels are low-passed first because
+    # the acceleration steps of the probing move ring the frame, and that
+    # structural coupling is not a sensor misalignment.
     primary_idx, perp_idx = (1, 2) if axis_name == "x" else (2, 1)
     n = len(samples)
+    if n < 2:
+        return None
+    dt = (samples[-1][0] - samples[0][0]) / (n - 1)
+    if dt <= 0.0:
+        return None
+    alpha = dt / (dt + 1.0 / (2.0 * math.pi * CROSSTALK_LOWPASS_HZ))
+    prim = _lowpass_zero_phase([s[primary_idx] for s in samples], alpha)
+    perp = _lowpass_zero_phase([s[perp_idx] for s in samples], alpha)
     sum_p = sum_q = sum_pp = sum_pq = 0.0
-    for s in samples:
-        p = s[primary_idx]
-        q = s[perp_idx]
+    for p, q in zip(prim, perp):
         sum_p += p
         sum_q += q
         sum_pp += p * p

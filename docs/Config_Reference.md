@@ -2448,7 +2448,8 @@ section of the measuring resonances guide for more information on
 #   Frequency (Hz) of the probing moves used to detect accelerometer
 #   cross-axis leakage. Must stay well below the printer's real first
 #   resonance, or genuine mechanical coupling could be mistaken for
-#   sensor misalignment. The default is 2.0 Hz.
+#   sensor misalignment. The readings are low-passed at 10 Hz before
+#   the leakage is estimated. The default is 2.0 Hz.
 #crosstalk_test_cycles: 4
 #   Number of oscillation cycles to run when probing for cross-axis
 #   leakage. The default is 4.
