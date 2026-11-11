@@ -11,8 +11,11 @@ struct pull_history_steps {
     int step_count, interval, add;
 };
 
+#include <pthread.h> // pthread_mutex_t
+
 struct list_head;
-struct stepcompress *stepcompress_alloc(struct list_head *msg_queue);
+struct stepcompress *stepcompress_alloc(struct list_head *msg_queue
+                                        , pthread_mutex_t *lock);
 void stepcompress_fill(struct stepcompress *sc, uint32_t oid, uint32_t max_error
                        , int32_t queue_step_msgtag
                        , int32_t set_next_step_dir_msgtag);
@@ -27,6 +30,8 @@ void stepcompress_set_time(struct stepcompress *sc
 int stepcompress_append(struct stepcompress *sc, int sdir
                         , double print_time, double step_time);
 int stepcompress_commit(struct stepcompress *sc);
+void stepcompress_publish(struct stepcompress *sc);
+int stepcompress_convert(struct stepcompress *sc, double convert_time);
 int stepcompress_flush(struct stepcompress *sc, uint64_t move_clock);
 int stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock);
 int stepcompress_set_last_position(struct stepcompress *sc, uint64_t clock

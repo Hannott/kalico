@@ -15,6 +15,7 @@
 // efficiency - the repetitive integer math is vastly faster in C.
 
 #include <math.h> // sqrt
+#include <pthread.h> // pthread_mutex_lock
 #include <stddef.h> // offsetof
 #include <stdint.h> // uint32_t
 #include <stdio.h> // fprintf
@@ -27,8 +28,32 @@
 
 #define CHECK_LINES 1
 #define QUEUE_START_SIZE 1024
+#define PENDING_START_SIZE 1024
+
+// A step time reported by the step generator, not yet converted to a
+// mcu clock
+struct pending_step {
+    double print_time, step_time;
+    int flags;
+};
+
+enum {
+    PS_DIR = 1 << 0, PS_COMMIT = 1 << 1, PS_COMMIT_ONLY = 1 << 2,
+};
+
+struct pending_buffer {
+    struct pending_step *steps;
+    int pos, next, alloc;
+};
 
 struct stepcompress {
+    // Generator side (only used by the step generation thread)
+    struct pending_buffer gen;
+    int gen_step_dir;
+    // Lock protecting everything below this point
+    pthread_mutex_t *lock;
+    // Generated steps waiting for conversion to mcu clock
+    struct pending_buffer pending;
     // Buffer management
     uint32_t *queue, *queue_end, *queue_pos, *queue_next;
     // Internal tracking
@@ -243,13 +268,14 @@ check_line(struct stepcompress *sc, struct step_move move)
 
 // Allocate a new 'stepcompress' object
 struct stepcompress *
-stepcompress_alloc(struct list_head *msg_queue)
+stepcompress_alloc(struct list_head *msg_queue, pthread_mutex_t *lock)
 {
     struct stepcompress *sc = malloc(sizeof(*sc));
     memset(sc, 0, sizeof(*sc));
     list_init(&sc->history_list);
     sc->sdir = -1;
     sc->msg_queue = msg_queue;
+    sc->lock = lock;
     return sc;
 }
 
@@ -258,10 +284,12 @@ void __visible
 stepcompress_fill(struct stepcompress *sc, uint32_t oid, uint32_t max_error
                   , int32_t queue_step_msgtag, int32_t set_next_step_dir_msgtag)
 {
+    pthread_mutex_lock(sc->lock);
     sc->oid = oid;
     sc->max_error = max_error;
     sc->queue_step_msgtag = queue_step_msgtag;
     sc->set_next_step_dir_msgtag = set_next_step_dir_msgtag;
+    pthread_mutex_unlock(sc->lock);
 }
 
 // Set the inverted stepper direction flag
@@ -269,11 +297,13 @@ void __visible
 stepcompress_set_invert_sdir(struct stepcompress *sc, uint32_t invert_sdir)
 {
     invert_sdir = !!invert_sdir;
+    pthread_mutex_lock(sc->lock);
     if (invert_sdir != sc->invert_sdir) {
         sc->invert_sdir = invert_sdir;
         if (sc->sdir >= 0)
             sc->sdir ^= 1;
     }
+    pthread_mutex_unlock(sc->lock);
 }
 
 // Expire the stepcompress history older than the given clock
@@ -297,6 +327,8 @@ stepcompress_free(struct stepcompress *sc)
     if (!sc)
         return;
     free(sc->queue);
+    free(sc->gen.steps);
+    free(sc->pending.steps);
     stepcompress_history_expire(sc, UINT64_MAX);
     free(sc);
 }
@@ -307,10 +339,11 @@ stepcompress_get_oid(struct stepcompress *sc)
     return sc->oid;
 }
 
+// Return the direction of the most recently generated step
 int
 stepcompress_get_step_dir(struct stepcompress *sc)
 {
-    return sc->next_step_dir;
+    return sc->gen_step_dir;
 }
 
 // Determine the "print time" of the last_step_clock
@@ -491,10 +524,10 @@ queue_append(struct stepcompress *sc)
 
 #define SDS_FILTER_TIME .000750
 
-// Add next step time
-int
-stepcompress_append(struct stepcompress *sc, int sdir
-                    , double print_time, double step_time)
+// Convert a generated step time to a mcu clock and add it to the queue
+static int
+convert_append(struct stepcompress *sc, int sdir
+               , double print_time, double step_time)
 {
     // Calculate step clock
     double offset = print_time - sc->last_step_print_time;
@@ -522,11 +555,115 @@ stepcompress_append(struct stepcompress *sc, int sdir
 }
 
 // Commit next pending step (ie, do not allow a rollback)
-int
-stepcompress_commit(struct stepcompress *sc)
+static int
+convert_commit(struct stepcompress *sc)
 {
     if (sc->next_step_clock)
         return queue_append(sc);
+    return 0;
+}
+
+
+/****************************************************************
+ * Pending step buffer
+ ****************************************************************/
+
+// Make room for 'count' more entries at the end of a pending buffer
+static void
+pending_reserve(struct pending_buffer *pb, int count)
+{
+    if (pb->next + count <= pb->alloc)
+        return;
+    int in_use = pb->next - pb->pos;
+    if (pb->pos && in_use + count <= pb->alloc / 2) {
+        memmove(pb->steps, &pb->steps[pb->pos], in_use * sizeof(*pb->steps));
+    } else {
+        int alloc = 2 * (in_use + count);
+        if (alloc < PENDING_START_SIZE)
+            alloc = PENDING_START_SIZE;
+        struct pending_step *steps = malloc(alloc * sizeof(*steps));
+        memcpy(steps, &pb->steps[pb->pos], in_use * sizeof(*steps));
+        free(pb->steps);
+        pb->steps = steps;
+        pb->alloc = alloc;
+    }
+    pb->pos = 0;
+    pb->next = in_use;
+}
+
+static void
+gen_push(struct stepcompress *sc, int flags, double print_time, double step_time)
+{
+    struct pending_buffer *gen = &sc->gen;
+    pending_reserve(gen, 1);
+    struct pending_step *ps = &gen->steps[gen->next++];
+    ps->print_time = print_time;
+    ps->step_time = step_time;
+    ps->flags = flags;
+}
+
+// Add next step time (called from the step generation thread)
+int
+stepcompress_append(struct stepcompress *sc, int sdir
+                    , double print_time, double step_time)
+{
+    gen_push(sc, sdir ? PS_DIR : 0, print_time, step_time);
+    sc->gen_step_dir = sdir;
+    return 0;
+}
+
+// Commit the last step (called from the step generation thread)
+int
+stepcompress_commit(struct stepcompress *sc)
+{
+    struct pending_buffer *gen = &sc->gen;
+    if (gen->next > gen->pos)
+        gen->steps[gen->next - 1].flags |= PS_COMMIT;
+    else
+        gen_push(sc, PS_COMMIT_ONLY, 0., 0.);
+    return 0;
+}
+
+// Make generated steps available for conversion (caller holds sc->lock)
+void
+stepcompress_publish(struct stepcompress *sc)
+{
+    struct pending_buffer *gen = &sc->gen, *pb = &sc->pending;
+    int count = gen->next - gen->pos;
+    if (!count)
+        return;
+    pending_reserve(pb, count);
+    memcpy(&pb->steps[pb->next], &gen->steps[gen->pos]
+           , count * sizeof(*pb->steps));
+    pb->next += count;
+    gen->pos = gen->next = 0;
+}
+
+// Convert published steps up to 'convert_time' into the mcu clock
+// queue (caller holds sc->lock)
+int
+stepcompress_convert(struct stepcompress *sc, double convert_time)
+{
+    struct pending_buffer *pb = &sc->pending;
+    while (pb->pos < pb->next) {
+        struct pending_step *ps = &pb->steps[pb->pos];
+        int flags = ps->flags, ret;
+        if (flags & PS_COMMIT_ONLY) {
+            ret = convert_commit(sc);
+        } else {
+            if (ps->print_time + ps->step_time > convert_time)
+                break;
+            ret = convert_append(sc, flags & PS_DIR
+                                 , ps->print_time, ps->step_time);
+            if (!ret && flags & PS_COMMIT)
+                ret = convert_commit(sc);
+        }
+        if (ret)
+            return ret;
+        pb->pos++;
+    }
+    if (pb->pos >= pb->next)
+        pb->pos = pb->next = 0;
     return 0;
 }
 
@@ -542,17 +679,30 @@ stepcompress_flush(struct stepcompress *sc, uint64_t move_clock)
     return queue_flush(sc, move_clock);
 }
 
+// Convert and flush all generated steps (caller holds sc->lock)
+static int
+flush_all(struct stepcompress *sc)
+{
+    stepcompress_publish(sc);
+    int ret = stepcompress_convert(sc, INFINITY);
+    if (ret)
+        return ret;
+    return stepcompress_flush(sc, UINT64_MAX);
+}
+
 // Reset the internal state of the stepcompress object
 int __visible
 stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock)
 {
-    int ret = stepcompress_flush(sc, UINT64_MAX);
-    if (ret)
-        return ret;
-    sc->last_step_clock = last_step_clock;
-    sc->sdir = -1;
-    calc_last_step_print_time(sc);
-    return 0;
+    pthread_mutex_lock(sc->lock);
+    int ret = flush_all(sc);
+    if (!ret) {
+        sc->last_step_clock = last_step_clock;
+        sc->sdir = -1;
+        calc_last_step_print_time(sc);
+    }
+    pthread_mutex_unlock(sc->lock);
+    return ret;
 }
 
 // Set last_position in the stepcompress object
@@ -560,9 +710,12 @@ int __visible
 stepcompress_set_last_position(struct stepcompress *sc, uint64_t clock
                                , int64_t last_position)
 {
-    int ret = stepcompress_flush(sc, UINT64_MAX);
-    if (ret)
+    pthread_mutex_lock(sc->lock);
+    int ret = flush_all(sc);
+    if (ret) {
+        pthread_mutex_unlock(sc->lock);
         return ret;
+    }
     sc->last_position = last_position;
 
     // Add a marker to the history list
@@ -571,12 +724,13 @@ stepcompress_set_last_position(struct stepcompress *sc, uint64_t clock
     hs->first_clock = hs->last_clock = clock;
     hs->start_position = last_position;
     list_add_head(&hs->node, &sc->history_list);
+    pthread_mutex_unlock(sc->lock);
     return 0;
 }
 
 // Search history of moves to find a past position at a given clock
-int64_t __visible
-stepcompress_find_past_position(struct stepcompress *sc, uint64_t clock)
+static int64_t
+find_past_position(struct stepcompress *sc, uint64_t clock)
 {
     int64_t last_position = sc->last_position;
     struct history_steps *hs;
@@ -603,12 +757,22 @@ stepcompress_find_past_position(struct stepcompress *sc, uint64_t clock)
     return last_position;
 }
 
+int64_t __visible
+stepcompress_find_past_position(struct stepcompress *sc, uint64_t clock)
+{
+    pthread_mutex_lock(sc->lock);
+    int64_t res = find_past_position(sc, clock);
+    pthread_mutex_unlock(sc->lock);
+    return res;
+}
+
 // Return history of queue_step commands
 int __visible
 stepcompress_extract_old(struct stepcompress *sc, struct pull_history_steps *p
                          , int max, uint64_t start_clock, uint64_t end_clock)
 {
     int res = 0;
+    pthread_mutex_lock(sc->lock);
     struct history_steps *hs;
     list_for_each_entry(hs, &sc->history_list, node) {
         if (start_clock >= hs->last_clock || res >= max)
@@ -624,5 +788,6 @@ stepcompress_extract_old(struct stepcompress *sc, struct pull_history_steps *p
         p++;
         res++;
     }
+    pthread_mutex_unlock(sc->lock);
     return res;
 }

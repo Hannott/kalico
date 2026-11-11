@@ -26,6 +26,9 @@ class _FakePrinter:
     def send_event(self, name, *args):
         self.events.append(name)
 
+    def lookup_object(self, name, default=None):
+        return default
+
 
 class _FakeReactor:
     NOW = 0.0

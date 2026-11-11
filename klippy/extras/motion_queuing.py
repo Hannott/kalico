@@ -19,6 +19,9 @@ MOVE_HISTORY_EXPIRE = 30.0
 MIN_KIN_TIME = 0.100
 STEPCOMPRESS_FLUSH_TIME = 0.050
 SDS_CHECK_TIME = 0.001  # step+dir+step filter in stepcompress.c
+# Keep speculative step generation this far from the end of the planned
+# moves, so that it never triggers a lookahead runout flush in the toolhead
+GEN_AHEAD_MARGIN = 0.050
 
 DRIP_SEGMENT_TIME = 0.050
 DRIP_TIME = 0.100
@@ -59,10 +62,21 @@ class PrinterMotionQueuing:
         self.do_kick_flush_timer = True
         self.last_flush_time = self.last_step_gen_time = 0.0
         self.need_flush_time = self.need_step_gen_time = 0.0
+        # Steps are generated up to last_gen_time, but only converted to
+        # mcu clock up to last_step_gen_time and transmitted up to
+        # last_flush_time
+        self.last_gen_time = 0.0
+        danger_options = get_danger_options()
+        self.gen_ahead_time = danger_options.step_gen_ahead_time
+        self.tx_guard_time = danger_options.step_tx_guard_time
         # "Drip" timing (for homing and probing moves)
         self.drip_start_times = []
         # Register handlers
+        printer.register_event_handler("klippy:ready", self._handle_ready)
         printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
+        printer.register_event_handler(
+            "klippy:disconnect", self._handle_disconnect
+        )
 
     # C trapq tracking
     def allocate_trapq(self):
@@ -104,6 +118,13 @@ class PrinterMotionQueuing:
         ffi_lib.steppersync_setup_movequeue(ss, serialqueue, move_count)
         mcu_freq = float(mcu.seconds_to_clock(1.0))
         ffi_lib.steppersync_set_time(ss, 0.0, mcu_freq)
+
+    def detach_mcu_movequeue(self, mcu):
+        # Must be called before the mcu's serialqueue is freed
+        ffi_main, ffi_lib = chelper.get_ffi()
+        for ss_mcu, ss in self.steppersyncs:
+            if ss_mcu is mcu:
+                ffi_lib.steppersync_detach_movequeue(ss)
 
     def stats(self, eventtime):
         # Globally calibrate mcu clocks (and step generation clocks)
@@ -153,11 +174,35 @@ class PrinterMotionQueuing:
             kin_flush_delay = max(kin_flush_delay, pre_active, post_active)
         self.kin_flush_delay = kin_flush_delay
 
+    # Background transmit of steps generated ahead
+    def _set_tx_lead(self, lead):
+        ffi_main, ffi_lib = chelper.get_ffi()
+        ffi_lib.steppersyncmgr_set_tx_lead(self.steppersyncmgr, lead)
+
+    def _handle_ready(self):
+        if self.gen_ahead_time and self.can_pause:
+            self._set_tx_lead(self.tx_guard_time)
+
+    def _handle_disconnect(self):
+        self._set_tx_lead(0.0)
+
     # Flush tracking
     def _handle_shutdown(self):
         self.can_pause = False
+        self._set_tx_lead(0.0)
 
-    def _advance_flush_time(self, want_flush_time, want_step_gen_time=0.0):
+    def _calc_gen_ahead_time(self, step_gen_time):
+        if not self.gen_ahead_time:
+            return 0.0
+        aggr_sg_time = self.need_step_gen_time - 2.0 * self.kin_flush_delay
+        return min(
+            step_gen_time + self.gen_ahead_time,
+            aggr_sg_time - GEN_AHEAD_MARGIN,
+        )
+
+    def _advance_flush_time(
+        self, want_flush_time, want_step_gen_time=0.0, want_gen_time=0.0
+    ):
         flush_time = max(
             want_flush_time,
             self.last_flush_time,
@@ -166,23 +211,31 @@ class PrinterMotionQueuing:
         step_gen_time = max(
             want_step_gen_time, self.last_step_gen_time, flush_time
         )
+        gen_time = max(want_gen_time, self.last_gen_time, step_gen_time)
         # Invoke flush callbacks (if any)
         with self.reactor.assert_no_pause():
             for cb in self.flush_callbacks:
-                cb(flush_time, step_gen_time)
+                cb(flush_time, gen_time)
         # Determine maximum history to keep
-        trapq_free_time = step_gen_time - self.kin_flush_delay
+        trapq_free_time = gen_time - self.kin_flush_delay
         clear_history_time = self.clear_history_time
         if not self.can_pause:
-            clear_history_time = max(0.0, trapq_free_time - MOVE_HISTORY_EXPIRE)
+            clear_history_time = max(
+                0.0, step_gen_time - self.kin_flush_delay - MOVE_HISTORY_EXPIRE
+            )
         # Generate stepper movement and transmit
         ret = self.steppersyncmgr_gen_steps(
-            self.steppersyncmgr, flush_time, step_gen_time, clear_history_time
+            self.steppersyncmgr,
+            flush_time,
+            step_gen_time,
+            gen_time,
+            clear_history_time,
         )
         if ret:
             raise self.mcu.error("Internal error in stepcompress")
         self.last_flush_time = flush_time
         self.last_step_gen_time = step_gen_time
+        self.last_gen_time = gen_time
         # Move processed trapq entries to history list, and expire old history
         for trapq in self.trapqs:
             self.trapq_finalize_moves(
@@ -206,7 +259,7 @@ class PrinterMotionQueuing:
         self._advance_flush_time(flush_time)
 
     def calc_step_gen_restart(self, est_print_time):
-        kin_time = max(est_print_time + MIN_KIN_TIME, self.last_step_gen_time)
+        kin_time = max(est_print_time + MIN_KIN_TIME, self.last_gen_time)
         return kin_time + self.kin_flush_delay
 
     def _flush_handler(self, eventtime):
@@ -227,7 +280,11 @@ class PrinterMotionQueuing:
                 want_sg_time = min(want_sg_time, aggr_sg_time)
                 # Flush motion queues (if needed)
                 if want_sg_time > self.last_step_gen_time:
-                    self._advance_flush_time(0.0, want_sg_time)
+                    self._advance_flush_time(
+                        0.0,
+                        want_sg_time,
+                        self._calc_gen_ahead_time(want_sg_time),
+                    )
             else:
                 # Not stepping (or only step remnants) - use relaxed flushing
                 want_flush_time = est_print_time + BGFLUSH_HIGH_TIME
@@ -270,7 +327,9 @@ class PrinterMotionQueuing:
                     target += (
                         int((faux_time - target) / batch_time) * batch_time
                     )
-                self._advance_flush_time(0.0, target)
+                self._advance_flush_time(
+                    0.0, target, self._calc_gen_ahead_time(target)
+                )
                 flush_count += 1
             if flush_count:
                 return self.reactor.NOW

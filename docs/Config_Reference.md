@@ -116,6 +116,21 @@ A collection of Kalico-specific system options
 #   This allows to set extra flush time (in seconds). Under certain conditions,
 #   a low value will result in an error if message is not get flushed, a high value
 #   (0.250) will result in homing/probing latency. The default is 0.250
+#step_gen_ahead_time: 0.0
+#   Experimental. Generate stepper steps this many seconds further ahead
+#   than they are sent to the micro-controllers. Generated steps are held
+#   by the host and are only committed when they are sent, so they are
+#   converted to the micro-controller clock as late as possible. A
+#   background thread keeps sending the already generated steps if the
+#   host stalls, which reduces the risk of "Timer too close" errors.
+#   Generation never goes beyond the moves already planned by the
+#   toolhead. Uses more host memory (about 24 bytes per generated step).
+#   The default is 0.0, which disables the feature.
+#step_tx_guard_time: 0.250
+#   When step_gen_ahead_time is enabled, the background thread keeps the
+#   micro-controllers supplied with steps at least this many seconds
+#   ahead. It must be lower than the normal flush window (0.450) so that
+#   the thread only acts when the host stalls. The default is 0.250.
 #homing_start_delay: 0.001
 #   How long to dwell before beginning a drip move for homing
 #endstop_sample_time: 0.000015

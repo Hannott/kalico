@@ -806,6 +806,12 @@ class MCU_adc:
 
 
 # Support for restarting a micro-controller
+def _detach_motion_queuing(printer, mcu):
+    motion_queuing = printer.lookup_object("motion_queuing", None)
+    if motion_queuing is not None:
+        motion_queuing.detach_mcu_movequeue(mcu)
+
+
 class MCURestartHelper:
     def __init__(self, config, conn_helper):
         self._printer = printer = config.get_printer()
@@ -909,6 +915,7 @@ class MCURestartHelper:
         return True
 
     def _disconnect(self):
+        _detach_motion_queuing(self._printer, self._mcu)
         self._serial.disconnect()
 
     def _restart_arduino(self):
@@ -1189,6 +1196,7 @@ class MCUConnectHelper:
         self._shutdown(force=True)
 
     def disconnect(self):
+        _detach_motion_queuing(self._printer, self._mcu)
         self._clocksync.disconnect()
         self._serial.disconnect()
 

@@ -54,6 +54,12 @@ class DangerOptions:
         self.bgflush_extra_time = config.getfloat(
             "bgflush_extra_time", 0.250, minval=0.0
         )
+        self.step_gen_ahead_time = config.getfloat(
+            "step_gen_ahead_time", 0.0, minval=0.0, maxval=2.0
+        )
+        self.step_tx_guard_time = config.getfloat(
+            "step_tx_guard_time", 0.250, minval=0.050, maxval=0.400
+        )
         self.homing_start_delay = config.getfloat(
             "homing_start_delay", 0.001, minval=0.0
         )
