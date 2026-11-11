@@ -202,11 +202,14 @@ pa_model_integrate(struct list_head *pa_list, double print_time
         next_pa = pa;
         pa = list_prev_entry(pa, node);
     }
-    if (likely(pa->active_print_time <= start &&
+    // The oldest entry also applies to all times before it became active
+    int is_first = list_is_first(&pa->node, pa_list);
+    if (likely((is_first || pa->active_print_time <= start) &&
                 (next_pa == NULL || end <= next_pa->active_print_time))) {
         return pa->pa_func(e_pos, pa_vel, pa);
     }
-    smoother_antiderivatives left = likely(start < pa->active_print_time)
+    smoother_antiderivatives left = likely(
+            !is_first && start < pa->active_print_time)
         ? calc_antiderivatives(sm, print_time - pa->active_print_time)
         : sm->p_hst;
     smoother_antiderivatives right = likely(
@@ -221,7 +224,8 @@ pa_model_integrate(struct list_head *pa_list, double print_time
                 !list_is_first(&pa->node, pa_list))) {
         pa = list_prev_entry(pa, node);
         smoother_antiderivatives r = left;
-        left = likely(start < pa->active_print_time)
+        left = likely(start < pa->active_print_time &&
+                      !list_is_first(&pa->node, pa_list))
             ? calc_antiderivatives(sm, print_time - pa->active_print_time)
             : sm->p_hst;
         diff = diff_antiderivatives(&r, &left);
@@ -312,6 +316,14 @@ extruder_note_generation_time(struct extruder_stepper *es)
     es->pa_model_smoother.t_offs += 0.5 * (post_active - pre_active);
 }
 
+// Earliest print time that pa_model_integrate() may still read
+static double
+pa_model_history_time(struct extruder_stepper *es)
+{
+    const struct smoother *sm = &es->pa_model_smoother;
+    return es->sk.last_flush_time + es->time_offset + sm->t_offs - sm->hst;
+}
+
 void __visible
 extruder_set_pressure_advance(struct stepper_kinematics *sk, double print_time
                               , int n_params, double params[]
@@ -319,8 +331,15 @@ extruder_set_pressure_advance(struct stepper_kinematics *sk, double print_time
 {
     struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
 
+    double cleanup_time = pa_model_history_time(es);
+    es->time_offset = time_offset;
+    extruder_note_generation_time(es);
+    double new_cleanup_time = pa_model_history_time(es);
+    if (new_cleanup_time < cleanup_time) {
+        cleanup_time = new_cleanup_time;
+    }
+
     // Cleanup old pressure advance parameters
-    double cleanup_time = sk->last_flush_time - es->sk.gen_steps_pre_active;
     struct pressure_advance_params *first_pa = list_first_entry(
             &es->pa_list, struct pressure_advance_params, node);
     while (!list_is_last(&first_pa->node, &es->pa_list)) {
@@ -331,9 +350,6 @@ extruder_set_pressure_advance(struct stepper_kinematics *sk, double print_time
         free(first_pa);
         first_pa = next_pa;
     }
-
-    es->time_offset = time_offset;
-    extruder_note_generation_time(es);
 
     struct pressure_advance_params *last_pa = list_last_entry(
             &es->pa_list, struct pressure_advance_params, node);
