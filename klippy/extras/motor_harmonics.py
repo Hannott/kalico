@@ -141,6 +141,13 @@ def analyze_window(times, accel, speed, period, harmonics):
     return results
 
 
+# A new ramp segment must reach at least this fraction higher than the
+# previous one; plan_ramps() otherwise converges without reaching the top.
+MIN_RAMP_GAIN = 0.01
+# Hard limit on segments, so no input can grow the plan without bound
+MAX_RAMP_SEGMENTS = 32
+
+
 def plan_ramps(speed_min, speed_max, period, limits, max_travel, settle):
     """Split speed_min..speed_max into ramp segments (v1, v2, ramp_accel).
 
@@ -173,7 +180,13 @@ def plan_ramps(speed_min, speed_max, period, limits, max_travel, settle):
         if v2 >= top:
             segments.append((v1, top, ramp_accel))
             return segments
-        if v2 - v1 <= lead(v2, ramp_accel):
+        # Near the top of what max_travel allows, each segment gains less
+        # than the last and v2 converges below top, so require real progress
+        # over the previous segment as well as over v1.
+        stalled = len(segments) >= MAX_RAMP_SEGMENTS or (
+            segments and v2 - segments[-1][1] < MIN_RAMP_GAIN * v2
+        )
+        if v2 - v1 <= lead(v2, ramp_accel) or stalled:
             raise ValueError(
                 "a speed ramp needs more travel; raise max_distance or"
                 " lower SPEED_MAX"
