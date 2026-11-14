@@ -336,3 +336,17 @@ def test_plan_ramps_covers_the_range_within_the_travel():
     assert segments[0][2] < segments[-1][2]
     with pytest.raises(ValueError):
         mh.plan_ramps(10.0, 160.0, PERIOD, (2000.0, 50.0), 5.0, 0.1)
+
+
+def test_plan_ramps_reports_a_range_it_cannot_reach():
+    # 20-200 mm/s within 150 mm converged to ~217 mm/s, below the 225 mm/s
+    # top, and planned segments until memory ran out.
+    with pytest.raises(ValueError):
+        mh.plan_ramps(20.0, 200.0, 0.8, (2000.0, 50.0), 150.0, 0.1)
+
+
+@pytest.mark.parametrize("speed_max", [80.0, 120.0, 160.0, 180.0])
+def test_plan_ramps_still_plans_reachable_ranges(speed_max):
+    segments = mh.plan_ramps(20.0, speed_max, 0.8, (2000.0, 50.0), 150.0, 0.1)
+    assert segments[-1][1] >= speed_max
+    assert len(segments) <= mh.MAX_RAMP_SEGMENTS
