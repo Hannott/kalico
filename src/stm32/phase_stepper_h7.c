@@ -17,14 +17,9 @@
 // reach DTCM.)
 #define FIFO_SIZE 8
 
-static SPI_TypeDef *bus_spi;
-
 void
 phase_board_xfer_setup(struct spi_config *config)
 {
-    if (bus_spi && bus_spi != config->spi)
-        shutdown("Phase steppers must share one SPI bus");
-    bus_spi = config->spi;
 }
 
 void
@@ -33,7 +28,7 @@ phase_board_xfer_start(struct spi_config *config, uint8_t *data
 {
     if (len > FIFO_SIZE)
         shutdown("Phase stepper transfer too long");
-    SPI_TypeDef *spi = bus_spi;
+    SPI_TypeDef *spi = config->spi;
     spi->CR2 = len << SPI_CR2_TSIZE_Pos;
     // Enable SPI and start transfer, these MUST be set in this sequence
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_SPE;
@@ -43,15 +38,16 @@ phase_board_xfer_start(struct spi_config *config, uint8_t *data
 }
 
 int
-phase_board_xfer_done(void)
+phase_board_xfer_done(struct spi_config *config)
 {
-    return bus_spi->SR & SPI_SR_EOT;
+    SPI_TypeDef *spi = config->spi;
+    return spi->SR & SPI_SR_EOT;
 }
 
 void
-phase_board_xfer_finish(void)
+phase_board_xfer_finish(struct spi_config *config)
 {
-    SPI_TypeDef *spi = bus_spi;
+    SPI_TypeDef *spi = config->spi;
     // The transfer was transmit only: drop the received bytes
     while (spi->SR & (SPI_SR_RXWNE | SPI_SR_RXPLVL))
         (void)readb((void *)&spi->RXDR);
@@ -60,10 +56,18 @@ phase_board_xfer_finish(void)
 }
 
 void
-phase_board_xfer_abort(void)
+phase_board_xfer_abort(struct spi_config *config)
 {
-    SPI_TypeDef *spi = bus_spi;
+    SPI_TypeDef *spi = config->spi;
     // Disabling the SPI stops the transfer and flushes its FIFOs
     spi->IFCR = 0xFFFFFFFF;
     spi->CR1 = SPI_CR1_SSI;
+}
+
+// Each bus sends from its own FIFO, so transfers on different buses run at
+// the same time.
+uint32_t
+phase_board_xfer_bus(struct spi_config *config)
+{
+    return (uint32_t)config->spi;
 }

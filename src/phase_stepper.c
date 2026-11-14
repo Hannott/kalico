@@ -192,15 +192,17 @@ struct phase_stepper {
     // The host's last message to the driver, and whether a coil write
     // went to the driver after it
     uint8_t host_msg[HOST_MSG_SIZE], host_msg_len, coil_written;
+    // Coil write in flight on this stepper's bus. Each stepper has its own
+    // buffer, as steppers on different buses transfer at the same time.
+    uint8_t xfer_buf[5], xfer_active;
     struct phase_move queue[MOVE_QUEUE_SIZE];
     volatile uint8_t queue_head, queue_tail;
 };
 
 static struct phase_stepper *steppers[MAX_PHASE_STEPPERS];
 static uint8_t stepper_count, next_stepper, timer_running;
-static struct phase_stepper *xfer_owner;
+static uint8_t xfers_active;
 static volatile uint8_t task_spi_active;
-static uint8_t xfer_buf[5];
 static uint32_t next_tick_clock;
 
 static struct {
@@ -246,34 +248,46 @@ coil_value(struct phase_stepper *ps)
  * SPI transfers
  ****************************************************************/
 
-// Release the chip select of the current transfer (irqs off or in irq)
+// Release the chip select of a stepper's transfer (irqs off or in irq)
 static void
-xfer_finish(void)
+xfer_finish(struct phase_stepper *ps)
 {
     uint32_t end = timer_read_time() + timer_from_us(100);
-    while (!phase_board_xfer_done())
+    while (!phase_board_xfer_done(&ps->config))
         if (timer_is_before(end, timer_read_time()))
             shutdown("Phase stepper SPI transfer timeout");
-    gpio_out_write(xfer_owner->cs, !xfer_owner->cs_active_high);
-    phase_board_xfer_finish();
-    xfer_owner = NULL;
+    gpio_out_write(ps->cs, !ps->cs_active_high);
+    phase_board_xfer_finish(&ps->config);
+    ps->xfer_active = 0;
+    xfers_active--;
+}
+
+static void
+xfer_finish_all(void)
+{
+    uint32_t i;
+    for (i = 0; xfers_active && i < stepper_count; i++)
+        if (steppers[i]->xfer_active)
+            xfer_finish(steppers[i]);
 }
 
 static void
 xfer_start(struct phase_stepper *ps, uint32_t value)
 {
-    xfer_buf[0] = ps->reg | SPI_WRITE;
-    xfer_buf[1] = value >> 24;
-    xfer_buf[2] = value >> 16;
-    xfer_buf[3] = value >> 8;
-    xfer_buf[4] = value;
+    ps->xfer_buf[0] = ps->reg | SPI_WRITE;
+    ps->xfer_buf[1] = value >> 24;
+    ps->xfer_buf[2] = value >> 16;
+    ps->xfer_buf[3] = value >> 8;
+    ps->xfer_buf[4] = value;
     spi_prepare(ps->config);
     gpio_out_write(ps->cs, ps->cs_active_high);
-    xfer_owner = ps;
+    ps->xfer_active = 1;
+    xfers_active++;
     ps->last_sent = value;
     ps->coil_written = 1;
     stats.xfers++;
-    phase_board_xfer_start(&ps->config, xfer_buf, sizeof(xfer_buf));
+    phase_board_xfer_start(&ps->config, ps->xfer_buf
+                           , sizeof(ps->xfer_buf));
 }
 
 static struct phase_stepper *
@@ -311,8 +325,7 @@ phase_stepper_spi_acquire(struct spidev_s *spi, uint8_t receive_data
         // May run from shutdown handlers, which run with irqs disabled
         irqstatus_t flag = irq_save();
         task_spi_active = 1;
-        if (xfer_owner)
-            xfer_finish();
+        xfer_finish_all();
         irq_restore(flag);
     }
     struct phase_stepper *ps = spi_stepper(spi);
@@ -420,21 +433,30 @@ phase_stepper_update(void)
     if (task_spi_active) {
         stats.locked_ticks++;
     } else {
-        // The previous transfer's chip select is released here, so new
+        // The previous transfers' chip selects are released here, so new
         // currents latch on a tick boundary, one tick after computing.
-        if (xfer_owner)
-            xfer_finish();
+        xfer_finish_all();
+        // One write per bus per tick: steppers on separate buses all update
+        // every tick, while steppers sharing a bus take turns.
+        uint32_t used[MAX_PHASE_STEPPERS], used_count = 0;
         for (i = 0; i < stepper_count; i++) {
-            struct phase_stepper *ps = steppers[next_stepper];
-            next_stepper = (next_stepper + 1) % stepper_count;
+            struct phase_stepper *ps
+                = steppers[(next_stepper + i) % stepper_count];
             if (!(ps->flags & (PF_ARMED | PF_RUNNING)))
                 continue;
             uint32_t value = coil_value(ps);
-            if (value != ps->last_sent) {
-                xfer_start(ps, value);
-                break;
-            }
+            if (value == ps->last_sent)
+                continue;
+            uint32_t bus = phase_board_xfer_bus(&ps->config), u;
+            for (u = 0; u < used_count; u++)
+                if (used[u] == bus)
+                    break;
+            if (u < used_count)
+                continue;
+            used[used_count++] = bus;
+            xfer_start(ps, value);
         }
+        next_stepper = (next_stepper + 1) % stepper_count;
     }
 
     uint32_t cycles = timer_read_time() - start;
@@ -460,8 +482,7 @@ timer_stop(void)
 {
     phase_board_timer_stop();
     irq_disable();
-    if (xfer_owner)
-        xfer_finish();
+    xfer_finish_all();
     timer_running = 0;
     irq_enable();
 }
@@ -596,8 +617,8 @@ command_phase_stepper_stop(uint32_t *args)
 {
     struct phase_stepper *ps = phase_stepper_oid_lookup(args[0]);
     irq_disable();
-    if (xfer_owner == ps)
-        xfer_finish();
+    if (ps->xfer_active)
+        xfer_finish(ps);
     ps->flags = 0;
     ps->count = 0;
     ps->queue_tail = ps->queue_head;
@@ -641,14 +662,17 @@ phase_stepper_shutdown(void)
     if (!timer_running)
         return;
     phase_board_timer_stop();
-    if (xfer_owner) {
-        phase_board_xfer_abort();
-        gpio_out_write(xfer_owner->cs, !xfer_owner->cs_active_high);
-        xfer_owner = NULL;
-    }
     uint32_t i;
-    for (i = 0; i < stepper_count; i++)
-        steppers[i]->flags = 0;
+    for (i = 0; i < stepper_count; i++) {
+        struct phase_stepper *ps = steppers[i];
+        if (ps->xfer_active) {
+            phase_board_xfer_abort(&ps->config);
+            gpio_out_write(ps->cs, !ps->cs_active_high);
+            ps->xfer_active = 0;
+        }
+        ps->flags = 0;
+    }
+    xfers_active = 0;
     task_spi_active = 0;
     timer_running = 0;
 }
