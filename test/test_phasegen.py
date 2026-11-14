@@ -16,6 +16,8 @@ from klippy.extras import shaper_defs  # noqa: E402
 TICK_FREQ = 40000
 PERIOD = 0.8
 PHASE_PER_MM = (1 << 32) / PERIOD
+MICROSTEPS = 16
+STEP_DIST = PERIOD / (4 * MICROSTEPS)
 TOLERANCE = 1 << 21
 GRID_TIME = 0.5
 MASK = 0xFFFFFFFF
@@ -59,7 +61,7 @@ def _setup(path, motor, shaper):
         t = _append_move(ffi_lib, tq, t, start, end, speed, accel) + 0.01
     end_time = t + 0.2
     sk = ffi_main.gc(ffi_lib.corexy_stepper_alloc(motor), ffi_lib.free)
-    ffi_lib.itersolve_set_trapq(sk, tq)
+    ffi_lib.itersolve_set_trapq(sk, tq, STEP_DIST)
     ref_pos = ffi_lib.itersolve_calc_position_from_coord(
         sk, path[0][0][0], path[0][0][1], 0.0
     )
@@ -67,7 +69,7 @@ def _setup(path, motor, shaper):
     if shaper is not None:
         a, t_imp = shaper
         is_sk = ffi_main.gc(ffi_lib.input_shaper_alloc(), ffi_lib.free)
-        ffi_lib.itersolve_set_trapq(is_sk, tq)
+        ffi_lib.itersolve_set_trapq(is_sk, tq, STEP_DIST)
         ffi_lib.input_shaper_set_sk(is_sk, sk)
         for axis in (b"x", b"y"):
             ffi_lib.input_shaper_set_shaper_params(

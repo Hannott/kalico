@@ -21,8 +21,10 @@ void phase_board_timer_stop(void);
 void phase_board_xfer_setup(struct spi_config *config);
 void phase_board_xfer_start(struct spi_config *config, uint8_t *data
                             , uint_fast8_t len);
-int phase_board_xfer_done(void);
-void phase_board_xfer_finish(void);
-void phase_board_xfer_abort(void);
+int phase_board_xfer_done(struct spi_config *config);
+void phase_board_xfer_finish(struct spi_config *config);
+void phase_board_xfer_abort(struct spi_config *config);
+// Transfers with different bus ids may be in flight at the same time
+uint32_t phase_board_xfer_bus(struct spi_config *config);
 
 #endif // phase_stepper.h

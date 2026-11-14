@@ -25,6 +25,9 @@ TICK = CLOCK_FREQ // TICK_FREQ
 QUEUE_SIZE = 8
 MASK = 0xFFFFFFFF
 MSCNT = 517
+ROTATION_DISTANCE = 40.0
+STEPS_PER_ROTATION = 200 * 16
+STEP_DIST = ROTATION_DISTANCE / STEPS_PER_ROTATION
 
 
 class Error(Exception):
@@ -210,7 +213,7 @@ class Stepper:
         )
 
     def get_rotation_distance(self):
-        return 40.0, 200 * 16
+        return ROTATION_DISTANCE, STEPS_PER_ROTATION
 
 
 class Kin:
@@ -416,13 +419,13 @@ def test_glue_follows_planned_motion(shaped):
     mcu = FakeMCU(reactor)
     tq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
     base_sk = ffi_main.gc(ffi_lib.corexy_stepper_alloc(b"+"), ffi_lib.free)
-    ffi_lib.itersolve_set_trapq(base_sk, tq)
+    ffi_lib.itersolve_set_trapq(base_sk, tq, STEP_DIST)
     ffi_lib.itersolve_set_position(base_sk, 100.0, 100.0, 0.0)
     sk = base_sk
     if shaped:
         a, t = shaper_defs.get_mzv_shaper(50.0, 0.1)
         sk = ffi_main.gc(ffi_lib.input_shaper_alloc(), ffi_lib.free)
-        ffi_lib.itersolve_set_trapq(sk, tq)
+        ffi_lib.itersolve_set_trapq(sk, tq, STEP_DIST)
         ffi_lib.input_shaper_set_sk(sk, base_sk)
         for axis in (b"x", b"y"):
             ffi_lib.input_shaper_set_shaper_params(sk, axis, len(a), a, t)

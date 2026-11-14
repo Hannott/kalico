@@ -43,6 +43,12 @@ FIFO; not yet tested on hardware). Other micro-controllers with hardware
 SPI use 10000 updates a second, which is too coarse for fast travel
 moves.
 
+The rate is per SPI bus. With the timer backends, steppers on separate
+SPI buses (for example `spi1` and `spi2`) are each updated every tick,
+while steppers that share a bus take turns, so two steppers on one bus
+are each updated 20000 times a second. The 10000 updates a second of
+other micro-controllers are always shared by all phase steppers.
+
 ## Configuration
 
 Add a section for each stepper to drive this way:
