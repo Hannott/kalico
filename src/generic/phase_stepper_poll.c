@@ -53,17 +53,24 @@ phase_board_xfer_start(struct spi_config *config, uint8_t *data
 }
 
 int
-phase_board_xfer_done(void)
+phase_board_xfer_done(struct spi_config *config)
 {
     return 1;
 }
 
 void
-phase_board_xfer_finish(void)
+phase_board_xfer_finish(struct spi_config *config)
 {
 }
 
 void
-phase_board_xfer_abort(void)
+phase_board_xfer_abort(struct spi_config *config)
 {
+}
+
+// Blocking transfers: one per tick, as two would double the irqs-off time
+uint32_t
+phase_board_xfer_bus(struct spi_config *config)
+{
+    return 0;
 }

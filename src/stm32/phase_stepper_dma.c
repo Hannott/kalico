@@ -21,6 +21,8 @@ struct dma_map {
 
 // enable_pclock() derives the clock bit from the peripheral address, which
 // does not hold for the DMA controllers, so their bits are listed here.
+// Each bus has its own stream, so transfers on different buses run at the
+// same time.
 static const struct dma_map dma_maps[] = {
     { SPI1, DMA2, DMA2_Stream3, RCC_AHB1ENR_DMA2EN, 3, 3 },
     { SPI2, DMA1, DMA1_Stream4, RCC_AHB1ENR_DMA1EN, 4, 0 },
@@ -29,35 +31,38 @@ static const struct dma_map dma_maps[] = {
 #endif
 };
 
-static const struct dma_map *bus_dma;
+static uint8_t configured[ARRAY_SIZE(dma_maps)];
+
+static const struct dma_map *
+lookup_map(SPI_TypeDef *spi)
+{
+    uint32_t i;
+    for (i = 0; i < ARRAY_SIZE(dma_maps); i++)
+        if (dma_maps[i].spi == spi)
+            return &dma_maps[i];
+    return NULL;
+}
 
 static void
-dma_clear_flags(void)
+dma_clear_flags(const struct dma_map *m)
 {
     static const uint8_t shifts[] = { 0, 6, 16, 22 };
-    uint32_t mask = 0x3d << shifts[bus_dma->stream_num & 3];
-    if (bus_dma->stream_num < 4)
-        bus_dma->dma->LIFCR = mask;
+    uint32_t mask = 0x3d << shifts[m->stream_num & 3];
+    if (m->stream_num < 4)
+        m->dma->LIFCR = mask;
     else
-        bus_dma->dma->HIFCR = mask;
+        m->dma->HIFCR = mask;
 }
 
 void
 phase_board_xfer_setup(struct spi_config *config)
 {
     SPI_TypeDef *spi = config->spi;
-    if (bus_dma) {
-        if (bus_dma->spi != spi)
-            shutdown("Phase steppers must share one SPI bus");
-        return;
-    }
-    const struct dma_map *m = NULL;
-    uint32_t i;
-    for (i = 0; i < ARRAY_SIZE(dma_maps); i++)
-        if (dma_maps[i].spi == spi)
-            m = &dma_maps[i];
+    const struct dma_map *m = lookup_map(spi);
     if (!m)
         shutdown("Phase stepping not supported on this SPI bus");
+    if (configured[m - dma_maps])
+        return;
     RCC->AHB1ENR |= m->clock_bit;
     RCC->AHB1ENR;
     DMA_Stream_TypeDef *stream = m->stream;
@@ -71,19 +76,20 @@ phase_board_xfer_setup(struct spi_config *config)
     stream->CR = cr;
     if (stream->CR != cr || stream->PAR != (uint32_t)&spi->DR)
         shutdown("Phase stepper DMA not responding");
-    bus_dma = m;
+    configured[m - dma_maps] = 1;
 }
 
 void
 phase_board_xfer_start(struct spi_config *config, uint8_t *data
                        , uint_fast8_t len)
 {
-    DMA_Stream_TypeDef *stream = bus_dma->stream;
-    dma_clear_flags();
+    const struct dma_map *m = lookup_map(config->spi);
+    DMA_Stream_TypeDef *stream = m->stream;
+    dma_clear_flags(m);
     stream->M0AR = (uint32_t)data;
     stream->NDTR = len;
     stream->CR |= DMA_SxCR_EN;
-    bus_dma->spi->CR2 |= SPI_CR2_TXDMAEN;
+    m->spi->CR2 |= SPI_CR2_TXDMAEN;
     // Five bytes take microseconds to send, so the stream must still be
     // enabled here; if not, it never started and nothing was sent.
     if (!(stream->CR & DMA_SxCR_EN))
@@ -91,17 +97,18 @@ phase_board_xfer_start(struct spi_config *config, uint8_t *data
 }
 
 int
-phase_board_xfer_done(void)
+phase_board_xfer_done(struct spi_config *config)
 {
-    SPI_TypeDef *spi = bus_dma->spi;
-    return (!(bus_dma->stream->CR & DMA_SxCR_EN)
+    const struct dma_map *m = lookup_map(config->spi);
+    SPI_TypeDef *spi = m->spi;
+    return (!(m->stream->CR & DMA_SxCR_EN)
             && (spi->SR & (SPI_SR_TXE | SPI_SR_BSY)) == SPI_SR_TXE);
 }
 
 void
-phase_board_xfer_finish(void)
+phase_board_xfer_finish(struct spi_config *config)
 {
-    SPI_TypeDef *spi = bus_dma->spi;
+    SPI_TypeDef *spi = config->spi;
     spi->CR2 &= ~SPI_CR2_TXDMAEN;
     // The transfer was transmit only: drop the received bytes and clear
     // the resulting overrun so the next polled transfer starts clean.
@@ -111,8 +118,14 @@ phase_board_xfer_finish(void)
 }
 
 void
-phase_board_xfer_abort(void)
+phase_board_xfer_abort(struct spi_config *config)
 {
-    bus_dma->stream->CR &= ~DMA_SxCR_EN;
-    phase_board_xfer_finish();
+    lookup_map(config->spi)->stream->CR &= ~DMA_SxCR_EN;
+    phase_board_xfer_finish(config);
+}
+
+uint32_t
+phase_board_xfer_bus(struct spi_config *config)
+{
+    return (uint32_t)config->spi;
 }
