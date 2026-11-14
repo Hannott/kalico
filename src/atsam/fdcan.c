@@ -189,8 +189,11 @@ CAN_IRQHandler(void)
     if (ir & MCAN_IE_RF0NE) {
         CANx->MCAN_IR = MCAN_IE_RF0NE;
 
-        uint32_t rxf0s = CANx->MCAN_RXF0S;
-        if (rxf0s & MCAN_RXF0S_F0FL_Msk) {
+        // RF0N only fires for newly stored messages, so drain the fifo
+        for (;;) {
+            uint32_t rxf0s = CANx->MCAN_RXF0S;
+            if (!(rxf0s & MCAN_RXF0S_F0FL_Msk))
+                break;
             // Read and ack data packet
             uint32_t idx = (rxf0s & MCAN_RXF0S_F0GI_Msk) >> MCAN_RXF0S_F0GI_Pos;
             struct fdcan_fifo *rxf0 = &MSG_RAM.RXF0[idx];

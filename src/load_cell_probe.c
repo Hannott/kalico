@@ -50,8 +50,8 @@ struct load_cell_probe {
     uint32_t homing_start_time;
     struct trsync *ts;
     int32_t safety_counts_min, safety_counts_max, tare_counts;
-    uint8_t flags, trigger_reason, error_reason, watchdog_max
-            , watchdog_count;
+    uint32_t watchdog_max, watchdog_count;
+    uint8_t flags, trigger_reason, error_reason;
     fixedQ16_t trigger_grams_fixed;
     fixedQ2_t grams_per_count;
     struct sos_filter *sf;

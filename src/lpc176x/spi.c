@@ -74,28 +74,31 @@ spi_prepare(struct spi_config config)
     spi->CPSR = config.cpsr;
 }
 
+#define SSP_SR_TFE (1<<0)
+#define SSP_SR_TNF (1<<1)
+#define SSP_SR_RNE (1<<2)
+#define SSP_SR_BSY (1<<4)
+
+#define MAX_FIFO 8 // Max rx fifo size (don't tx past this size)
+
 void
 spi_transfer(struct spi_config config, uint8_t receive_data
              , uint8_t len, uint8_t *data)
 {
+    uint8_t *wptr = data, *end = data + len;
     LPC_SSP_TypeDef *spi = config.spi;
-    if (receive_data) {
-        while (len--) {
-            spi->DR = *data;
-            // wait for read data to be ready
-            while (!(spi->SR & (1<<2)))
-                ;
-            // get data
-            *data++ = spi->DR;
-        }
-    } else {
-        while (len--) {
-            spi->DR = *data++;
-            // wait for read data to be ready
-            while (!(spi->SR & (1<<2)))
-                ;
-            // read data (to clear receive fifo)
-            spi->DR;
-        }
+    while (data < end) {
+        uint32_t sr = spi->SR & (SSP_SR_TNF | SSP_SR_RNE);
+        if (sr == SSP_SR_TNF && wptr < end && wptr < data + MAX_FIFO)
+            spi->DR = *wptr++;
+        if (!(sr & SSP_SR_RNE))
+            continue;
+        uint8_t rdata = spi->DR;
+        if (receive_data)
+            *data = rdata;
+        data++;
     }
+    // Wait for any remaining SCLK updates before returning
+    while ((spi->SR & (SSP_SR_TFE | SSP_SR_BSY)) != SSP_SR_TFE)
+        ;
 }

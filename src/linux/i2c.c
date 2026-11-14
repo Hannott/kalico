@@ -37,6 +37,8 @@ i2c_open(uint32_t bus, uint8_t addr)
         }
     }
 
+    if (devices_count >= ARRAY_SIZE(devices))
+        shutdown("Too many i2c devices");
     char fname[256];
     snprintf(fname, sizeof(fname), "/dev/i2c-%d", bus);
     int fd = open(fname, O_RDWR|O_CLOEXEC);

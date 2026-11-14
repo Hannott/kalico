@@ -10,7 +10,11 @@
 #include <stdio.h> // fprintf
 #include <string.h> // strerror
 #include <time.h> // struct timespec
-#include <sys/prctl.h>  // prctl
+#ifdef __APPLE__
+#include <pthread.h> // pthread_setname_np
+#else
+#include <sys/prctl.h> // prctl
+#endif
 #include "compiler.h" // __visible
 #include "pyhelper.h" // get_monotonic
 
@@ -98,5 +102,9 @@ dump_string(char *outbuf, int outbuf_size, char *inbuf, int inbuf_size)
 int __visible
 set_thread_name(char name[16])
 {
+#ifdef __APPLE__
+    return pthread_setname_np(name);
+#else
     return prctl(PR_SET_NAME, name);
+#endif
 }

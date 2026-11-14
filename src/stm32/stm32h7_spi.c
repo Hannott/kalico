@@ -103,6 +103,9 @@ spi_transfer(struct spi_config config, uint8_t receive_data,
     uint8_t *wptr = data, *end = data + len;
     SPI_TypeDef *spi = config.spi;
 
+    // TSIZE=0 means an endless transfer and EOT would never be set
+    if (!len)
+        return;
     spi->CR2 = len << SPI_CR2_TSIZE_Pos;
     // Enable SPI and start transfer, these MUST be set in this sequence
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_SPE;

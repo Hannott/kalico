@@ -11,7 +11,7 @@
 #ifndef __always_inline
 #define __always_inline inline __attribute__((always_inline))
 #endif
-#if !defined(clang)
+#if !defined(__clang__)
 #define __visible __attribute__((externally_visible))
 #else
 #define __visible __attribute__((visibility("default")))

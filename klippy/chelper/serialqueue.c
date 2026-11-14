@@ -513,6 +513,11 @@ build_and_send_command(struct serialqueue *sq, uint8_t *buf, int pending
     if (!sq->rtt_sample_seq)
         sq->rtt_sample_seq = sq->send_seq;
     sq->send_seq++;
+    if (sq->receive_seq == (uint64_t)-1) {
+        // Debug file output is never acked, so retire the block right away
+        debug_queue_add(&sq->old_sent, out);
+        return len;
+    }
     sq->need_ack_bytes += len;
     list_add_tail(&out->node, &sq->sent_queue);
     return len;
