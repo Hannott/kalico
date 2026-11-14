@@ -7,6 +7,8 @@ src-$(CONFIG_WANT_ADC) += adccmds.c
 src-$(CONFIG_WANT_SPI) += spicmds.c
 src-$(CONFIG_WANT_I2C) += i2ccmds.c
 src-$(CONFIG_WANT_HARD_PWM) += pwmcmds.c
+src-$(CONFIG_WANT_PHASE_STEPPING) += phase_stepper.c
+src-$(CONFIG_PHASE_STEPPING_POLL) += generic/phase_stepper_poll.c
 src-$(CONFIG_HAVE_GPIO_SDIO) += sdiocmds.c
 
 src-$(CONFIG_WANT_BUTTONS) += buttons.c
