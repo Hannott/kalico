@@ -47,6 +47,9 @@ In this example, the same amount of total advance occurs once the toolhead reach
 The rise at low speed is controlled by two parameters in the firmware: `nonlinear_offset` and `linearization_velocity`.
 The linear slope that occurs past the linearization velocity is controlled by `linear_advance`.
 
+All velocities in the model are filament velocities, in mm/s of filament entering the extruder, not toolhead speeds.
+For a 0.4 mm wide, 0.2 mm high line of 1.75 mm filament, 1 mm/s of filament corresponds to about 30 mm/s of toolhead speed, so a `linearization_velocity` of 1 puts the rise of the offset below typical overhang and seam speeds.
+
 To be perfectly clear, due to the implementation, they are not perfectly independent.
 The advance at low speed is affected slightly by the `linear_advance` setting, and likewise the advance at high speed is affected by the offset and linearization velocity.
 
@@ -84,7 +87,11 @@ It is best to leave the slow velocity at 20 to better probe the speeds near over
 
 Inside the `[delayed_gcode start_pa_test]` section, put in your start gcode (whether a single `print_start` macro or a sequence of individual gcode calls).
 
-If you need more range on the tuning tower, adjust the `FACTOR` for the appropriate parameter.
+The tower is printed in bands: every `STEP_HEIGHT` millimeters (5 by default) the tested parameter steps up by `STEP_DELTA`, and the tower prints a slightly thicker wall at each band boundary so the bands can be counted without calipers.
+When the test starts, the macro lists every band with its height range and parameter value in the console, so note that table down or look it up in the console history when reading the tower.
+
+`STEP_DELTA` defaults to 0.005 per band for `linear_advance`, 0.05 for `nonlinear_offset` and 0.0005 for `pressure_advance_time_offset`; pass a larger `STEP_DELTA` (roughly ten times these for Bowden printers) if you need more range.
+To zoom in on a value, pass `PA_VALUE` and `PA_RANGE`: the bands then cover `PA_VALUE - PA_RANGE` to `PA_VALUE + PA_RANGE`.
 
 ```
 [pa_test]
@@ -112,38 +119,25 @@ gcode:
         M221 S{flow_percent}
     {% endif %}
     {% set height = printer.configfile.settings.pa_test.height %}
-    {% set pavalue = vars.pa_value %}
-    ; If pa_value is 0 then we test the full pa range starting from 0
-    {% if  vars.pa_value == 0 %}
-        {% if vars.testparam == 0 %}
-            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START=0 FACTOR=.001 ; .01 for bowden
-        {% elif vars.testparam == 1 %}
-            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=OFFSET START=0 FACTOR=.01 ; .02 for bowden
-        {% elif vars.testparam == 2 %}
-            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=TIME_OFFSET START=0 FACTOR=.0001
-        {% endif %}
+    {% set parameter = ['ADVANCE', 'OFFSET', 'TIME_OFFSET'][vars.testparam] %}
+    {% set step_height = vars.step_height %}
+    {% set bands = (height / step_height)|int %}
+    {% if vars.pa_value == 0 %}
+        ; Test the full range starting from 0, STEP_DELTA per band
+        {% set start = 0 %}
+        {% set step_delta = vars.step_delta if vars.step_delta > 0 else [0.005, 0.05, 0.0005][vars.testparam] %}
     {% else %}
-        ; make sure that delta and start can not be lower then 0
-        {% if (vars.pa_value - vars.pa_range <= 0) and (vars.testparam <= 2) %}
-            {% set delta = vars.pa_range %}
-            {% set start = 0 %}
-        {% else %}
-            ; calculate the pa range that we want to test
-            {% set delta = (vars.pa_value + vars.pa_range)  - (vars.pa_value - vars.pa_range)  %}
-            ; calculate the pa start value
-            {% set start = vars.pa_value - vars.pa_range %}
-        {% endif %}
-        {% if vars.testparam == 0 %}
-            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START={start} FACTOR={delta / height}
-        {% elif vars.testparam == 1 %}
-            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=OFFSET START={start} FACTOR={delta / height}
-        {% elif vars.testparam == 2 %}
-            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=TIME_OFFSET START={start} FACTOR={delta / height}
-        {% endif %}
+        ; Test pa_value +/- pa_range, never going below 0
+        {% set start = [vars.pa_value - vars.pa_range, 0]|max %}
+        {% set step_delta = (vars.pa_value + vars.pa_range - start) / (bands - 1) %}
     {% endif %}
+    {% for band in range(bands) %}
+        {action_respond_info("PA tower band %d: %s=%.5f from Z %.1f to %.1f mm" % (band, parameter, start + band * step_delta, band * step_height, (band + 1) * step_height))}
+    {% endfor %}
+    TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER={parameter} START={start} STEP_DELTA={step_delta} STEP_HEIGHT={step_height}
     ; PRINT_PA_TOWER must be the last command in the start_pa_test script:
     ; it starts a print and then immediately returns without waiting for the print to finish
-    PRINT_PA_TOWER {vars.rawparams} FINAL_GCODE_ID=end_pa_test
+    PRINT_PA_TOWER {vars.rawparams} STEP_HEIGHT={step_height} FINAL_GCODE_ID=end_pa_test
 
 [delayed_gcode end_pa_test]
 gcode:
@@ -157,6 +151,8 @@ variable_pa_value: 0             # Used for further tuning of pa value. If value
 variable_pa_range: 0.03          # Only use if pa_value is set to heigher than 0. Used to set the +/- area around pa_value that should be tested
 variable_flow_rate: -1
 variable_testparam: 0            # 0 = advance, 1 = offset, 2 = time_offset
+variable_step_height: 5          # Height of one band of constant parameter value (mm)
+variable_step_delta: 0           # Parameter change per band; 0 selects the default for the tested parameter
 variable_fan_speed: 0.5
 variable_rawparams: ''
 gcode:
@@ -173,6 +169,8 @@ gcode:
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=pa_range VALUE={params.PA_RANGE|default(0.01)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=flow_rate VALUE={params.FLOW_RATE|default(-1)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=testparam VALUE={params.TESTPARAM|default(0)}
+    SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=step_height VALUE={params.STEP_HEIGHT|default(5)}
+    SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=step_delta VALUE={params.STEP_DELTA|default(0)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=fan_speed VALUE={params.FAN_SPEED|default(0.5)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=rawparams VALUE="'{rawparams}'"
     SAVE_GCODE_STATE NAME=PA_TEST_STATE
@@ -195,11 +193,40 @@ To change the nonlinear PA at runtime, whether in the printer command line or in
 
 ## Tuning procedure
 
-The tuning procedure will be slightly different for more pedestrian printers, which are dominated by offset, compared with ultra fast printers, which will have more of a linear advance component, or bowden tube printers, which have a large value for both.
-
 When evaluating the tuning towers produced by the PA test macro, it's helpful to use a bright light to illuminate from the extreme left or right sides.
 
-### Direct Drive, low to medium performance
+The left face of the tower shows the slow transitions (medium to slow to near-stop and back), the front face shows the fast ones.
+The two short pauses on the front face always leave a small blob, whatever the settings: the nozzle sits still and oozes, and no pressure advance setting compensates that.
+Use them as reference marks, not as something to tune away.
+
+### Recommended procedure: solve from one linear tower
+
+Once the linearization velocity is fixed, both nonlinear models are linear in `linear_advance` and `nonlinear_offset`, so these two can be computed from two linear pressure advance values instead of being searched by reprinting.
+The `PA_SOLVE` command does that computation.
+
+1. Set up the PA test macro as described in the Setup section, and make sure to set the desired acceleration in `[printer]`.
+2. Set up input shaping if you plan to use it at all. It affects the readability of the tuning tower. Set up extruder sync with `enabled_extruders: extruder`.
+3. In your printer configuration, set `pressure_advance_model` to `recipr`, `linear_advance` to 0, `nonlinear_offset` to 0, `linearization_velocity` to 1 (2 or 3 for Bowden printers, see below) and `pressure_advance_smooth_time` to 0.02, then restart.
+   With `nonlinear_offset` at 0 the model behaves exactly like linear pressure advance, so the first tower is a plain linear tower.
+4. Run the PA test macro with `NOZZLE`, `TARGET_TEMP` and `TESTPARAM=0`. Note the band table the macro prints.
+5. Read two bands off the tower:
+    1. the band where the left face looks best is the slow band, `SLOW_BAND`;
+    2. the band where the front face looks best is the fast band, `FAST_BAND`.
+
+   If both faces look best in the same band, linear pressure advance is sufficient for this filament: set `linear_advance` to that band's value from the table and stop here.
+6. Run `PA_SOLVE SLOW_VELOCITY=<slow_velocity of [pa_test]> SLOW_BAND=<band> FAST_VELOCITY=<fast_velocity of [pa_test]> FAST_BAND=<band>`.
+   The band numbers are those of the table the macro printed, counting from 0 at the bottom, and `PA_SOLVE` looks up their values from the tower that was printed.
+   After a restart it no longer knows the tower: pass the values from the table as `SLOW_ADVANCE` and `FAST_ADVANCE` instead.
+   The velocities are the toolhead speeds of the tower; the command converts them to filament velocity using the nozzle diameter and the `layer_height` of `[pa_test]`, which is how the tower was printed. Pass `LINE_WIDTH` and `LAYER_HEIGHT` if the values were read from something else.
+   It prints `linear_advance` and `nonlinear_offset`, the resulting advance at a few velocities, and the `SET_PRESSURE_ADVANCE` command that applies them. Put the values in your configuration and restart (or add `APPLY=1` to try them right away).
+7. Verify with a narrow offset tower: run the macro with `TESTPARAM=1 PA_VALUE=<solved nonlinear_offset> PA_RANGE=<about half of it>`.
+   The left face should look best in the band closest to the solved value while the front face stays good throughout.
+   If the left face clearly prefers another band, use that `nonlinear_offset`; if the front face gets worse towards one end, the two faces want different `linearization_velocity` values: rerun `PA_SOLVE` with `VELOCITY=` doubled or halved and verify again.
+8. Run the macro with `TESTPARAM=2` to tune `pressure_advance_time_offset`, looking at the front face with strong side lighting. Set the best band's value in the configuration and restart.
+
+The manual procedures below reach the same result by printing and comparing more towers; they remain useful when the solved values do not verify.
+
+### Manual procedure: direct drive, low to medium performance
 
 1. Install Kalico and make sure to use the `bleeding-edge-v2` branch.
 2. Set up the PA test macro as described in the Setup section, and make sure to set the desired acceleration in `[printer]`.
@@ -215,9 +242,9 @@ When evaluating the tuning towers produced by the PA test macro, it's helpful to
 9. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `TESTPARAM` of 2 to vary the `pressure_advance_time_offset`.
 10. Evaluate the tower, looking mostly at the front side. This can be *very* subtle so make sure you use good lighting to reveal the differences. Set the `pressure_advance_time_offset` in your configuration based on the height that looks best there and the `factor` from the test macro code, and restart.
 
-### Bowden or ultra high speed direct drive printers
+### Manual procedure: Bowden or ultra high speed direct drive printers
 
-Make sure to adjust the factors in the PA test macro for Bowden printers.
+Make sure to pass a larger `STEP_DELTA` to the PA test macro for Bowden printers.
 
 1. Install Kalico and make sure to use the `bleeding-edge-v2` branch.
 2. Set up the PA test macro as described in the Setup section, and make sure to set the desired acceleration in `[printer]`.
